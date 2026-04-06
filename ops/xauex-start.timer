@@ -1,0 +1,10 @@
+[Unit]
+Description=Start XAUEX before the London morning session
+
+[Timer]
+OnCalendar=Mon-Fri *-*-* 07:25:00 Europe/London
+Persistent=true
+Unit=xauex.service
+
+[Install]
+WantedBy=timers.target

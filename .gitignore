@@ -1,0 +1,44 @@
+.DS_Store
+.codex
+.env
+.env.local
+.env.*.local
+.python-version
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtualenvs
+.venv/
+backend/.venv
+bridge/.env
+backend/.env
+xauex/.venv
+
+# Node / frontend build artifacts
+frontend/node_modules/
+frontend/dist/
+
+# Runtime logs and generated outputs
+logs/
+backend/logs/
+backend/uploads/
+bridge/context_out/
+
+# XAUEX runtime state and local secrets
+xauex/.env
+xauex/.env.bak*
+xauex/.pytest_cache/
+xauex/.superpowers/
+xauex/.claude/
+xauex/**/__pycache__/
+xauex/tick_parser/target/
+
+# Local scratch / exported bundles
+NEW/.DS_Store
+tmp/

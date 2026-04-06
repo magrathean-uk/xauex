@@ -1,0 +1,10 @@
+[Unit]
+Description=Stop XAUEX after the London trading week
+
+[Timer]
+OnCalendar=Fri *-*-* 12:05:00 Europe/London
+Persistent=true
+Unit=xauex-stop.service
+
+[Install]
+WantedBy=timers.target

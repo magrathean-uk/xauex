@@ -1,0 +1,29 @@
+# XAUEX AI Analyst cron jobs
+# Install with: crontab ops/analyst.cron
+# Requires: gemini CLI on PATH for cron user
+# Logs to: /var/log/xauex/analyst.log
+#
+# NOTE: If you already have other crontab entries, merge manually.
+# This file replaces the entire crontab if installed with `crontab ops/analyst.cron`.
+
+PATH=/root/.nvm/versions/node/v25.8.1/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+GEMINI_BIN=/usr/bin/gemini
+XAUEX_ANALYST_MODEL=gemini-3.1-pro-preview
+
+# Morning brief — 07:45 Mon-Fri
+45 7 * * 1-5 cd /home/bolyki/xauex && python3 -m analyst.morning_brief >> /var/log/xauex/analyst.log 2>&1
+
+# Post-trade journal — every 5 min Mon-Fri
+*/5 * * * 1-5 cd /home/bolyki/xauex && python3 -m analyst.post_trade_journal >> /var/log/xauex/analyst.log 2>&1
+
+# Setup scorer — every 5 min Mon-Fri
+*/5 * * * 1-5 cd /home/bolyki/xauex && python3 -m analyst.setup_scorer >> /var/log/xauex/analyst.log 2>&1
+
+# Macro regime classifier — every 15 min Mon-Fri
+*/15 * * * 1-5 cd /home/bolyki/xauex && python3 -m analyst.macro_regime >> /var/log/xauex/analyst.log 2>&1
+
+# Trade policy classifier — every 15 min Mon-Fri
+*/15 * * * 1-5 cd /home/bolyki/xauex && python3 -m analyst.trade_policy >> /var/log/xauex/analyst.log 2>&1
+
+# Weekly review — 08:00 Monday
+0 8 * * 1 cd /home/bolyki/xauex && python3 -m analyst.weekly_review >> /var/log/xauex/analyst.log 2>&1

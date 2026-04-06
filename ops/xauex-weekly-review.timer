@@ -1,0 +1,10 @@
+[Unit]
+Description=Run XAUEX weekly trade review on Friday after the session ends
+
+[Timer]
+OnCalendar=Fri *-*-* 12:15:00 Europe/London
+Persistent=true
+Unit=xauex-weekly-review.service
+
+[Install]
+WantedBy=timers.target

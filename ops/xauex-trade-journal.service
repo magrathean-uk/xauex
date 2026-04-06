@@ -1,0 +1,18 @@
+[Unit]
+Description=XAUEX Post-Trade Journal
+After=network-online.target xauex-stop.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=__RUN_USER__
+WorkingDirectory=__REPO_ROOT__/xauex
+EnvironmentFile=__REPO_ROOT__/xauex/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=__REPO_ROOT__/ops/run_trade_journal.sh
+TimeoutStartSec=900
+StandardOutput=append:/var/log/xauex/analyst.log
+StandardError=append:/var/log/xauex/analyst.log
+
+[Install]
+WantedBy=multi-user.target

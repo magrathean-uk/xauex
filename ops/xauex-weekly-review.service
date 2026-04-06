@@ -1,0 +1,18 @@
+[Unit]
+Description=XAUEX Weekly Trade Review
+After=network-online.target xauex-trade-journal.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=__RUN_USER__
+WorkingDirectory=__REPO_ROOT__/xauex
+EnvironmentFile=__REPO_ROOT__/xauex/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=__REPO_ROOT__/ops/run_weekly_review.sh
+TimeoutStartSec=1800
+StandardOutput=append:/var/log/xauex/analyst.log
+StandardError=append:/var/log/xauex/analyst.log
+
+[Install]
+WantedBy=multi-user.target

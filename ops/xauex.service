@@ -1,0 +1,19 @@
+[Unit]
+Description=XAUEX Demo Trading Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__RUN_USER__
+WorkingDirectory=__REPO_ROOT__/xauex
+EnvironmentFile=__REPO_ROOT__/xauex/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=__REPO_ROOT__/ops/run_xauex.sh
+Restart=always
+RestartSec=15
+StandardOutput=append:/var/log/xauex/xauex.log
+StandardError=append:/var/log/xauex/xauex.log
+
+[Install]
+WantedBy=multi-user.target

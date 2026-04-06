@@ -1,0 +1,18 @@
+[Unit]
+Description=XAUEX XAUUSD Trading Daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=xauex
+WorkingDirectory=/opt/xauex
+EnvironmentFile=/opt/xauex/.env
+ExecStart=/opt/xauex/.venv/bin/python main.py
+Restart=on-failure
+RestartSec=30
+StandardOutput=append:/var/log/xauex/xauex.log
+StandardError=append:/var/log/xauex/xauex.log
+
+[Install]
+WantedBy=multi-user.target

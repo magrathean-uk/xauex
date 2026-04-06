@@ -1,0 +1,10 @@
+[Unit]
+Description=MiroFish Bridge Signal Refresh Timer
+
+[Timer]
+OnCalendar=Mon-Fri *-*-* 07:35:00 Europe/London
+Persistent=true
+Unit=mirofish-bridge.service
+
+[Install]
+WantedBy=timers.target

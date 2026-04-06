@@ -1,0 +1,7 @@
+[Unit]
+Description=Stop XAUEX after the London morning session
+After=xauex.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/systemctl stop xauex.service
