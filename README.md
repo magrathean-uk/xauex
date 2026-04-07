@@ -2,14 +2,14 @@
 
 GoldOracle is a repo-packaged London-open XAUUSD demo trading system built from three parts:
 
-- `backend/`: MiroFish swarm simulation backend
-- `bridge/`: market-context fetcher and signal parser
+- `backend/`: legacy MiroFish backend kept for compatibility and research workflows
+- `bridge/`: live market-context fetcher, direct predictor, brief writer, and signal parser
 - `xauex/`: cTrader execution bot
 
-The production path is:
+The current live production path is:
 
 1. `mirofish-backend.service` keeps the backend API up.
-2. `mirofish-bridge.timer` runs before London open on weekdays and generates a signal.
+2. `mirofish-bridge.timer` runs before London open on weekdays and generates a fresh direct predictor signal from curated context, price structure, and recent local trade memory.
 3. `xauex.service` polls `/var/lib/xauex/cmd.json` and executes one London-morning trade per day.
 4. journal and weekly-review timers write trade summaries after the session.
 
@@ -29,10 +29,30 @@ This repo is intended to be sufficient to rebuild the application and redeploy i
 
 - Trade instrument: `XAUUSD`
 - Trade window: London open
-- One MiroFish trade per London day
-- Fixed cash target/stop in XAUEX config
+- Phase-1 live path uses a direct weighted predictor, not a daily Zep graph build
+- Weighted signal blend:
+  - price action / market structure: `45%`
+  - macro / news sentiment: `35%`
+  - recent oracle / trade memory: `20%`
+- Optional local memory layer:
+  - enable with `QDRANT_ENABLED=1`
+  - store path: `QDRANT_PATH=/var/lib/xauex/qdrant_local`
+  - uses embedded `qdrant-client` local storage, so there is no separate Qdrant service to run
+- One trade max per London day in phase 1
+- Oracle uses a staged session manager:
+  - `OBSERVE` after entry
+  - `PROTECT` after the move proves itself
+  - `TRAIL` after stronger follow-through
+- Cash risk stays capped while the live stop can widen beyond the raw signal stop using structure/ATR logic
 - Forced flat before late London morning cutoff
 - Weekends off
+- Rare `HOLD`, reserved for hard blockers or genuinely strong conflict
+- Dashboard manual trades are fully independent from Oracle:
+  - same broker/account
+  - separate command path
+  - ignored by Oracle limits, memory, and management logic
+  - manual controls require a dashboard login session
+  - dashboard auth reads `ORACLE_DASHBOARD_AUTH_*` values from the process environment or `~/.config/working_keys.env`
 
 ## Rebuild From Scratch
 
@@ -52,7 +72,7 @@ sudo bash ops/install_systemd.sh
 
 Then fill in:
 
-- root `.env` for backend/bridge LLM and Zep settings
+- root `.env` for backend/bridge LLM settings and optional memory settings
 - `xauex/.env` for cTrader credentials and execution settings
 
 ## Key Paths

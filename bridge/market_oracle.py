@@ -223,7 +223,7 @@ class MarketOracle:
         resp = self.client.get(f'{self.base}/api/report/{report_id}')
         resp.raise_for_status()
         data = resp.json().get('data', {})
-        return data.get('content', data.get('markdown', ''))
+        return data.get('markdown_content', data.get('content', data.get('markdown', '')))
 
     def close(self) -> None:
         self.client.close()

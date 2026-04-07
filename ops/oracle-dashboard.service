@@ -1,0 +1,18 @@
+[Unit]
+Description=Gold Oracle Web Dashboard
+After=network-online.target xauex.service mirofish-backend.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=bolyki
+WorkingDirectory=__REPO_ROOT__
+Environment=PYTHONUNBUFFERED=1
+ExecStart=__REPO_ROOT__/ops/run_oracle_dashboard.sh
+Restart=always
+RestartSec=5
+StandardOutput=append:__REPO_ROOT__/logs/oracle-dashboard.log
+StandardError=append:__REPO_ROOT__/logs/oracle-dashboard-error.log
+
+[Install]
+WantedBy=multi-user.target

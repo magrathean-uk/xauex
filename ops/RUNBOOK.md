@@ -14,6 +14,7 @@ This repository is the only runtime folder. Do not use `/home/bolyki/xauex` for 
 ## Runtime Model
 
 - `mirofish-backend.service`: keeps the Flask backend running all the time.
+- `oracle-dashboard.service`: lightweight web dashboard on port `8089` for bot state, signal, positions, trades, and account metrics.
 - `xauex.service`: weekday trading process that stays up through the work week.
 - `xauex-start.timer`: starts `xauex.service` at `07:25 Europe/London`, Monday to Friday.
 - `xauex-stop.timer`: stops `xauex.service` at `12:05 Europe/London` on Friday so it does not run on weekends.
@@ -22,7 +23,43 @@ This repository is the only runtime folder. Do not use `/home/bolyki/xauex` for 
 - `mirofish-bridge.timer`: refreshes the signal once per weekday at `07:35 Europe/London`.
 - `mirofish-bridge.service`: one-shot signal generation job triggered by the timer or manually.
 
-XAUEX is configured to poll `/var/lib/xauex/cmd.json` and trade MiroFish signals when `MIROFISH_MODE=true` in `xauex/.env`.
+XAUEX is configured to poll `/var/lib/xauex/cmd.json` and trade Oracle signals when `MIROFISH_MODE=true` in `xauex/.env`.
+
+XAUEX also supports a separate manual command lane through:
+
+- `/var/lib/xauex/manual_trade_cmd.json`
+
+The dashboard writes manual commands there after a dashboard login. XAUEX executes them with the same broker connection, but Oracle ignores those manual positions for its own daily limits, predictor memory, and session management.
+
+Dashboard login credentials are loaded from `ORACLE_DASHBOARD_AUTH_*` values in the process environment or from `~/.config/working_keys.env`.
+
+- `ORACLE_DASHBOARD_AUTH_USERNAME`
+- `ORACLE_DASHBOARD_AUTH_PASSWORD`
+- `ORACLE_DASHBOARD_AUTH_SECRET`
+
+Manual dashboard actions require an authenticated session and a CSRF token.
+
+The current live signal path is `direct`:
+
+- fetch fresh curated macro / gold context
+- blend that with local price structure and recent local trade memory
+- generate one morning `BUY` / `SELL` / rare `HOLD`
+- write:
+  - `/var/lib/xauex/cmd.json`
+  - `/var/lib/xauex/latest_signal_brief.md`
+  - `/var/lib/xauex/latest_signal_evidence.json`
+
+The old MiroFish graph/simulation path is retained only as an explicit fallback/research path and is no longer the intended daily live dependency.
+
+## Oracle Session Manager
+
+Oracle-managed trades use a staged lifecycle:
+
+- `OBSERVE`: initial wide catastrophe stop only
+- `PROTECT`: move stop to breakeven-plus cushion after the move reaches the protect threshold
+- `TRAIL`: trail the stop by structure/ATR once follow-through is stronger
+
+Cash risk remains capped. Wider stops reduce lot size; they do not increase maximum allowed cash risk.
 
 ## Install
 
@@ -45,6 +82,7 @@ sudo systemctl start xauex-start.timer
 sudo systemctl start xauex-stop.timer
 sudo systemctl start xauex-trade-journal.timer
 sudo systemctl start xauex-weekly-review.timer
+sudo systemctl start oracle-dashboard.service
 sudo systemctl start mirofish-bridge.timer
 sudo systemctl start mirofish-bridge.service
 ```
@@ -57,6 +95,7 @@ sudo systemctl stop xauex-start.timer
 sudo systemctl stop xauex-stop.timer
 sudo systemctl stop xauex-trade-journal.timer
 sudo systemctl stop xauex-weekly-review.timer
+sudo systemctl stop oracle-dashboard.service
 sudo systemctl stop xauex.service
 sudo systemctl stop mirofish-backend.service
 ```
@@ -70,6 +109,7 @@ sudo systemctl restart xauex-start.timer
 sudo systemctl restart xauex-stop.timer
 sudo systemctl restart xauex-trade-journal.timer
 sudo systemctl restart xauex-weekly-review.timer
+sudo systemctl restart oracle-dashboard.service
 sudo systemctl start mirofish-bridge.service
 ```
 
@@ -78,6 +118,7 @@ sudo systemctl start mirofish-bridge.service
 ```bash
 systemctl status mirofish-backend.service --no-pager
 systemctl status xauex.service --no-pager
+systemctl status oracle-dashboard.service --no-pager
 systemctl status xauex-start.timer xauex-stop.timer xauex-trade-journal.timer xauex-weekly-review.timer --no-pager
 systemctl status mirofish-bridge.timer mirofish-bridge.service --no-pager
 bash /home/bolyki/mirofish-gold-oracle/status.sh
@@ -87,12 +128,14 @@ bash /home/bolyki/mirofish-gold-oracle/status.sh
 
 ```bash
 journalctl -u mirofish-backend.service -f
+journalctl -u oracle-dashboard.service -f
 journalctl -u xauex.service -f
 journalctl -u mirofish-bridge.service -f
 journalctl -u xauex-trade-journal.service -f
 journalctl -u xauex-weekly-review.service -f
 tail -f /var/log/xauex/xauex.log
 tail -f /home/bolyki/mirofish-gold-oracle/logs/bridge-run.log
+tail -f /home/bolyki/mirofish-gold-oracle/logs/oracle-dashboard.log
 ```
 
 Report outputs:
@@ -100,6 +143,13 @@ Report outputs:
 - `/var/lib/xauex/trade_journal.json`
 - `/var/lib/xauex/weekly_review.json`
 - `/var/lib/xauex/weekly_review.md`
+- `/var/lib/xauex/latest_signal_brief.md`
+- `/var/lib/xauex/latest_signal_evidence.json`
+
+Dashboard:
+
+- local URL: `http://127.0.0.1:8089`
+- LAN URL: `http://10.8.0.1:8089`
 
 Retention policy:
 
@@ -131,6 +181,14 @@ LOG_FILE_PATH=/var/log/xauex/xauex.log
 cd /home/bolyki/mirofish-gold-oracle
 ./.venv/bin/python -m bridge.run --asset XAUUSD --auto-context
 ```
+
+Expected live behavior:
+
+- phase 1: one trade max per London weekday
+- `HOLD` is allowed, but should be rare and reserved for hard blockers or strong conflict
+- optional local Qdrant memory can be enabled with `QDRANT_ENABLED=1` and `QDRANT_PATH=/var/lib/xauex/qdrant_local`
+- the current local Qdrant implementation is embedded via `qdrant-client`; there is no separate daemon or port to manage
+- dashboard manual trades require absolute-price SL/TP and are intentionally independent from Oracle automation
 
 ## Notes
 

@@ -14,7 +14,11 @@ from dotenv import load_dotenv
 
 from bridge.assets import all_symbols, resolve_asset
 from bridge.config import BridgeConfig
+from bridge.direct_predictor import build_prediction_payload, build_recent_actions, render_direct_report
+from bridge.history_cache import load_recent_trade_memory, load_state_snapshot
+from bridge.market_oracle import MarketOracle
 from bridge.source_registry import get_sources
+from bridge.qdrant_memory import retrieve_qdrant_memory_snippets
 
 logging.basicConfig(
     level=getattr(logging, __import__("os").environ.get("LOG_LEVEL", "INFO"), logging.INFO),
@@ -57,14 +61,16 @@ def main() -> None:
     if args.max_rounds is not None:
         config = replace(config, simulation_max_rounds=args.max_rounds)
     logger.info(
-        'Bridge config: sim_model=%s parser_model=%s llm_base_url=%s max_rounds=%s',
+        'Bridge config: mode=%s sim_model=%s parser_model=%s llm_base_url=%s max_rounds=%s',
+        config.prediction_mode,
         config.llm_model,
         config.parser_llm_model,
         config.llm_base_url,
         config.simulation_max_rounds if config.simulation_max_rounds is not None else 'auto',
     )
     from bridge.context_builder import ContextBuilder
-    from bridge.market_oracle import MarketOracle
+    from bridge.brief_writer import write_brief
+    from bridge.evidence_writer import write_evidence_pack
     from bridge.signal_parser import parse_signal
     from bridge.signal_writer import write_signal
     auto_context = args.auto_context or not (args.news or args.news_text)
@@ -108,14 +114,24 @@ def main() -> None:
         logger.error('Context text too short (need at least 50 chars)')
         sys.exit(1)
 
-    oracle = MarketOracle(config, asset)
-    try:
-        results = oracle.run(news_text)
-    finally:
-        oracle.close()
+    payload: dict | None = None
+    if config.prediction_mode == 'direct':
+        artifacts = build_direct_prediction_artifacts(
+            config=config,
+            asset_symbol=asset.symbol,
+            context_markdown=news_text,
+        )
+        payload = artifacts['payload']
+        results = artifacts['results']
+    else:
+        oracle = MarketOracle(config, asset)
+        try:
+            results = oracle.run(news_text)
+        finally:
+            oracle.close()
 
     logger.info(
-        'Simulation complete for %s: %d actions, report length %d',
+        'Prediction input complete for %s: %d actions, report length %d',
         asset.symbol,
         len(results['actions']),
         len(results['report_markdown']),
@@ -136,14 +152,19 @@ def main() -> None:
         report_markdown=results['report_markdown'],
         config=config,
     )
-    if results.get('fallback_reused'):
-        signal['source'] = {
-            'mode': 'history_fallback',
-            'simulation_id': results.get('simulation_id'),
-            'report_id': results.get('report_id'),
-            'created_at': results.get('fallback_created_at', ''),
-            'reason': results.get('fallback_reason', ''),
-        }
+    signal['source'] = {
+        'mode': (
+            'history_fallback'
+            if results.get('fallback_reused')
+            else 'direct_prediction'
+            if results.get('prediction_mode') == 'direct'
+            else 'live_pipeline'
+        ),
+        'simulation_id': results.get('simulation_id'),
+        'report_id': results.get('report_id'),
+        'created_at': results.get('fallback_created_at', ''),
+        'reason': results.get('fallback_reason', ''),
+    }
 
     logger.info(
         'Signal: %s %s confidence=%.2f - %s',
@@ -154,6 +175,28 @@ def main() -> None:
     )
     print(json.dumps(signal, indent=2))
 
+    brief_meta = write_brief(
+        asset=asset,
+        signal=signal,
+        actions=results['actions'],
+        report_markdown=results['report_markdown'],
+        simulation_id=results.get('simulation_id'),
+        report_id=results.get('report_id'),
+        output_path=config.brief_output_path,
+        config=config,
+    )
+    signal['brief'] = brief_meta
+
+    if payload is not None:
+        write_evidence_pack(
+            output_path=Path(config.evidence_output_path),
+            context_summary=payload['context_excerpt'][:2400],
+            recent_runs=payload['recent_runs'],
+            weights=payload['weights'],
+            price_features=payload['price_features'],
+            prediction_mode='direct',
+        )
+
     if args.dry_run:
         logger.info('DRY RUN - signal not written')
         return
@@ -161,6 +204,58 @@ def main() -> None:
     output_path = args.output or config.signal_output_path
     write_signal(signal, output_path)
     logger.info('Signal written to %s', output_path)
+
+
+def build_direct_prediction_artifacts(
+    *,
+    config: BridgeConfig,
+    asset_symbol: str,
+    context_markdown: str,
+) -> dict[str, object]:
+    from bridge.assets import resolve_asset
+
+    asset = resolve_asset(asset_symbol)
+    recent_runs = load_recent_trade_memory(Path(config.trade_journal_path))
+    state_snapshot = load_state_snapshot(Path(config.state_file_path))
+    retrieved_memory: list[dict[str, object]] = []
+    if config.qdrant_memory.enabled:
+        try:
+            retrieved_memory = retrieve_qdrant_memory_snippets(
+                config.qdrant_memory,
+                asset_symbol=asset.symbol,
+                context_markdown=context_markdown,
+                recent_runs=recent_runs,
+            )
+        except Exception as exc:  # pragma: no cover - network/client failures
+            logger.warning(
+                'Qdrant memory retrieval failed for %s, continuing without it: %s',
+                asset.symbol,
+                exc,
+            )
+            retrieved_memory = []
+
+    payload = build_prediction_payload(
+        asset=asset,
+        context_markdown=context_markdown,
+        recent_runs=recent_runs,
+        state_snapshot=state_snapshot,
+        retrieved_memory=retrieved_memory,
+    )
+    results = {
+        'asset': asset.symbol,
+        'actions': build_recent_actions(payload),
+        'report_markdown': render_direct_report(payload),
+        'simulation_id': None,
+        'report_id': None,
+        'fallback_reused': False,
+        'prediction_mode': 'direct',
+    }
+    return {
+        'payload': payload,
+        'actions': results['actions'],
+        'report_markdown': results['report_markdown'],
+        'results': results,
+    }
 
 
 if __name__ == '__main__':

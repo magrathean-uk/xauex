@@ -28,6 +28,8 @@ class TrackedPosition:
     open_time_utc: datetime
     pattern: PatternType
     level: float
+    owner: str = "strategy"
+    metadata: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -65,7 +67,7 @@ class PositionManager:
     def get_position(self, position_id: str) -> Optional[TrackedPosition]:
         return self._positions.get(position_id)
 
-    def add_position(self, position) -> None:
+    def add_position(self, position, owner: str = "strategy", metadata: Optional[dict] = None) -> None:
         """Add from a bot.api.models.Position (returned by reconcile)."""
         tracked = TrackedPosition(
             position_id=position.position_id,
@@ -77,6 +79,8 @@ class PositionManager:
             open_time_utc=position.open_time,
             pattern=PatternType.NONE,
             level=position.entry_price,
+            owner=owner,
+            metadata=dict(metadata or {}),
         )
         self._positions[tracked.position_id] = tracked
 
@@ -107,6 +111,60 @@ class Executor:
         self._pending_market_orders: Dict[str, dict] = {}
         self._closed_trades_today: List[dict] = []
 
+    @staticmethod
+    def should_apply_generic_trailing(position: TrackedPosition) -> bool:
+        """Oracle and manual positions use dedicated management lanes, not generic trailing."""
+        return str(getattr(position, "owner", "strategy") or "strategy").lower() not in {"manual", "oracle"}
+
+    def serialize_pending_market_orders(self) -> Dict[str, dict]:
+        """Return JSON-safe pending market orders for restart recovery."""
+        serialized: Dict[str, dict] = {}
+        for order_id, payload in self._pending_market_orders.items():
+            serialized[str(order_id)] = {
+                "direction": payload.get("direction"),
+                "stop_loss": payload.get("stop_loss"),
+                "take_profit": payload.get("take_profit"),
+                "lot_size": payload.get("lot_size"),
+                "pattern": (
+                    payload.get("pattern").name
+                    if hasattr(payload.get("pattern"), "name")
+                    else payload.get("pattern")
+                ),
+                "level": payload.get("level"),
+                "owner": payload.get("owner", "strategy"),
+                "metadata": dict(payload.get("metadata") or {}),
+                "created_at": payload.get("created_at").isoformat()
+                if hasattr(payload.get("created_at"), "isoformat")
+                else payload.get("created_at"),
+            }
+        return serialized
+
+    def restore_pending_market_orders(self, prior_pending_orders: Dict[str, dict], broker_pending_orders: List[dict]) -> None:
+        """Restore accepted-but-unfilled market orders that still exist at broker."""
+        if not prior_pending_orders:
+            return
+        broker_order_ids = {str(item.get("order_id", "") or "") for item in broker_pending_orders}
+        restored: Dict[str, dict] = {}
+        for order_id, payload in prior_pending_orders.items():
+            order_id = str(order_id)
+            if order_id not in broker_order_ids:
+                continue
+            pattern = payload.get("pattern", PatternType.NONE)
+            if isinstance(pattern, str):
+                pattern = getattr(PatternType, pattern, PatternType.NONE)
+            restored[order_id] = {
+                "direction": payload.get("direction"),
+                "stop_loss": payload.get("stop_loss"),
+                "take_profit": payload.get("take_profit"),
+                "lot_size": payload.get("lot_size"),
+                "pattern": pattern,
+                "level": payload.get("level"),
+                "owner": payload.get("owner", "strategy"),
+                "metadata": dict(payload.get("metadata") or {}),
+                "created_at": payload.get("created_at"),
+            }
+        self._pending_market_orders.update(restored)
+
     # ──────────────────────────────────────────────────────────────
     # Market order placement
     # ──────────────────────────────────────────────────────────────
@@ -119,6 +177,8 @@ class Executor:
         take_profit_price: float,
         pattern: PatternType,
         level: float,
+        owner: str = "strategy",
+        metadata: Optional[dict] = None,
     ) -> Optional[str]:
         """Place market order. Return position ID or None on failure."""
         # Pre-placement validation
@@ -178,6 +238,8 @@ class Executor:
                 open_time_utc=datetime.now(timezone.utc),
                 pattern=pattern,
                 level=level,
+                owner=owner,
+                metadata=dict(metadata or {}),
             )
             self.position_manager.add(tracked)
             return position_id
@@ -197,6 +259,8 @@ class Executor:
                 open_time_utc=datetime.now(timezone.utc),
                 pattern=pattern,
                 level=level,
+                owner=owner,
+                metadata=dict(metadata or {}),
             )
             self.position_manager.add(tracked)
             return position_id
@@ -210,6 +274,8 @@ class Executor:
                 "lot_size": lot_size,
                 "pattern": pattern,
                 "level": level,
+                "owner": owner,
+                "metadata": dict(metadata or {}),
                 "created_at": datetime.now(timezone.utc),
             }
             logger.info("[EXECUTOR] Order accepted, awaiting fill. Order ID: %s", order_id)
@@ -364,6 +430,8 @@ class Executor:
                 "pnl": pnl,
                 "pattern": PatternType.NONE.name,
                 "level": 0.0,
+                "owner": "unknown",
+                "metadata": {},
                 "close_time_utc": datetime.now(timezone.utc).isoformat(),
             })
             if self.state_writer:
@@ -394,6 +462,8 @@ class Executor:
             "pnl": pnl,
             "pattern": position.pattern.name,
             "level": position.level,
+            "owner": position.owner,
+            "metadata": dict(position.metadata or {}),
             "close_time_utc": datetime.now(timezone.utc).isoformat(),
         })
 
@@ -508,6 +578,8 @@ class Executor:
 
         positions = self.position_manager.get_open_positions()
         for pos in positions:
+            if not self.should_apply_generic_trailing(pos):
+                continue
             try:
                 # Reconstruct risk_amount from original SL distance
                 sl_dist = abs(pos.entry_price - pos.stop_loss)

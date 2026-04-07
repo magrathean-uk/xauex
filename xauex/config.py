@@ -87,6 +87,14 @@ class Config:
     mirofish_confidence_medium_threshold: float
     mirofish_medium_confidence_lot_multiplier: float
     mirofish_low_confidence_lot_multiplier: float
+    mirofish_session_protect_r: float
+    mirofish_session_trail_r: float
+    mirofish_session_atr_multiplier: float
+    mirofish_session_structure_buffer_usd: float
+    mirofish_session_protect_buffer_usd: float
+    mirofish_session_low_confidence_protect_r: float
+    mirofish_session_high_confidence_protect_r: float
+    mirofish_manual_command_path: str
     scalp_fast_ema_period: int
     scalp_slow_ema_period: int
     scalp_atr_period: int
@@ -311,6 +319,31 @@ def load_config(env_file: str = ".env") -> Config:
     mirofish_low_confidence_lot_multiplier = collect(
         _float_range, "MIROFISH_LOW_CONFIDENCE_LOT_MULTIPLIER", 0.1, 1.0, 0.25
     )
+    mirofish_session_protect_r = collect(
+        _float_range, "MIROFISH_SESSION_PROTECT_R", 0.1, 5.0, 0.85
+    )
+    mirofish_session_trail_r = collect(
+        _float_range, "MIROFISH_SESSION_TRAIL_R", 0.2, 8.0, 1.35
+    )
+    mirofish_session_atr_multiplier = collect(
+        _float_range, "MIROFISH_SESSION_ATR_MULTIPLIER", 0.1, 10.0, 1.4
+    )
+    mirofish_session_structure_buffer_usd = collect(
+        _float_range, "MIROFISH_SESSION_STRUCTURE_BUFFER_USD", 0.1, 50.0, 2.5
+    )
+    mirofish_session_protect_buffer_usd = collect(
+        _float_range, "MIROFISH_SESSION_PROTECT_BUFFER_USD", 0.1, 20.0, 1.0
+    )
+    mirofish_session_low_confidence_protect_r = collect(
+        _float_range, "MIROFISH_SESSION_LOW_CONFIDENCE_PROTECT_R", 0.1, 5.0, 0.7
+    )
+    mirofish_session_high_confidence_protect_r = collect(
+        _float_range, "MIROFISH_SESSION_HIGH_CONFIDENCE_PROTECT_R", 0.1, 5.0, 1.0
+    )
+    mirofish_manual_command_path = os.getenv(
+        "MIROFISH_MANUAL_COMMAND_PATH",
+        "/var/lib/xauex/manual_trade_cmd.json",
+    )
     scalp_fast_ema_period = collect(_int_range, "SCALP_FAST_EMA_PERIOD", 3, 50, 9)
     scalp_slow_ema_period = collect(_int_range, "SCALP_SLOW_EMA_PERIOD", 5, 100, 20)
     scalp_atr_period = collect(_int_range, "SCALP_ATR_PERIOD", 5, 100, 14)
@@ -442,6 +475,14 @@ def load_config(env_file: str = ".env") -> Config:
         mirofish_confidence_medium_threshold=mirofish_confidence_medium_threshold,
         mirofish_medium_confidence_lot_multiplier=mirofish_medium_confidence_lot_multiplier,
         mirofish_low_confidence_lot_multiplier=mirofish_low_confidence_lot_multiplier,
+        mirofish_session_protect_r=mirofish_session_protect_r,
+        mirofish_session_trail_r=mirofish_session_trail_r,
+        mirofish_session_atr_multiplier=mirofish_session_atr_multiplier,
+        mirofish_session_structure_buffer_usd=mirofish_session_structure_buffer_usd,
+        mirofish_session_protect_buffer_usd=mirofish_session_protect_buffer_usd,
+        mirofish_session_low_confidence_protect_r=mirofish_session_low_confidence_protect_r,
+        mirofish_session_high_confidence_protect_r=mirofish_session_high_confidence_protect_r,
+        mirofish_manual_command_path=mirofish_manual_command_path,
         scalp_fast_ema_period=scalp_fast_ema_period,
         scalp_slow_ema_period=scalp_slow_ema_period,
         scalp_atr_period=scalp_atr_period,

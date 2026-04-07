@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+from bridge.qdrant_memory import QdrantMemoryConfig, load_qdrant_memory_config
+
 
 @dataclass(frozen=True)
 class BridgeConfig:
@@ -15,7 +17,12 @@ class BridgeConfig:
     parser_llm_api_key: str
     parser_llm_base_url: str
     parser_llm_model: str
+    prediction_mode: str
     signal_output_path: str
+    brief_output_path: str
+    evidence_output_path: str
+    state_file_path: str
+    trade_journal_path: str
     request_timeout_seconds: float
     source_timeout_seconds: float
     source_user_agent: str
@@ -23,6 +30,7 @@ class BridgeConfig:
     project_prefix: str
     simulation_max_rounds: int | None
     history_fallback_limit: int
+    qdrant_memory: QdrantMemoryConfig
 
     @classmethod
     def from_env(cls) -> 'BridgeConfig':
@@ -69,7 +77,12 @@ class BridgeConfig:
             parser_llm_api_key=parser_llm_api_key,
             parser_llm_base_url=parser_llm_base_url,
             parser_llm_model=parser_llm_model,
+            prediction_mode=os.getenv('BRIDGE_PREDICTION_MODE', 'direct').strip().lower(),
             signal_output_path=os.getenv('SIGNAL_OUTPUT_PATH', '/var/lib/xauex/cmd.json'),
+            brief_output_path=os.getenv('BRIDGE_BRIEF_OUTPUT_PATH', '/var/lib/xauex/latest_signal_brief.md'),
+            evidence_output_path=os.getenv('BRIDGE_EVIDENCE_OUTPUT_PATH', '/var/lib/xauex/latest_signal_evidence.json'),
+            state_file_path=os.getenv('STATE_FILE_PATH', '/var/lib/xauex/state.json'),
+            trade_journal_path=os.getenv('TRADE_JOURNAL_PATH', '/var/lib/xauex/trade_journal.json'),
             request_timeout_seconds=float(os.getenv('BRIDGE_REQUEST_TIMEOUT_SECONDS', '120')),
             source_timeout_seconds=float(os.getenv('BRIDGE_SOURCE_TIMEOUT_SECONDS', '20')),
             source_user_agent=os.getenv(
@@ -80,4 +93,5 @@ class BridgeConfig:
             project_prefix=os.getenv('BRIDGE_PROJECT_PREFIX', 'MiroFish Macro Swarm'),
             simulation_max_rounds=simulation_max_rounds,
             history_fallback_limit=int(os.getenv('BRIDGE_HISTORY_FALLBACK_LIMIT', '20')),
+            qdrant_memory=load_qdrant_memory_config(),
         )

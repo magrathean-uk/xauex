@@ -156,6 +156,8 @@ class StateWriter:
                     "unrealised_pnl": getattr(p, "unrealised_pnl", 0.0),
                     "pattern": p.pattern.name if hasattr(p.pattern, "name") else str(p.pattern),
                     "level": p.level,
+                    "owner": getattr(p, "owner", "strategy"),
+                    "metadata": getattr(p, "metadata", {}) or {},
                 }
             else:
                 pos = dict(p)

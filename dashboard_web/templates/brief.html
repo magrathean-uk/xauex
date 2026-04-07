@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ brief_meta.title }}</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: Georgia, "Times New Roman", serif;
+      background: #f6f3ea;
+      color: #1a1a1a;
+    }
+    .page {
+      max-width: 760px;
+      margin: 32px auto;
+      padding: 28px 30px;
+      background: #fffdfa;
+      border: 1px solid #ddd2bd;
+      border-radius: 16px;
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.08);
+    }
+    .meta {
+      font-family: ui-monospace, monospace;
+      color: #6d6556;
+      font-size: 13px;
+      margin-bottom: 18px;
+    }
+    pre {
+      white-space: pre-wrap;
+      word-break: break-word;
+      font: inherit;
+      line-height: 1.55;
+      margin: 0;
+    }
+    a {
+      color: #7a4d00;
+      text-decoration: none;
+      font-weight: 700;
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div class="meta">
+      Updated {{ brief_meta.updated_at_utc or "-" }} |
+      <a href="{{ brief_meta.download_url }}">Open raw markdown</a>
+    </div>
+    <pre>{{ markdown_content }}</pre>
+  </div>
+</body>
+</html>

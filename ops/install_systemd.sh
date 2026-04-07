@@ -18,9 +18,10 @@ install -m 755 "$REPO_ROOT/ops/run_xauex.sh" /usr/local/bin/mirofish-run-xauex
 install -m 755 "$REPO_ROOT/ops/run_bridge.sh" /usr/local/bin/mirofish-run-bridge
 install -m 755 "$REPO_ROOT/ops/run_trade_journal.sh" /usr/local/bin/mirofish-run-trade-journal
 install -m 755 "$REPO_ROOT/ops/run_weekly_review.sh" /usr/local/bin/mirofish-run-weekly-review
+install -m 755 "$REPO_ROOT/ops/run_oracle_dashboard.sh" /usr/local/bin/mirofish-run-oracle-dashboard
 install -m 755 "$REPO_ROOT/ops/enforce_log_budget.sh" /usr/local/bin/mirofish-enforce-log-budget
 
-for unit in mirofish-backend.service xauex.service mirofish-bridge.service mirofish-bridge.timer xauex-start.timer xauex-stop.service xauex-stop.timer xauex-trade-journal.service xauex-trade-journal.timer xauex-weekly-review.service xauex-weekly-review.timer; do
+for unit in mirofish-backend.service xauex.service mirofish-bridge.service mirofish-bridge.timer xauex-start.timer xauex-stop.service xauex-stop.timer xauex-trade-journal.service xauex-trade-journal.timer xauex-weekly-review.service xauex-weekly-review.timer oracle-dashboard.service; do
   sed \
     -e "s|__REPO_ROOT__|$REPO_ROOT|g" \
     -e "s|__RUN_USER__|$RUN_USER|g" \
@@ -41,8 +42,9 @@ systemctl disable --now mirofish-run.service >/dev/null 2>&1 || true
 systemctl daemon-reload
 systemctl restart systemd-journald
 systemctl disable xauex.service >/dev/null 2>&1 || true
-systemctl enable mirofish-backend.service mirofish-bridge.timer xauex-start.timer xauex-stop.timer xauex-trade-journal.timer xauex-weekly-review.timer
+systemctl enable mirofish-backend.service mirofish-bridge.timer xauex-start.timer xauex-stop.timer xauex-trade-journal.timer xauex-weekly-review.timer oracle-dashboard.service
 systemctl restart mirofish-backend.service
+systemctl restart oracle-dashboard.service
 systemctl stop xauex.service >/dev/null 2>&1 || true
 systemctl restart mirofish-bridge.timer
 systemctl restart xauex-start.timer
@@ -58,4 +60,5 @@ echo "Installed services from $REPO_ROOT"
 echo "  backend: systemctl status mirofish-backend.service"
 echo "  xauex:   systemctl status xauex.service"
 echo "  bridge:  systemctl status mirofish-bridge.timer"
+echo "  dashboard: systemctl status oracle-dashboard.service"
 echo "  xauex timers: systemctl status xauex-start.timer xauex-stop.timer xauex-trade-journal.timer xauex-weekly-review.timer"

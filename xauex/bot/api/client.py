@@ -482,19 +482,29 @@ class ApiClient:
         res = await self._send_and_wait(req, timeout=15)
 
         contract_size = self._symbol_spec.lot_size
+        pnl_map = await self._get_position_unrealized_pnl_map()
+        live_bid, live_ask = self.get_current_quote()
 
         positions: list[Position] = []
         for p in res.position:
             direction = "LONG" if p.tradeData.tradeSide == _SIDE_BUY else "SHORT"
             vol_lots  = _lots_from_proto(p.tradeData.volume, contract_size)
+            if direction == "LONG":
+                current_price = live_bid if live_bid is not None else p.price
+            else:
+                current_price = live_ask if live_ask is not None else p.price
+            unrealised_pnl = pnl_map.get(str(p.positionId))
+            if unrealised_pnl is None:
+                price_delta = current_price - p.price if direction == "LONG" else p.price - current_price
+                unrealised_pnl = round(price_delta * vol_lots * contract_size, 2)
             positions.append(Position(
                 position_id=str(p.positionId),
                 symbol=self._symbol_spec.symbol,
                 direction=direction,
                 volume=vol_lots,
                 entry_price=p.price,
-                current_price=p.price,
-                unrealised_pnl=0.0,
+                current_price=current_price,
+                unrealised_pnl=unrealised_pnl,
                 open_time=_ts_to_utc(p.tradeData.openTimestamp),
                 stop_loss=p.stopLoss  if p.HasField('stopLoss')  else 0.0,
                 take_profit=p.takeProfit if p.HasField('takeProfit') else 0.0,
@@ -514,6 +524,27 @@ class ApiClient:
         logger.info("[API] Reconcile: %d positions, %d pending orders",
                     len(positions), len(pending_orders))
         return positions, pending_orders
+
+    async def _get_position_unrealized_pnl_map(self) -> dict[str, float]:
+        """Return per-position unrealised PnL in account currency when the broker provides it."""
+        from ctrader_open_api.messages.OpenApiMessages_pb2 import (
+            ProtoOAGetPositionUnrealizedPnLReq,
+        )
+
+        req = ProtoOAGetPositionUnrealizedPnLReq()
+        req.ctidTraderAccountId = int(self.config.ctrader_account_id)
+        try:
+            res = await self._send_and_wait(req, timeout=10)
+        except Exception as exc:
+            logger.debug("[API] Unrealized PnL request failed: %s", exc)
+            return {}
+
+        money_digits = getattr(res, "moneyDigits", 2) or 2
+        scale = 10 ** money_digits
+        pnl_map: dict[str, float] = {}
+        for item in getattr(res, "positionUnrealizedPnL", []):
+            pnl_map[str(item.positionId)] = item.grossUnrealizedPnL / scale
+        return pnl_map
 
     async def get_open_positions(self) -> list[Position]:
         """Convenience wrapper — returns only the open positions from reconcile."""

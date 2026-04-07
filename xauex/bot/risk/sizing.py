@@ -79,3 +79,27 @@ def calculate_lot_size(
         return None
 
     return round(lot_size, 5)
+
+
+def calculate_mirofish_lot_size_from_cash_risk(
+    *,
+    cash_risk: float,
+    stop_distance: float,
+    lot_size: float,
+    volume_step: float,
+    volume_min: float,
+    volume_max: float,
+    max_lot_size: float,
+) -> Optional[float]:
+    """Calculate a broker-rounded lot size from a fixed cash risk and stop distance."""
+    if cash_risk <= 0 or stop_distance <= 0 or lot_size <= 0 or volume_step <= 0:
+        return None
+
+    raw_lot = cash_risk / (stop_distance * lot_size)
+    sized = math.floor(raw_lot / volume_step) * volume_step
+    sized = min(sized, volume_max, max_lot_size)
+
+    if sized < volume_min:
+        return None
+
+    return round(sized, 5)

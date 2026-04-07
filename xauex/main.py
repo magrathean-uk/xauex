@@ -20,6 +20,7 @@ import signal
 import sys
 from collections import deque
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional, List, Dict, Tuple
 from zoneinfo import ZoneInfo
 
@@ -32,7 +33,7 @@ from bot.filters.trade_policy import TradePolicy, TradePolicyLoader
 from bot.filters.session import SessionFilter
 from bot.filters.news import NewsFilter
 from bot.filters.trend import TrendFilter
-from bot.risk.sizing import calculate_lot_size
+from bot.risk.sizing import calculate_lot_size, calculate_mirofish_lot_size_from_cash_risk
 from bot.risk.gates import RiskGates, RiskState
 from bot.execution.executor import Executor, TrackedPosition
 from bot.strategies.ema_pullback_h1 import EMAPullbackH1Strategy
@@ -48,6 +49,219 @@ _EXECUTION_BAR_LOOKBACK = 500
 _DAILY_BAR_LOOKBACK = 120
 _SCALP_BAR_LOOKBACK = 2500
 _EMA_PULLBACK_BAR_LOOKBACK = 260
+
+
+def build_mirofish_initial_stop_distance(
+    *,
+    signal_stop: float,
+    atr_stop: float,
+    structure_stop: float,
+    min_stop: float,
+    max_stop: float,
+) -> float:
+    """Use the widest tradeable stop input and bound it into the configured range."""
+    widest = max(float(signal_stop), float(atr_stop), float(structure_stop))
+    bounded = max(float(min_stop), min(widest, float(max_stop)))
+    return round(bounded, 2)
+
+
+def advance_mirofish_session_phase(
+    state: Dict[str, object],
+    *,
+    current_price: float,
+    protect_r: float,
+    trail_r: float,
+) -> Dict[str, object]:
+    """Advance a persisted Oracle session phase based on price progress in R."""
+    next_state = dict(state)
+    phase = str(next_state.get("phase", "OBSERVE")).upper()
+    direction = str(next_state.get("direction", "LONG")).upper()
+    entry_price = float(next_state.get("entry_price", 0.0) or 0.0)
+    initial_risk_distance = float(next_state.get("initial_risk_distance", 0.0) or 0.0)
+    if initial_risk_distance <= 0:
+        return next_state
+
+    if direction == "SHORT":
+        progress = entry_price - float(current_price)
+    else:
+        progress = float(current_price) - entry_price
+
+    progress_r = progress / initial_risk_distance
+    next_state["progress_r"] = round(progress_r, 4)
+
+    if phase == "OBSERVE" and progress_r >= protect_r:
+        next_state["phase"] = "PROTECT"
+    if str(next_state.get("phase", phase)).upper() == "PROTECT" and progress_r >= trail_r:
+        next_state["phase"] = "TRAIL"
+    return next_state
+
+
+def should_manage_with_oracle_session_manager(position_payload: Dict[str, object]) -> bool:
+    """Only Oracle-owned positions should be managed by the Oracle session manager."""
+    return str(position_payload.get("owner", "") or "").lower() == "oracle"
+
+
+def count_oracle_open_positions(positions: List[Dict[str, object]]) -> int:
+    """Count only Oracle-owned positions."""
+    return sum(1 for position in positions if should_manage_with_oracle_session_manager(position))
+
+
+def _position_owner(position: object) -> str:
+    if isinstance(position, dict):
+        return str(position.get("owner", "strategy") or "strategy").lower()
+    return str(getattr(position, "owner", "strategy") or "strategy").lower()
+
+
+def count_tradeable_open_positions(positions: List[object]) -> int:
+    """Count open positions that should affect Oracle/strategy max-open-trade limits."""
+    return sum(1 for position in positions if _position_owner(position) != "manual")
+
+
+def manual_trade_global_block_reason(*, observe_only: bool, kill_switch_active: bool, auth_failure: bool) -> Optional[str]:
+    """Manual trades remain independent from Oracle logic, but not from explicit global safety halts."""
+    if observe_only:
+        return "OBSERVE_ONLY"
+    if kill_switch_active:
+        return "KILL_SWITCH"
+    if auth_failure:
+        return "AUTH_FAILURE"
+    return None
+
+
+def _normalise_direction_label(value: object) -> str:
+    text = str(value or "").upper()
+    if text in {"BUY", "LONG"}:
+        return "LONG"
+    if text in {"SELL", "SHORT"}:
+        return "SHORT"
+    return text
+
+
+def _float_close(left: object, right: object, tolerance: float = 0.05) -> bool:
+    try:
+        return abs(float(left) - float(right)) <= tolerance
+    except (TypeError, ValueError):
+        return False
+
+
+def match_recovered_position_metadata(
+    position: object,
+    *,
+    prior_positions: Dict[str, Dict[str, object]],
+    prior_pending_market_orders: Dict[str, Dict[str, object]],
+) -> Dict[str, object]:
+    """Recover owner/session metadata for broker positions after a restart."""
+    if isinstance(position, dict):
+        position_id = str(position.get("position_id", "") or "")
+        direction = _normalise_direction_label(position.get("direction"))
+        volume = position.get("volume")
+        stop_loss = position.get("stop_loss")
+        take_profit = position.get("take_profit")
+    else:
+        position_id = str(getattr(position, "position_id", "") or "")
+        direction = _normalise_direction_label(getattr(position, "direction", ""))
+        volume = getattr(position, "volume", None)
+        stop_loss = getattr(position, "stop_loss", None)
+        take_profit = getattr(position, "take_profit", None)
+
+    if position_id and position_id in prior_positions:
+        prior = prior_positions[position_id]
+        return {
+            "owner": prior.get("owner", "strategy"),
+            "metadata": dict(prior.get("metadata") or {}),
+        }
+
+    candidates: List[Dict[str, object]] = []
+    for payload in prior_pending_market_orders.values():
+        if _normalise_direction_label(payload.get("direction")) != direction:
+            continue
+        if not _float_close(payload.get("lot_size"), volume, tolerance=0.0001):
+            continue
+        if not _float_close(payload.get("stop_loss"), stop_loss):
+            continue
+        if not _float_close(payload.get("take_profit"), take_profit):
+            continue
+        candidates.append(payload)
+
+    if not candidates:
+        return {"owner": "strategy", "metadata": {}}
+
+    candidates.sort(key=lambda item: str(item.get("created_at", "") or ""), reverse=True)
+    winner = candidates[0]
+    return {
+        "owner": winner.get("owner", "strategy"),
+        "metadata": dict(winner.get("metadata") or {}),
+    }
+
+
+def load_manual_trade_command(path: Path) -> Optional[Dict[str, object]]:
+    """Load and atomically consume a dashboard-issued manual trade command."""
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, json.JSONDecodeError):
+        return None
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        logger.warning("[MANUAL] Failed to remove consumed manual command file: %s", path)
+    return payload if isinstance(payload, dict) else None
+
+
+def validate_manual_trade_command(payload: Dict[str, object]) -> Tuple[bool, str]:
+    """Validate a manual trade command payload before it reaches broker execution."""
+    command = str(payload.get("command", "open") or "open").lower()
+    if command == "close":
+        position_id = str(payload.get("position_id", "") or "").strip()
+        if not position_id:
+            return False, "position_id is required for close commands"
+        return True, ""
+
+    if command != "open":
+        return False, "command must be open or close"
+
+    action = str(payload.get("action", "") or "").upper()
+    if action not in {"BUY", "SELL"}:
+        return False, "action must be BUY or SELL"
+
+    try:
+        lot_size = float(payload.get("lot_size", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return False, "lot_size must be numeric"
+    if lot_size <= 0:
+        return False, "lot_size must be positive"
+
+    try:
+        stop_loss = float(payload.get("stop_loss", 0.0) or 0.0)
+        take_profit = float(payload.get("take_profit", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return False, "stop_loss and take_profit must be numeric"
+    if stop_loss <= 0 or take_profit <= 0:
+        return False, "stop_loss and take_profit are required"
+    return True, ""
+
+
+def validate_manual_trade_prices(payload: Dict[str, object], *, current_price: float) -> Tuple[bool, str]:
+    """Validate that manual absolute-price SL/TP are on the correct side of market."""
+    action = str(payload.get("action", "") or "").upper()
+    stop_loss = float(payload.get("stop_loss", 0.0) or 0.0)
+    take_profit = float(payload.get("take_profit", 0.0) or 0.0)
+    if action == "BUY":
+        if stop_loss >= current_price:
+            return False, "BUY stop_loss must be below current price"
+        if take_profit <= current_price:
+            return False, "BUY take_profit must be above current price"
+        return True, ""
+    if action == "SELL":
+        if stop_loss <= current_price:
+            return False, "SELL stop_loss must be above current price"
+        if take_profit >= current_price:
+            return False, "SELL take_profit must be below current price"
+        return True, ""
+    return False, "action must be BUY or SELL"
 
 
 class BotOrchestrator:
@@ -102,6 +316,7 @@ class BotOrchestrator:
         self.kill_switch_active = False
         self._last_mirofish_signal_id: Optional[str] = None
         self._mirofish_close_requested: set[str] = set()
+        self._manual_trade_status: Dict[str, object] = {}
         self.last_tick_time = time.monotonic()
 
         self._recent_h1_closes: deque = deque(maxlen=20)
@@ -214,11 +429,23 @@ class BotOrchestrator:
 
         # Step 11: Restore open positions from API
         try:
-            open_positions = await self.api_client.get_open_positions()
+            restored_position_meta = self._load_prior_position_metadata()
+            prior_pending_market_orders = self._load_prior_pending_market_orders()
+            open_positions, pending_orders = await self.api_client.reconcile()
+            self.executor.restore_pending_market_orders(prior_pending_market_orders, pending_orders)
             for pos in open_positions:
-                self.executor.position_manager.add_position(pos)
-                logger.info("[STARTUP] Restored position %s %s", pos.position_id, pos.direction)
-            self.risk_gates.set_open_position_count(self.executor.position_manager.count())
+                prior = match_recovered_position_metadata(
+                    pos,
+                    prior_positions=restored_position_meta,
+                    prior_pending_market_orders=prior_pending_market_orders,
+                )
+                owner = str(prior.get("owner", "strategy") or "strategy")
+                metadata = dict(prior.get("metadata") or {})
+                self.executor.position_manager.add_position(pos, owner=owner, metadata=metadata)
+                logger.info("[STARTUP] Restored position %s %s owner=%s", pos.position_id, pos.direction, owner)
+            self.risk_gates.set_open_position_count(
+                count_tradeable_open_positions(self.executor.position_manager.get_open_positions())
+            )
         except Exception as exc:
             logger.critical("[STARTUP] Failed to restore positions: %s", exc)
             sys.exit(1)
@@ -241,6 +468,7 @@ class BotOrchestrator:
             asyncio.create_task(self._poll_mirofish_signal())
             asyncio.create_task(self._monitor_mirofish_positions())
             logger.info("[STARTUP] MiroFish mode: internal strategies DISABLED, polling for signals.")
+        asyncio.create_task(self._poll_manual_trade_commands())
 
         self.watchdog = Watchdog(self)
         asyncio.create_task(self.watchdog.run())
@@ -846,7 +1074,9 @@ class BotOrchestrator:
 
     async def _finalize_candle(self) -> None:
         """Called at end of every execution-timeframe close cycle."""
-        self.risk_gates.set_open_position_count(self.executor.position_manager.count())
+        self.risk_gates.set_open_position_count(
+            count_tradeable_open_positions(self.executor.position_manager.get_open_positions())
+        )
         await self.executor.check_pending_inside_bar_orders(self._candle_index)
         await self.write_state()
 
@@ -1387,6 +1617,22 @@ class BotOrchestrator:
         self._reset_mirofish_trade_count_if_new_london_day(now_utc)
         self.risk_state.mirofish_trades_taken_london += 1
 
+    def _append_trade_entry_on_chart(self, entry_id: str, direction: str, price: float, owner: str) -> None:
+        if len(self._recent_h1_closes) <= 0:
+            return
+        for item in self._trade_entries_on_chart:
+            if str(item.get("id", "")) == str(entry_id):
+                return
+        self._trade_entries_on_chart.append(
+            {
+                "id": str(entry_id),
+                "bar_index": len(self._recent_h1_closes) - 1,
+                "direction": direction,
+                "price": round(price, 2),
+                "owner": owner,
+            }
+        )
+
     def _mirofish_entry_window_gate(self, now_utc: datetime) -> Optional[str]:
         london = now_utc.astimezone(self._mirofish_timezone())
         if london.weekday() >= 5:
@@ -1435,6 +1681,127 @@ class BotOrchestrator:
         scaled = min(scaled, float(self.symbol_spec.volume_max))
         scaled = min(scaled, float(getattr(self.config, "max_lot_size", scaled)))
         return round(scaled, 5)
+
+    def _mirofish_confidence_bucket(self, confidence: float) -> str:
+        if confidence >= self.config.mirofish_confidence_full_threshold:
+            return "high"
+        if confidence >= self.config.mirofish_confidence_medium_threshold:
+            return "medium"
+        return "low"
+
+    def _mirofish_cash_risk_budget(self) -> float:
+        balance = float(self.account.get("balance", 0.0) or 0.0)
+        percent_cap = balance * (self.config.mirofish_risk_cap_percent / 100.0)
+        return round(min(self.config.mirofish_cash_stop_loss_gbp, percent_cap), 2)
+
+    def _mirofish_recent_atr_distance(self) -> float:
+        closes = [float(value) for value in self._recent_h1_closes if value is not None]
+        if len(closes) < 2:
+            return float(self.config.sl_min_dollars)
+        ranges = [abs(curr - prev) for prev, curr in zip(closes[:-1], closes[1:])]
+        if not ranges:
+            return float(self.config.sl_min_dollars)
+        avg_range = sum(ranges) / len(ranges)
+        return max(
+            float(self.config.sl_min_dollars),
+            round(avg_range * self.config.mirofish_session_atr_multiplier, 2),
+        )
+
+    def _mirofish_structure_stop_distance(self, direction: int, current_price: float) -> float:
+        daily_levels = (self.level_manager._raw or {}).get("daily") if self.level_manager else None
+        closes = [float(value) for value in self._recent_h1_closes if value is not None]
+        buffer_usd = float(self.config.mirofish_session_structure_buffer_usd)
+        if direction > 0:
+            floor = None
+            if isinstance(daily_levels, dict):
+                floor = daily_levels.get("low")
+            if floor is None and closes:
+                floor = min(closes)
+            if floor is None:
+                return float(self.config.sl_min_dollars)
+            return max(float(self.config.sl_min_dollars), round(current_price - float(floor) + buffer_usd, 2))
+        ceiling = None
+        if isinstance(daily_levels, dict):
+            ceiling = daily_levels.get("high")
+        if ceiling is None and closes:
+            ceiling = max(closes)
+        if ceiling is None:
+            return float(self.config.sl_min_dollars)
+        return max(float(self.config.sl_min_dollars), round(float(ceiling) - current_price + buffer_usd, 2))
+
+    def _mirofish_session_thresholds(self, confidence: float) -> tuple[str, float, float]:
+        bucket = self._mirofish_confidence_bucket(confidence)
+        if bucket == "low":
+            protect_r = float(self.config.mirofish_session_low_confidence_protect_r)
+            trail_r = max(protect_r + 0.3, float(self.config.mirofish_session_trail_r) - 0.15)
+        elif bucket == "high":
+            protect_r = float(self.config.mirofish_session_high_confidence_protect_r)
+            trail_r = float(self.config.mirofish_session_trail_r) + 0.15
+        else:
+            protect_r = float(self.config.mirofish_session_protect_r)
+            trail_r = float(self.config.mirofish_session_trail_r)
+        return bucket, round(protect_r, 2), round(max(trail_r, protect_r + 0.2), 2)
+
+    def _mirofish_protect_stop_price(self, *, direction: str, entry_price: float) -> float:
+        buffer_usd = max(float(self.config.mirofish_session_protect_buffer_usd), self._safe_current_spread() * 1.5)
+        if direction == "SHORT":
+            return round(entry_price - buffer_usd, 2)
+        return round(entry_price + buffer_usd, 2)
+
+    def _mirofish_trailing_stop_price(
+        self,
+        *,
+        direction: str,
+        current_price: float,
+        confidence_bucket: str,
+    ) -> float:
+        closes = [float(value) for value in self._recent_h1_closes if value is not None]
+        if not closes:
+            closes = [current_price]
+        atr_distance = self._mirofish_recent_atr_distance()
+        if confidence_bucket == "low":
+            atr_distance *= 0.9
+        elif confidence_bucket == "high":
+            atr_distance *= 1.1
+        buffer_usd = float(self.config.mirofish_session_structure_buffer_usd)
+        window = closes[-5:] or closes
+        if direction == "SHORT":
+            structure = max(window) + buffer_usd
+            atr_based = current_price + atr_distance
+            return round(min(structure, atr_based), 2)
+        structure = min(window) - buffer_usd
+        atr_based = current_price - atr_distance
+        return round(max(structure, atr_based), 2)
+
+    def _load_prior_position_metadata(self) -> Dict[str, Dict[str, object]]:
+        try:
+            with open(self.config.state_file_path, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except Exception:
+            return {}
+        positions = payload.get("open_positions", []) if isinstance(payload, dict) else []
+        result: Dict[str, Dict[str, object]] = {}
+        for item in positions:
+            if not isinstance(item, dict):
+                continue
+            position_id = str(item.get("position_id", "") or "")
+            if not position_id:
+                continue
+            result[position_id] = {
+                "owner": item.get("owner", "strategy"),
+                "metadata": item.get("metadata", {}) or {},
+            }
+        return result
+
+    def _load_prior_pending_market_orders(self) -> Dict[str, Dict[str, object]]:
+        try:
+            with open(self.config.state_file_path, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except Exception:
+            return {}
+        runtime = payload.get("runtime", {}) if isinstance(payload, dict) else {}
+        pending = runtime.get("pending_market_orders", {}) if isinstance(runtime, dict) else {}
+        return dict(pending) if isinstance(pending, dict) else {}
 
     # ──────────────────────────────────────────────────────────────
     # Shutdown
@@ -1516,6 +1883,11 @@ class BotOrchestrator:
                 "shadow_strategy_trades_today": (
                     self._strategy_trade_counts.get(self.shadow_strategy_mode, 0)
                     if self.shadow_strategy_mode else 0
+                ),
+                "manual_trade_status": self._manual_trade_status,
+                "pending_market_orders": (
+                    self.executor.serialize_pending_market_orders()
+                    if self.executor else {}
                 ),
                 "mirofish_trade_date_london": self.risk_state.mirofish_trade_date_london,
                 "mirofish_trades_taken_london": self.risk_state.mirofish_trades_taken_london,
@@ -1663,34 +2035,52 @@ class BotOrchestrator:
                 continue
 
             try:
-                sl_distance = float(sig.get("stop_loss_usd", sig.get("stop_loss_distance", 12.0)))
-                tp_distance = float(sig.get("take_profit_usd", sig.get("take_profit_distance", 24.0)))
+                signal_stop_distance = float(sig.get("stop_loss_usd", sig.get("stop_loss_distance", 12.0)))
+                signal_tp_distance = float(sig.get("take_profit_usd", sig.get("take_profit_distance", 24.0)))
             except (TypeError, ValueError):
                 logger.warning("[MIROFISH] Invalid stop or take-profit values in signal - skipping")
                 self._last_mirofish_signal_id = signal_id
                 continue
 
-            if sl_distance <= 0 or tp_distance <= 0:
+            if signal_stop_distance <= 0 or signal_tp_distance <= 0:
                 logger.info("[MIROFISH] Non-positive stop or take-profit distance - skipping")
                 self._last_mirofish_signal_id = signal_id
                 continue
 
+            atr_stop_distance = self._mirofish_recent_atr_distance()
+            current_price = ask if direction == 1 else bid
+            structure_stop_distance = self._mirofish_structure_stop_distance(direction, current_price)
+            max_stop_distance = max(signal_stop_distance * 2.0, float(self.config.sl_max_dollars), 25.0)
+            sl_distance = build_mirofish_initial_stop_distance(
+                signal_stop=signal_stop_distance,
+                atr_stop=atr_stop_distance,
+                structure_stop=structure_stop_distance,
+                min_stop=float(self.config.sl_min_dollars),
+                max_stop=max_stop_distance,
+            )
+            tp_distance = max(float(signal_tp_distance), round(sl_distance * 1.5, 2))
+
             if direction == 1:
-                current_price = ask
                 stop_loss_price = current_price - sl_distance
                 take_profit_price = current_price + tp_distance
             else:
-                current_price = bid
                 stop_loss_price = current_price + sl_distance
                 take_profit_price = current_price - tp_distance
 
-            lot = calculate_lot_size(
-                account_balance=self.account.get("balance", 0.0),
-                entry_price=current_price,
-                stop_loss_price=stop_loss_price,
-                symbol_spec=self.symbol_spec,
-                current_spread_usd=self._safe_current_spread(),
-                config=self.config,
+            cash_risk_budget = self._mirofish_cash_risk_budget()
+            if cash_risk_budget <= 0:
+                logger.info("[MIROFISH] Cash risk budget is non-positive - skipping")
+                self._last_mirofish_signal_id = signal_id
+                continue
+
+            lot = calculate_mirofish_lot_size_from_cash_risk(
+                cash_risk=cash_risk_budget,
+                stop_distance=sl_distance,
+                lot_size=float(self.symbol_spec.lot_size),
+                volume_step=float(self.symbol_spec.volume_step),
+                volume_min=float(self.symbol_spec.volume_min),
+                volume_max=float(self.symbol_spec.volume_max),
+                max_lot_size=float(getattr(self.config, "max_lot_size", self.symbol_spec.volume_max)),
             )
             if lot is None:
                 logger.info("[MIROFISH] Lot size calculation returned None - skipping")
@@ -1708,8 +2098,23 @@ class BotOrchestrator:
 
             reasoning = sig.get("reasoning", "MiroFish signal")
             dir_label = "LONG" if direction == 1 else "SHORT"
+            confidence_bucket, protect_r, trail_r = self._mirofish_session_thresholds(confidence)
+            session_metadata = {
+                "session": {
+                    "phase": "OBSERVE",
+                    "direction": dir_label,
+                    "entry_price": round(current_price, 2),
+                    "initial_risk_distance": round(sl_distance, 2),
+                    "confidence": round(confidence, 2),
+                    "confidence_bucket": confidence_bucket,
+                    "protect_r": protect_r,
+                    "trail_r": trail_r,
+                    "created_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "signal_id": signal_id,
+                }
+            }
             logger.info(
-                "[MIROFISH] Executing %s %s | Lot:%.2f base_lot:%.2f multiplier:%.2f SL:%.2f TP:%.2f | Confidence:%.2f | %s",
+                "[MIROFISH] Executing %s %s | Lot:%.2f base_lot:%.2f multiplier:%.2f SL:%.2f TP:%.2f signal_sl:%.2f atr_sl:%.2f structure_sl:%.2f cash_risk:%.2f | Confidence:%.2f | %s",
                 signal_symbol or live_symbol or "XAUUSD",
                 dir_label,
                 scaled_lot,
@@ -1717,6 +2122,10 @@ class BotOrchestrator:
                 self._mirofish_lot_multiplier(confidence),
                 stop_loss_price,
                 take_profit_price,
+                signal_stop_distance,
+                atr_stop_distance,
+                structure_stop_distance,
+                cash_risk_budget,
                 confidence,
                 reasoning,
             )
@@ -1728,11 +2137,15 @@ class BotOrchestrator:
                 take_profit_price=take_profit_price,
                 pattern=PatternType.NONE,
                 level=current_price,
+                owner="oracle",
+                metadata=session_metadata,
             )
 
             if pos_id:
                 logger.info("[MIROFISH] Order placed: position_id=%s", pos_id)
                 self._record_mirofish_trade(now_utc)
+                if not str(pos_id).startswith("order:"):
+                    self._append_trade_entry_on_chart(str(pos_id), dir_label, current_price, "oracle")
             else:
                 if self.config.observe_only:
                     logger.info("[MIROFISH] OBSERVE_ONLY - order logged but not placed")
@@ -1757,7 +2170,7 @@ class BotOrchestrator:
 
             open_ids = {position.position_id for position in positions}
             self._mirofish_close_requested.intersection_update(open_ids)
-            self.risk_gates.set_open_position_count(len(positions))
+            self.risk_gates.set_open_position_count(count_tradeable_open_positions(positions))
 
             if not positions:
                 continue
@@ -1768,6 +2181,53 @@ class BotOrchestrator:
             for position in positions:
                 if position.position_id in self._mirofish_close_requested:
                     continue
+
+                tracked = self.executor.position_manager.get_position(position.position_id)
+                if tracked is not None:
+                    tracked.unrealised_pnl = position.unrealised_pnl
+                if tracked is None or tracked.owner != "oracle":
+                    continue
+
+                session = tracked.metadata.setdefault("session", {})
+                session.setdefault("phase", "OBSERVE")
+                session.setdefault("direction", tracked.direction)
+                session.setdefault("entry_price", tracked.entry_price)
+                session.setdefault("initial_risk_distance", abs(tracked.entry_price - tracked.stop_loss))
+                session.setdefault("confidence_bucket", "medium")
+                session.setdefault("protect_r", float(self.config.mirofish_session_protect_r))
+                session.setdefault("trail_r", float(self.config.mirofish_session_trail_r))
+
+                updated_session = advance_mirofish_session_phase(
+                    session,
+                    current_price=position.current_price,
+                    protect_r=float(session.get("protect_r", self.config.mirofish_session_protect_r)),
+                    trail_r=float(session.get("trail_r", self.config.mirofish_session_trail_r)),
+                )
+                tracked.metadata["session"] = updated_session
+
+                new_stop_loss: Optional[float] = None
+                previous_phase = str(session.get("phase", "OBSERVE")).upper()
+                current_phase = str(updated_session.get("phase", previous_phase)).upper()
+                if current_phase == "PROTECT" and previous_phase == "OBSERVE":
+                    new_stop_loss = self._mirofish_protect_stop_price(
+                        direction=tracked.direction,
+                        entry_price=tracked.entry_price,
+                    )
+                elif current_phase == "TRAIL":
+                    new_stop_loss = self._mirofish_trailing_stop_price(
+                        direction=tracked.direction,
+                        current_price=position.current_price,
+                        confidence_bucket=str(updated_session.get("confidence_bucket", "medium")),
+                    )
+
+                if new_stop_loss is not None and self.executor.validate_sl_modification(tracked, new_stop_loss):
+                    amended = await self.api_client.amend_position_sltp(
+                        position_id=position.position_id,
+                        stop_loss=new_stop_loss,
+                        take_profit=tracked.take_profit,
+                    )
+                    if amended:
+                        tracked.stop_loss = new_stop_loss
 
                 close_reason: Optional[str] = None
                 if force_flat_due:
@@ -1798,6 +2258,111 @@ class BotOrchestrator:
                 )
                 if closed:
                     self._mirofish_close_requested.add(position.position_id)
+
+    async def _poll_manual_trade_commands(self) -> None:
+        """Poll the separate manual trade command file and execute manual-only actions."""
+        command_path = Path(self.config.mirofish_manual_command_path)
+        while self.running:
+            await asyncio.sleep(2)
+            if self.api_client is None or self.executor is None:
+                continue
+            payload = load_manual_trade_command(command_path)
+            if payload is None:
+                continue
+
+            valid, reason = validate_manual_trade_command(payload)
+            if not valid:
+                self._manual_trade_status = {
+                    "ok": False,
+                    "reason": reason,
+                    "updated_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                }
+                logger.warning("[MANUAL] Rejected command: %s", reason)
+                await self.write_state()
+                continue
+
+            command = str(payload.get("command", "open") or "open").lower()
+            if command == "close":
+                position_id = str(payload.get("position_id", "") or "")
+                tracked = self.executor.position_manager.get_position(position_id)
+                if tracked is None or tracked.owner != "manual":
+                    self._manual_trade_status = {
+                        "ok": False,
+                        "reason": f"manual position {position_id} not found",
+                        "updated_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    }
+                    logger.warning("[MANUAL] Manual close rejected for position %s", position_id)
+                    await self.write_state()
+                    continue
+                closed = await self.api_client.close_position(position_id=position_id, volume_lots=tracked.lot_size)
+                self._manual_trade_status = {
+                    "ok": bool(closed),
+                    "command": "close",
+                    "position_id": position_id,
+                    "updated_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                }
+                await self.write_state()
+                continue
+
+            action = str(payload.get("action")).upper()
+            lot_size = float(payload.get("lot_size"))
+            stop_loss = float(payload.get("stop_loss"))
+            take_profit = float(payload.get("take_profit"))
+            block_reason = manual_trade_global_block_reason(
+                observe_only=bool(self.config.observe_only),
+                kill_switch_active=bool(self.kill_switch_active),
+                auth_failure=bool(self.executor.HALTED_AUTH_FAILURE),
+            )
+            if block_reason is not None:
+                self._manual_trade_status = {
+                    "ok": False,
+                    "reason": block_reason,
+                    "updated_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                }
+                logger.warning("[MANUAL] Rejected open command: %s", block_reason)
+                await self.write_state()
+                continue
+            bid, ask = self.api_client.get_current_quote()
+            current_price = ask if action == "BUY" else bid
+            if current_price is None:
+                self._manual_trade_status = {
+                    "ok": False,
+                    "reason": "price unavailable",
+                    "updated_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                }
+                await self.write_state()
+                continue
+            valid_prices, price_reason = validate_manual_trade_prices(payload, current_price=current_price)
+            if not valid_prices:
+                self._manual_trade_status = {
+                    "ok": False,
+                    "reason": price_reason,
+                    "updated_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                }
+                logger.warning("[MANUAL] Rejected open command: %s", price_reason)
+                await self.write_state()
+                continue
+
+            pos_id = await self.executor.place_market_order(
+                direction=1 if action == "BUY" else -1,
+                lot_size=lot_size,
+                stop_loss_price=stop_loss,
+                take_profit_price=take_profit,
+                pattern=PatternType.NONE,
+                level=current_price,
+                owner="manual",
+                metadata={"manual_command": dict(payload)},
+            )
+            if pos_id and not str(pos_id).startswith("order:"):
+                self._append_trade_entry_on_chart(str(pos_id), "LONG" if action == "BUY" else "SHORT", current_price, "manual")
+            self._manual_trade_status = {
+                "ok": bool(pos_id),
+                "command": "open",
+                "action": action,
+                "position_id": pos_id,
+                "updated_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            }
+            await self.write_state()
 
     async def _poll_account_snapshot(self) -> None:
         """Refresh account balance/equity periodically so the dashboard stays live."""
@@ -1872,8 +2437,11 @@ class BotOrchestrator:
                         ),
                         pattern=(pending_market or {}).get("pattern", PatternType.NONE),
                         level=(pending_market or {}).get("level", position.price),
+                        owner=(pending_market or {}).get("owner", "strategy"),
+                        metadata=dict((pending_market or {}).get("metadata") or {}),
                     )
                     self.executor.position_manager.add(tracked)
+                    self._append_trade_entry_on_chart(position_id, tracked.direction, tracked.entry_price, tracked.owner)
                 else:
                     tracked.entry_price = position.price
                     if position.HasField("stopLoss"):
@@ -1887,6 +2455,8 @@ class BotOrchestrator:
                     if pending_market is not None:
                         tracked.pattern = pending_market.get("pattern", tracked.pattern)
                         tracked.level = pending_market.get("level", tracked.level)
+                        tracked.owner = pending_market.get("owner", tracked.owner)
+                        tracked.metadata.update(dict(pending_market.get("metadata") or {}))
 
                 if order_id is not None:
                     await self.executor.on_order_filled(
@@ -1901,7 +2471,9 @@ class BotOrchestrator:
             if should_refresh_account:
                 await self._refresh_account_snapshot()
 
-            self.risk_gates.set_open_position_count(self.executor.position_manager.count())
+            self.risk_gates.set_open_position_count(
+                count_tradeable_open_positions(self.executor.position_manager.get_open_positions())
+            )
             await self.write_state()
         except Exception as exc:
             logger.error("[EXECUTION EVENT] Failed to process broker event: %s", exc)

@@ -77,6 +77,14 @@
           <div class="signal-time" v-if="signal.generated_at_utc">
             Generated: {{ formatSignalTime(signal.generated_at_utc) }}
           </div>
+          <div class="signal-links" v-if="latestCompleted">
+            <button class="signal-link-btn" @click="openLatestReport" :disabled="!latestCompleted.report_id">
+              Open latest report
+            </button>
+            <button class="signal-link-btn" @click="openLatestSimulation" :disabled="!latestCompleted.simulation_id">
+              Open latest simulation
+            </button>
+          </div>
         </div>
       </section>
 
@@ -152,80 +160,55 @@
         <!-- 右栏：交互控制台 -->
         <div class="right-panel">
           <div class="console-box">
-            <!-- 上传区域 -->
             <div class="console-section">
               <div class="console-header">
-                <span class="console-label">{{ $t('home.realitySeed') }}</span>
-                <span class="console-meta">{{ $t('home.supportedFormats') }}</span>
+                <span class="console-label">Oracle Control Surface</span>
+                <span class="console-meta">Scheduled autonomous mode</span>
               </div>
-              
-              <div 
-                class="upload-zone"
-                :class="{ 'drag-over': isDragOver, 'has-files': files.length > 0 }"
-                @dragover.prevent="handleDragOver"
-                @dragleave.prevent="handleDragLeave"
-                @drop.prevent="handleDrop"
-                @click="triggerFileInput"
-              >
-                <input
-                  ref="fileInput"
-                  type="file"
-                  multiple
-                  accept=".pdf,.md,.txt"
-                  @change="handleFileSelect"
-                  style="display: none"
-                  :disabled="loading"
-                />
-                
-                <div v-if="files.length === 0" class="upload-placeholder">
-                  <div class="upload-icon">↑</div>
-                  <div class="upload-title">{{ $t('home.dragToUpload') }}</div>
-                  <div class="upload-hint">{{ $t('home.orBrowse') }}</div>
-                </div>
-                
-                <div v-else class="file-list">
-                  <div v-for="(file, index) in files" :key="index" class="file-item">
-                    <span class="file-icon">📄</span>
-                    <span class="file-name">{{ file.name }}</span>
-                    <button @click.stop="removeFile(index)" class="remove-btn">×</button>
+
+              <div class="ops-panel">
+                <div class="ops-summary">
+                  <div class="ops-title">Manual simulation launch is disabled on the homepage.</div>
+                  <div class="ops-text">
+                    The site is configured for scheduled oracle runs. Use the latest signal and saved run artifacts to review outcomes instead of creating ad hoc simulations here.
                   </div>
                 </div>
-              </div>
-            </div>
 
-            <!-- 分割线 -->
-            <div class="console-divider">
-              <span>{{ $t('home.inputParams') }}</span>
-            </div>
+                <div class="ops-grid">
+                  <div class="ops-card">
+                    <div class="ops-card-label">Latest completed run</div>
+                    <div class="ops-card-value">
+                      {{ latestCompleted ? formatSimulationLabel(latestCompleted.simulation_id) : 'No completed run yet' }}
+                    </div>
+                    <div class="ops-card-subtle" v-if="latestCompleted?.created_at">
+                      {{ formatSignalTime(latestCompleted.created_at) }}
+                    </div>
+                  </div>
 
-            <!-- 输入区域 -->
-            <div class="console-section">
-              <div class="console-header">
-                <span class="console-label">{{ $t('home.simulationPrompt') }}</span>
-              </div>
-              <div class="input-wrapper">
-                <textarea
-                  v-model="formData.simulationRequirement"
-                  class="code-input"
-                  :placeholder="$t('home.promptPlaceholder')"
-                  rows="6"
-                  :disabled="loading"
-                ></textarea>
-                <div class="model-badge">{{ $t('home.engineBadge') }}</div>
-              </div>
-            </div>
+                  <div class="ops-card">
+                    <div class="ops-card-label">Latest report</div>
+                    <div class="ops-card-value">
+                      {{ latestCompleted?.report_id || 'No report yet' }}
+                    </div>
+                    <div class="ops-card-subtle" v-if="latestCompleted?.status">
+                      {{ latestCompleted.status }}
+                    </div>
+                  </div>
+                </div>
 
-            <!-- 启动按钮 -->
-            <div class="console-section btn-section">
-              <button 
-                class="start-engine-btn"
-                @click="startSimulation"
-                :disabled="!canSubmit || loading"
-              >
-                <span v-if="!loading">{{ $t('home.startEngine') }}</span>
-                <span v-else>{{ $t('home.initializing') }}</span>
-                <span class="btn-arrow">→</span>
-              </button>
+                <div class="ops-actions">
+                  <button class="start-engine-btn" @click="openLatestReport" :disabled="!latestCompleted?.report_id">
+                    <span>Open latest report</span>
+                    <span class="btn-arrow">→</span>
+                  </button>
+                  <button class="secondary-action-btn" @click="openLatestSimulation" :disabled="!latestCompleted?.simulation_id">
+                    <span>Open latest simulation</span>
+                  </button>
+                  <button class="secondary-action-btn" @click="scrollToHistory">
+                    <span>Browse history</span>
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -238,7 +221,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import HistoryDatabase from '../components/HistoryDatabase.vue'
 import LanguageSwitcher from '../components/LanguageSwitcher.vue'
@@ -267,6 +250,14 @@ const formatSignalTime = (iso) => {
   } catch { return iso }
 }
 
+const formatSimulationLabel = (simulationId) => {
+  if (!simulationId) return 'SIM_UNKNOWN'
+  return `SIM_${simulationId.replace('sim_', '').slice(0, 6).toUpperCase()}`
+}
+
+const latestCompleted = ref(null)
+let signalInterval = null
+
 const fetchSignal = async () => {
   try {
     const res = await fetch('/api/report/signal')
@@ -278,78 +269,31 @@ const fetchSignal = async () => {
   } catch { /* backend not yet started */ }
 }
 
+const fetchLatestCompleted = async () => {
+  try {
+    const res = await fetch('/api/simulation/history?limit=20')
+    if (!res.ok) return
+    const payload = await res.json()
+    if (!payload.success || !Array.isArray(payload.data)) return
+    latestCompleted.value = payload.data.find((item) => item.report_id) || null
+  } catch { /* backend not yet started */ }
+}
+
 onMounted(() => {
   fetchSignal()
-  setInterval(fetchSignal, 60_000)  // refresh every minute
+  fetchLatestCompleted()
+  signalInterval = setInterval(() => {
+    fetchSignal()
+    fetchLatestCompleted()
+  }, 60_000)
 })
 
-
-// 表单数据
-const formData = ref({
-  simulationRequirement: ''
-})
-
-// 文件列表
-const files = ref([])
-
-// 状态
-const loading = ref(false)
-const error = ref('')
-const isDragOver = ref(false)
-
-// 文件输入引用
-const fileInput = ref(null)
-
-// 计算属性:是否可以提交
-const canSubmit = computed(() => {
-  return formData.value.simulationRequirement.trim() !== '' && files.value.length > 0
-})
-
-// 触发文件选择
-const triggerFileInput = () => {
-  if (!loading.value) {
-    fileInput.value?.click()
+onUnmounted(() => {
+  if (signalInterval) {
+    clearInterval(signalInterval)
+    signalInterval = null
   }
-}
-
-// 处理文件选择
-const handleFileSelect = (event) => {
-  const selectedFiles = Array.from(event.target.files)
-  addFiles(selectedFiles)
-}
-
-// 处理拖拽相关
-const handleDragOver = (e) => {
-  if (!loading.value) {
-    isDragOver.value = true
-  }
-}
-
-const handleDragLeave = (e) => {
-  isDragOver.value = false
-}
-
-const handleDrop = (e) => {
-  isDragOver.value = false
-  if (loading.value) return
-  
-  const droppedFiles = Array.from(e.dataTransfer.files)
-  addFiles(droppedFiles)
-}
-
-// 添加文件
-const addFiles = (newFiles) => {
-  const validFiles = newFiles.filter(file => {
-    const ext = file.name.split('.').pop().toLowerCase()
-    return ['pdf', 'md', 'txt'].includes(ext)
-  })
-  files.value.push(...validFiles)
-}
-
-// 移除文件
-const removeFile = (index) => {
-  files.value.splice(index, 1)
-}
+})
 
 // 滚动到底部
 const scrollToBottom = () => {
@@ -359,19 +303,28 @@ const scrollToBottom = () => {
   })
 }
 
-// 开始模拟 - 立即跳转，API调用在Process页面进行
-const startSimulation = () => {
-  if (!canSubmit.value || loading.value) return
-  
-  // 存储待上传的数据
-  import('../store/pendingUpload.js').then(({ setPendingUpload }) => {
-    setPendingUpload(files.value, formData.value.simulationRequirement)
-    
-    // 立即跳转到Process页面（使用特殊标识表示新建项目）
-    router.push({
-      name: 'Process',
-      params: { projectId: 'new' }
-    })
+const scrollToHistory = () => {
+  const historySection = document.querySelector('.history-database')
+  if (historySection) {
+    historySection.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    return
+  }
+  scrollToBottom()
+}
+
+const openLatestReport = () => {
+  if (!latestCompleted.value?.report_id) return
+  router.push({
+    name: 'Report',
+    params: { reportId: latestCompleted.value.report_id }
+  })
+}
+
+const openLatestSimulation = () => {
+  if (!latestCompleted.value?.simulation_id) return
+  router.push({
+    name: 'Simulation',
+    params: { simulationId: latestCompleted.value.simulation_id }
   })
 }
 </script>
@@ -1085,5 +1038,103 @@ html[lang="en"] .workflow-list {
   width: 100%;
   font-size: 0.75rem;
   color: #666;
+}
+.signal-links {
+  width: 100%;
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+.signal-link-btn,
+.secondary-action-btn {
+  border: 1px solid #d6d6d6;
+  background: #fff;
+  color: #111;
+  border-radius: 10px;
+  padding: 0.7rem 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.2s ease, transform 0.2s ease, background 0.2s ease;
+}
+.signal-link-btn:hover:not(:disabled),
+.secondary-action-btn:hover:not(:disabled) {
+  border-color: #111;
+  transform: translateY(-1px);
+}
+.signal-link-btn:disabled,
+.secondary-action-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.ops-panel {
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: linear-gradient(180deg, #fff, #fbfbfb);
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.ops-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ops-title {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: var(--black);
+}
+.ops-text {
+  color: var(--gray-text);
+  line-height: 1.6;
+  font-size: 0.95rem;
+}
+.ops-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+.ops-card {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 16px;
+  background: #fff;
+}
+.ops-card-label {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--gray-text);
+  margin-bottom: 8px;
+}
+.ops-card-value {
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--black);
+  line-height: 1.4;
+}
+.ops-card-subtle {
+  margin-top: 8px;
+  font-size: 0.85rem;
+  color: var(--gray-text);
+}
+.ops-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.ops-actions .start-engine-btn {
+  min-width: 220px;
+}
+@media (max-width: 900px) {
+  .ops-grid {
+    grid-template-columns: 1fr;
+  }
+  .signal-links,
+  .ops-actions {
+    flex-direction: column;
+  }
 }
 </style>

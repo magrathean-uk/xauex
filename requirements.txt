@@ -20,6 +20,7 @@ service_identity>=24.1.0
 httpx>=0.27,<1.0
 feedparser>=6.0,<7.0
 beautifulsoup4>=4.12,<5.0
+qdrant-client>=1.17,<2.0
 
 # === XAUEX Trading Bot ===
 ctrader-open-api

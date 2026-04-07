@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ report_title }}</title>
+  <style>
+    :root {
+      --bg: #0c1320;
+      --panel: #121c2d;
+      --panel-2: #17253a;
+      --text: #eef4ff;
+      --muted: #97a7c4;
+      --line: #263959;
+      --accent: #69b4ff;
+      --accent-2: #7ae2b8;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+      background: radial-gradient(circle at top, #13213a, var(--bg) 52%);
+      color: var(--text);
+    }
+    .wrap {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+    .hero {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      align-items: end;
+      margin-bottom: 18px;
+    }
+    .hero h1 {
+      margin: 0;
+      font-size: 30px;
+      letter-spacing: 0.02em;
+    }
+    .hero p, .meta {
+      margin: 8px 0 0;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+    .action-link {
+      display: inline-flex;
+      align-items: center;
+      padding: 10px 14px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: var(--panel);
+      color: var(--text);
+      text-decoration: none;
+      font-weight: 700;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(12, minmax(0, 1fr));
+      gap: 16px;
+    }
+    .card {
+      background: rgba(18, 28, 45, 0.96);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 18px;
+      box-shadow: 0 18px 40px rgba(0, 0, 0, 0.2);
+    }
+    .span-4 { grid-column: span 4; }
+    .span-8 { grid-column: span 8; }
+    .span-12 { grid-column: span 12; }
+    .label {
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 8px;
+    }
+    .value {
+      font-size: 28px;
+      font-weight: 800;
+      line-height: 1.1;
+    }
+    .subtle {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.5;
+    }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      padding: 6px 10px;
+      border-radius: 999px;
+      border: 1px solid rgba(122, 226, 184, 0.3);
+      background: rgba(122, 226, 184, 0.08);
+      color: var(--accent-2);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    pre {
+      white-space: pre-wrap;
+      word-break: break-word;
+      margin: 0;
+      font: inherit;
+      line-height: 1.6;
+      color: #dfe8fb;
+    }
+    .kv {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 12px;
+    }
+    .kv div {
+      background: var(--panel-2);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 12px;
+    }
+    .kv strong {
+      display: block;
+      font-size: 12px;
+      color: var(--muted);
+      margin-bottom: 6px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+    @media (max-width: 960px) {
+      .hero { flex-direction: column; align-items: start; }
+      .span-4, .span-8, .span-12 { grid-column: span 12; }
+      .kv { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="hero">
+      <div>
+        <div class="pill">{{ report_mode | title }}</div>
+        <h1>Direct Report</h1>
+        <p>Human-readable artifact built from the latest local brief, evidence pack, and signal file.</p>
+        <div class="meta">
+          <span>Updated {{ dashboard.brief.updated_at_utc or dashboard.meta.last_updated_utc or "-" }}</span>
+          <span> | </span>
+          <a class="action-link" href="/">Back to dashboard</a>
+          <a class="action-link" href="/brief">Open brief</a>
+        </div>
+      </div>
+      <div class="actions">
+        <a class="action-link" href="{{ report_direct_url }}">Refresh direct report</a>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="card span-4">
+        <div class="label">Signal</div>
+        <div class="value">{{ dashboard.signal.action or "HOLD" }}</div>
+        <div class="subtle">{{ dashboard.signal.reasoning or "No signal rationale available." }}</div>
+        <div class="kv">
+          <div><strong>Confidence</strong>{{ (dashboard.signal.confidence * 100) | round(0) | int }}%</div>
+          <div><strong>Mode</strong>{{ dashboard.evidence.prediction_mode or "unknown" }}</div>
+          <div><strong>Risk / Reward</strong>{{ dashboard.signal.risk_reward if dashboard.signal.risk_reward is not none else "-" }}</div>
+          <div><strong>Generated</strong>{{ dashboard.signal.generated_at_utc or "-" }}</div>
+        </div>
+      </div>
+
+      <div class="card span-4">
+        <div class="label">Brief</div>
+        <div class="value" style="font-size:22px;">{{ dashboard.brief.title or "Latest Brief" }}</div>
+        <div class="subtle">Brief usage: {{ dashboard.brief.usage.prompt_tokens or 0 }} prompt / {{ dashboard.brief.usage.completion_tokens or 0 }} completion tokens</div>
+        <pre style="margin-top:12px;">{{ brief_content or "No brief markdown available yet." }}</pre>
+      </div>
+
+      <div class="card span-4">
+        <div class="label">Evidence</div>
+        <div class="value" style="font-size:22px;">{{ dashboard.evidence.prediction_mode or "unknown" }}</div>
+        <div class="subtle">{{ dashboard.evidence.context_summary or "No evidence pack available yet." }}</div>
+        <div class="kv">
+          <div><strong>Price bias</strong>{{ dashboard.evidence.price_features.price_bias or "-" }}</div>
+          <div><strong>Range</strong>{{ dashboard.evidence.price_features.range_position or "-" }}</div>
+          <div><strong>Weights</strong>Price {{ ((dashboard.evidence.weights.price_action or 0) * 100) | round(0) | int }}%</div>
+          <div><strong>Recent runs</strong>{{ dashboard.evidence.recent_runs | length }}</div>
+        </div>
+      </div>
+
+      <div class="card span-12">
+        <div class="label">Supporting Data</div>
+        <div class="subtle">Trade explanation: {{ dashboard.trade_explanation or "No execution explanation available." }}</div>
+        <pre style="margin-top:12px;">{{ dashboard.health | tojson(indent=2) }}</pre>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
