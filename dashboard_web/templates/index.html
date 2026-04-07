@@ -428,6 +428,7 @@
       <div class="card span-6 manual-locked" id="manual-trade-card">
         <div class="label">Manual Trade</div>
         <div class="subtle">Manual controls are available only on localhost and VPN-reachable interfaces.</div>
+        <div id="manual-quote-hint" class="subtle">Waiting for live quote...</div>
         <form id="manual-trade-form">
           <div class="manual-grid">
             <label>
@@ -475,6 +476,7 @@
 
       <div class="card span-12">
         <div class="label">Recent H1 Price</div>
+        <div id="chart-quote" class="subtle">Waiting for live quote...</div>
         <div id="chart" class="chart"></div>
       </div>
 
@@ -553,22 +555,26 @@
       return body;
     };
 
-    const renderChart = (chart) => {
+    const renderChart = (chart, quote) => {
       const values = Array.isArray(chart?.recent_h1_closes) ? chart.recent_h1_closes.map(Number).filter((v) => Number.isFinite(v)) : [];
       const entries = Array.isArray(chart?.trade_entries) ? chart.trade_entries : [];
-      if (values.length < 2) return '<div class="muted-empty">No price data yet.</div>';
+      const liveMid = Number(quote?.mid);
+      const chartValues = Number.isFinite(liveMid) ? values.concat([liveMid]) : values;
+      if (chartValues.length < 2) return '<div class="muted-empty">No price data yet.</div>';
 
       const width = 760;
       const height = 240;
       const padX = 36;
       const padY = 28;
-      const lo = Math.min(...values);
-      const hi = Math.max(...values);
+      const lo = Math.min(...chartValues);
+      const hi = Math.max(...chartValues);
       const span = hi - lo || 1;
       const xForIndex = (index) => padX + (index / Math.max(1, values.length - 1)) * (width - padX * 2);
       const yForValue = (value) => height - padY - ((value - lo) / span) * (height - padY * 2);
       const points = values.map((value, index) => `${xForIndex(index)},${yForValue(value)}`).join(" ");
       const area = `${padX},${height - padY} ${points} ${width - padX},${height - padY}`;
+      const liveY = Number.isFinite(liveMid) ? yForValue(liveMid) : null;
+      const liveX = width - padX;
       const entryMarkers = entries.map((entry) => {
         const index = Number(entry.bar_index);
         const price = Number(entry.price);
@@ -590,13 +596,36 @@
           </defs>
           <line x1="${padX}" y1="${padY}" x2="${width - padX}" y2="${padY}" class="chart-grid"></line>
           <line x1="${padX}" y1="${height - padY}" x2="${width - padX}" y2="${height - padY}" class="chart-grid"></line>
+          ${liveY === null ? "" : `<line x1="${padX}" y1="${liveY}" x2="${width - padX}" y2="${liveY}" class="chart-grid" stroke-dasharray="6 6"></line>`}
           <polygon points="${area}" fill="url(#chart-fill)"></polygon>
           <polyline points="${points}" class="chart-line"></polyline>
           ${entryMarkers}
+          ${liveY === null ? "" : `<circle cx="${liveX}" cy="${liveY}" r="5" class="entry-buy"></circle>`}
+          ${liveY === null ? "" : `<text x="${liveX - 6}" y="${Math.max(18, liveY - 8)}" text-anchor="end" class="chart-label">Now ${fmtNum(liveMid, 2)}</text>`}
           <text x="10" y="${padY + 4}" class="chart-label">${fmtNum(hi, 2)}</text>
           <text x="10" y="${height - 10}" class="chart-label">${fmtNum(lo, 2)}</text>
         </svg>
       `;
+    };
+
+    const suggestManualLevels = (quote) => {
+      const side = document.getElementById("manual-side").value;
+      const stopLossInput = document.getElementById("manual-stop-loss");
+      const takeProfitInput = document.getElementById("manual-take-profit");
+      const bid = Number(quote?.bid);
+      const ask = Number(quote?.ask);
+      const entryRef = side === "SELL" ? bid : ask;
+      if (!Number.isFinite(entryRef)) return;
+      const suggestedStop = side === "SELL" ? entryRef + 12.5 : entryRef - 12.5;
+      const suggestedTakeProfit = side === "SELL" ? entryRef - 25.0 : entryRef + 25.0;
+      if (stopLossInput.dataset.autofill !== "false") {
+        stopLossInput.value = suggestedStop.toFixed(2);
+        stopLossInput.dataset.autofill = "true";
+      }
+      if (takeProfitInput.dataset.autofill !== "false") {
+        takeProfitInput.value = suggestedTakeProfit.toFixed(2);
+        takeProfitInput.dataset.autofill = "true";
+      }
     };
 
     const renderManualPositions = (rows, ccy) => {
@@ -651,6 +680,7 @@
       document.getElementById("trade-explanation").textContent = data.trade_explanation || "No execution explanation available.";
       const manualStatus = data.manual_trade_status || {};
       const manualPending = Boolean(data.manual_command_pending);
+      const quote = data.quote || {};
       document.getElementById("manual-command-state").textContent = manualPending
         ? "Manual command queued. Waiting for bot confirmation."
         : manualStatus.ok
@@ -658,6 +688,17 @@
           : manualStatus.reason
             ? `Manual status: ${manualStatus.reason}`
             : "No manual command has been queued yet.";
+
+      const bid = Number(quote.bid);
+      const ask = Number(quote.ask);
+      const mid = Number(quote.mid);
+      document.getElementById("chart-quote").textContent = Number.isFinite(mid)
+        ? `Live: bid ${fmtNum(bid, 2)} / ask ${fmtNum(ask, 2)} / mid ${fmtNum(mid, 2)}`
+        : "Waiting for live quote...";
+      document.getElementById("manual-quote-hint").textContent = Number.isFinite(mid)
+        ? `Live quote: bid ${fmtNum(bid, 2)} / ask ${fmtNum(ask, 2)}. For BUY, TP must be above ask and SL below ask. For SELL, TP must be below bid and SL above bid.`
+        : "Waiting for live quote...";
+      suggestManualLevels(quote);
 
       document.getElementById("balance").textContent = fmtMoney(data.account.balance, ccy);
       document.getElementById("equity").textContent = fmtMoney(data.account.equity, ccy);
@@ -694,7 +735,7 @@
       document.getElementById("chart").innerHTML = renderChart(data.chart || {
         recent_h1_closes: data.recent_h1_closes || [],
         trade_entries: data.trade_entries_on_chart || [],
-      });
+      }, quote);
 
       document.getElementById("positions").innerHTML = renderTable(data.open_positions || [], [
         { label: "Position", render: (p) => `<span class="mono">#${p.position_id ?? "-"}</span>` },
@@ -736,6 +777,20 @@
       } catch (error) {
         status.textContent = String(error);
       }
+    });
+
+    document.getElementById("manual-side").addEventListener("change", () => {
+      document.getElementById("manual-stop-loss").dataset.autofill = "true";
+      document.getElementById("manual-take-profit").dataset.autofill = "true";
+      tick();
+    });
+
+    document.getElementById("manual-stop-loss").addEventListener("input", () => {
+      document.getElementById("manual-stop-loss").dataset.autofill = "false";
+    });
+
+    document.getElementById("manual-take-profit").addEventListener("input", () => {
+      document.getElementById("manual-take-profit").dataset.autofill = "false";
     });
 
     document.getElementById("manual-positions").addEventListener("click", async (event) => {

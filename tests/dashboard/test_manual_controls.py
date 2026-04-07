@@ -41,6 +41,12 @@ def _load_dashboard_module(monkeypatch, tmp_path: Path):
                 "signal_history": [{"action": "BUY", "confidence": 0.8}],
                 "levels": {"daily": {"low": 2325.1, "high": 2364.8}},
                 "runtime": {
+                    "latest_quote": {
+                        "bid": 2362.2,
+                        "ask": 2362.7,
+                        "mid": 2362.45,
+                        "updated_at_utc": "2026-04-07T01:02:05Z",
+                    },
                     "manual_trade_status": {
                         "ok": False,
                         "state": "idle",
@@ -120,6 +126,9 @@ def test_dashboard_payload_includes_chart_section(monkeypatch, tmp_path):
     payload = response.get_json()["data"]
     assert payload["chart"]["recent_h1_closes"] == [2354.1, 2358.8, 2361.0, 2359.4]
     assert payload["chart"]["trade_entries"] == [{"bar_index": 1, "direction": "BUY", "price": 2358.8}]
+    assert payload["quote"]["mid"] == 2362.45
+    assert payload["quote"]["ask"] == 2362.7
+    assert payload["manual_positions"][0]["position_id"] == "m-123"
 
 
 def test_dashboard_payload_exposes_auth_and_manual_status(monkeypatch, tmp_path):

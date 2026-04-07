@@ -286,6 +286,7 @@ def _build_payload() -> dict[str, Any]:
     evidence = _build_evidence()
     runtime = state.get("runtime", {}) or {}
     manual_trade_status = runtime.get("manual_trade_status", {}) or {}
+    latest_quote = runtime.get("latest_quote", {}) or {}
 
     return {
         "meta": {
@@ -297,6 +298,10 @@ def _build_payload() -> dict[str, Any]:
         "account": account_payload,
         "signal": signal,
         "open_positions": open_positions,
+        "manual_positions": [
+            position for position in open_positions
+            if str(position.get("owner", "") or "").lower() == "manual"
+        ],
         "closed_trades_today": closed_today,
         "recent_trades": recent_trades,
         "signal_history": state.get("signal_history", []) or [],
@@ -306,7 +311,9 @@ def _build_payload() -> dict[str, Any]:
         "chart": {
             "recent_h1_closes": state.get("recent_h1_closes", []) or [],
             "trade_entries": state.get("trade_entries_on_chart", []) or [],
+            "quote": latest_quote,
         },
+        "quote": latest_quote,
         "levels": state.get("levels", {}) or {},
         "weekly_review": review,
         "risk_state": risk_state,

@@ -1,6 +1,7 @@
 import json
 import sys
 import importlib.util
+import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -177,3 +178,37 @@ def test_trailing_engine_skips_manual_and_oracle_positions():
 
     assert executor.should_apply_generic_trailing(executor.position_manager.get_position("manual-1")) is False
     assert executor.should_apply_generic_trailing(executor.position_manager.get_position("oracle-1")) is False
+
+
+def test_manual_position_close_does_not_touch_risk_gates():
+    class _RiskGates:
+        def __init__(self):
+            self.closed = []
+
+        def record_trade_closed(self, pnl):
+            self.closed.append(pnl)
+
+    executor = Executor(
+        config=SimpleNamespace(observe_only=False),
+        api_client=SimpleNamespace(get_current_quote=lambda: (4700.0, 4700.2)),
+        level_manager=None,
+        risk_gates=_RiskGates(),
+    )
+    executor.position_manager.add(
+        TrackedPosition(
+            position_id="manual-closed",
+            direction="SHORT",
+            entry_price=4690.0,
+            stop_loss=4705.0,
+            take_profit=4660.0,
+            lot_size=0.01,
+            open_time_utc=None,
+            pattern=PatternType.NONE,
+            level=4690.0,
+            owner="manual",
+        )
+    )
+
+    asyncio.run(executor.on_position_closed("manual-closed", close_price=4691.0, pnl=-0.61))
+
+    assert executor.risk_gates.closed == []

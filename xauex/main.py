@@ -317,6 +317,7 @@ class BotOrchestrator:
         self._last_mirofish_signal_id: Optional[str] = None
         self._mirofish_close_requested: set[str] = set()
         self._manual_trade_status: Dict[str, object] = {}
+        self._latest_quote: Dict[str, object] = {}
         self.last_tick_time = time.monotonic()
 
         self._recent_h1_closes: deque = deque(maxlen=20)
@@ -341,6 +342,35 @@ class BotOrchestrator:
     # ──────────────────────────────────────────────────────────────
     # Startup
     # ──────────────────────────────────────────────────────────────
+
+    def _refresh_latest_quote_snapshot(
+        self,
+        *,
+        mid: Optional[float] = None,
+        timestamp: Optional[datetime] = None,
+    ) -> None:
+        bid = ask = None
+        if self.api_client is not None:
+            try:
+                bid, ask = self.api_client.get_current_quote()
+            except Exception:
+                bid = ask = None
+        if bid is None and ask is None and mid is None:
+            return
+
+        existing_mid = self._latest_quote.get("mid")
+        if mid is None and bid is not None and ask is not None:
+            mid = (float(bid) + float(ask)) / 2.0
+        elif mid is None:
+            mid = existing_mid if existing_mid is not None else None
+
+        quote_time = timestamp.astimezone(timezone.utc) if timestamp is not None else datetime.now(timezone.utc)
+        self._latest_quote = {
+            "bid": round(bid, 2) if bid is not None else self._latest_quote.get("bid"),
+            "ask": round(ask, 2) if ask is not None else self._latest_quote.get("ask"),
+            "mid": round(float(mid), 2) if mid is not None else self._latest_quote.get("mid"),
+            "updated_at_utc": quote_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }
 
     async def startup(self) -> None:
         """Run startup sequence. Exits process on any failure in steps 1-10."""
@@ -480,6 +510,7 @@ class BotOrchestrator:
         )
         asyncio.create_task(self.health_check.run())
         asyncio.create_task(self._poll_account_snapshot())
+        asyncio.create_task(self._poll_dashboard_state_refresh())
         await self.write_state()
         logger.info("[STARTUP] Bot online. Status: %s", self.bot_status)
 
@@ -501,6 +532,7 @@ class BotOrchestrator:
         self.last_tick_time = time.monotonic()
         if self.health_check:
             self.health_check.record_tick()
+        self._refresh_latest_quote_snapshot(mid=price, timestamp=timestamp)
 
         # Update trailing stops on every tick (independent of candle close)
         if self.executor and self.symbol_spec and self.executor.position_manager.count() > 0:
@@ -1889,6 +1921,7 @@ class BotOrchestrator:
                     self.executor.serialize_pending_market_orders()
                     if self.executor else {}
                 ),
+                "latest_quote": dict(self._latest_quote),
                 "mirofish_trade_date_london": self.risk_state.mirofish_trade_date_london,
                 "mirofish_trades_taken_london": self.risk_state.mirofish_trades_taken_london,
                 "strategy_data_status": self._strategy_data_status.get(self.active_strategy_mode),
@@ -2375,6 +2408,16 @@ class BotOrchestrator:
                 await self.write_state()
             except Exception as exc:
                 logger.warning("[ACCOUNT] Refresh failed: %s", exc)
+
+    async def _poll_dashboard_state_refresh(self) -> None:
+        """Refresh the state file from in-memory quote/status data without extra broker API calls."""
+        while self.running:
+            await asyncio.sleep(5)
+            try:
+                self._refresh_latest_quote_snapshot()
+                await self.write_state()
+            except Exception as exc:
+                logger.warning("[STATE] Dashboard refresh failed: %s", exc)
 
     async def _check_token_refresh(self) -> None:
         expiry = getattr(self.config, "ctrader_token_expiry", 0)

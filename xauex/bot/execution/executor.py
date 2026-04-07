@@ -414,8 +414,6 @@ class Executor:
     async def on_position_closed(self, position_id: str, close_price: float, pnl: float) -> None:
         """Handle position close event from API stream."""
         position = self.position_manager._positions.get(position_id)
-        if self.risk_gates:
-            self.risk_gates.record_trade_closed(pnl)
 
         if position is None:
             logger.warning("[EXECUTOR] Closed position %s not found in tracker.", position_id)
@@ -440,6 +438,9 @@ class Executor:
                     closed_trades=self._closed_trades_today,
                 )
             return
+
+        if self.risk_gates and str(getattr(position, "owner", "strategy") or "strategy").lower() != "manual":
+            self.risk_gates.record_trade_closed(pnl)
 
         self.position_manager.remove(position_id)
 
