@@ -10,10 +10,19 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import sys
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from diagnostics import build_diagnostics_snapshot
+from tui_diagnostics import format_diagnostics_panel
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -195,8 +204,9 @@ class RemoteXAUEXDashboard(App):
     #top-row { height: 9; }
     #positions-panel { height: 6; }
     #signal-panel { height: 6; }
-    #chart-panel { height: 12; }
-    #history-panel { height: 13; }
+    #diagnostics-panel { height: 9; }
+    #chart-panel { height: 10; }
+    #history-panel { height: 11; }
     #risk-panel { height: 3; }
     """
 
@@ -222,6 +232,7 @@ class RemoteXAUEXDashboard(App):
                 yield Static("", id="runtime-panel")
             yield Static("", id="positions-panel")
             yield Static("", id="signal-panel")
+            yield Static("", id="diagnostics-panel")
             yield Static("", id="chart-panel")
             yield Static("", id="history-panel")
             yield Static("", id="risk-panel")
@@ -270,8 +281,12 @@ class RemoteXAUEXDashboard(App):
         signal = state.get("last_signal") or {}
         signal_history = state.get("signal_history", [])
         shadow_signal_history = state.get("shadow_signal_history", [])
+        diagnostics = state.get("diagnostics", {}) or {}
         observe = state.get("observe_only", health.get("observe_only", True))
         exec_tf = runtime.get("execution_timeframe", trend.get("execution_timeframe", "H1"))
+
+        if not diagnostics:
+            diagnostics = build_diagnostics_snapshot(state)
 
         bot_status = health.get("bot_status") or meta.get("bot_status") or "UNKNOWN"
         updated = meta.get("last_updated_utc") or health.get("timestamp_utc") or "—"
@@ -377,6 +392,10 @@ class RemoteXAUEXDashboard(App):
             )
         else:
             self.query_one("#signal-panel", Static).update("LAST SIGNAL\n  (none yet)")
+
+        self.query_one("#diagnostics-panel", Static).update(
+            format_diagnostics_panel(diagnostics, transport_errors=snapshot.errors)
+        )
 
         htf_vals = [
             mn.get("open"),
