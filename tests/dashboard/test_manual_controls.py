@@ -96,9 +96,6 @@ def _load_dashboard_module(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("MIROFISH_MANUAL_COMMAND_PATH", str(manual_cmd_path))
     monkeypatch.setenv("BRIDGE_BRIEF_OUTPUT_PATH", str(brief_path))
     monkeypatch.setenv("BRIDGE_EVIDENCE_OUTPUT_PATH", str(evidence_path))
-    monkeypatch.setenv("ORACLE_DASHBOARD_AUTH_USERNAME", "bolyki")
-    monkeypatch.setenv("ORACLE_DASHBOARD_AUTH_PASSWORD", "dashboard-pass")
-    monkeypatch.setenv("ORACLE_DASHBOARD_AUTH_SECRET", "dashboard-secret")
 
     import dashboard_web.app as dashboard_app
 
@@ -111,16 +108,6 @@ def _load_dashboard_module(monkeypatch, tmp_path: Path):
     dashboard_app.EVIDENCE_PATH = evidence_path
     dashboard_app.app.config.update(TESTING=True)
     return dashboard_app
-
-
-def _login(client, password: str = "dashboard-pass"):
-    response = client.post("/api/login", json={"password": password})
-    assert response.status_code == 200
-    body = response.get_json()
-    assert body["success"] is True
-    assert body["data"]["authenticated"] is True
-    assert body["data"]["csrf_token"]
-    return body["data"]["csrf_token"]
 
 
 def test_dashboard_payload_includes_chart_section(monkeypatch, tmp_path):
@@ -143,32 +130,27 @@ def test_dashboard_payload_exposes_auth_and_manual_status(monkeypatch, tmp_path)
 
     assert response.status_code == 200
     payload = response.get_json()["data"]
-    assert payload["auth"]["authenticated"] is False
-    assert payload["auth"]["controls_enabled"] is False
+    assert payload["auth"]["authenticated"] is True
+    assert payload["auth"]["controls_enabled"] is True
     assert payload["manual_trade_status"]["state"] == "idle"
     assert payload["manual_trade_status"]["reason"] == "waiting for operator"
 
 
-def test_manual_trade_requires_login_and_csrf(monkeypatch, tmp_path):
+def test_manual_trade_requires_json(monkeypatch, tmp_path):
     dashboard_app = _load_dashboard_module(monkeypatch, tmp_path)
     client = dashboard_app.app.test_client()
 
-    response = client.post(
-        "/api/manual-trade",
-        json={"command": "open", "action": "BUY", "lot_size": 0.25, "stop_loss": 2351.5, "take_profit": 2364.0},
-    )
+    response = client.post("/api/manual-trade", data="not-json", headers={"Content-Type": "text/plain"})
 
-    assert response.status_code == 401
+    assert response.status_code == 400
 
 
 def test_manual_trade_endpoint_writes_manual_command_file(monkeypatch, tmp_path):
     dashboard_app = _load_dashboard_module(monkeypatch, tmp_path)
     client = dashboard_app.app.test_client()
-    csrf_token = _login(client)
 
     response = client.post(
         "/api/manual-trade",
-        headers={"X-CSRF-Token": csrf_token},
         json={"command": "open", "action": "BUY", "lot_size": 0.25, "stop_loss": 2351.5, "take_profit": 2364.0},
     )
 
@@ -187,39 +169,21 @@ def test_manual_trade_endpoint_writes_manual_command_file(monkeypatch, tmp_path)
 def test_manual_trade_endpoint_requires_stop_loss_and_take_profit(monkeypatch, tmp_path):
     dashboard_app = _load_dashboard_module(monkeypatch, tmp_path)
     client = dashboard_app.app.test_client()
-    csrf_token = _login(client)
 
     response = client.post(
         "/api/manual-trade",
-        headers={"X-CSRF-Token": csrf_token},
         json={"command": "open", "action": "BUY", "lot_size": 0.25},
     )
 
     assert response.status_code == 400
 
 
-def test_manual_trade_endpoint_rejects_bad_csrf(monkeypatch, tmp_path):
-    dashboard_app = _load_dashboard_module(monkeypatch, tmp_path)
-    client = dashboard_app.app.test_client()
-    _login(client)
-
-    response = client.post(
-        "/api/manual-trade",
-        headers={"X-CSRF-Token": "bogus"},
-        json={"command": "open", "action": "BUY", "lot_size": 0.25, "stop_loss": 2351.5, "take_profit": 2364.0},
-    )
-
-    assert response.status_code == 403
-
-
 def test_manual_close_endpoint_writes_manual_close_command(monkeypatch, tmp_path):
     dashboard_app = _load_dashboard_module(monkeypatch, tmp_path)
     client = dashboard_app.app.test_client()
-    csrf_token = _login(client)
 
     response = client.post(
         "/api/manual-close",
-        headers={"X-CSRF-Token": csrf_token},
         json={"command": "close", "position_id": "m-123"},
     )
 

@@ -425,31 +425,9 @@
         <div class="subtle" id="meta-updated">-</div>
       </div>
 
-      <div class="card span-6">
-        <div class="label">Manual Access</div>
-        <div id="auth-state" class="auth-state {{ 'authenticated' if dashboard_auth.authenticated else 'locked' }}">{{ 'Unlocked' if dashboard_auth.authenticated else 'Locked' }}</div>
-        <div id="auth-details" class="subtle">
-          {% if dashboard_auth.configured %}
-            Manual controls are {{ 'enabled' if dashboard_auth.authenticated else 'locked until you log in.' }}
-          {% else %}
-            Manual controls are not configured on this dashboard instance.
-          {% endif %}
-        </div>
-        <form id="login-form" class="auth-form">
-          <label class="auth-field">
-            Password
-            <input id="login-password" name="password" type="password" autocomplete="current-password" placeholder="Dashboard password">
-          </label>
-          <div class="manual-actions">
-            <button class="button button-primary" id="login-button" type="submit">Log in</button>
-            <button class="button" id="logout-button" type="button">Log out</button>
-          </div>
-          <div id="auth-message" class="subtle">Manual controls stay locked until the dashboard confirms a login session.</div>
-        </form>
-      </div>
-
       <div class="card span-6 manual-locked" id="manual-trade-card">
         <div class="label">Manual Trade</div>
+        <div class="subtle">Manual controls are available only on localhost and VPN-reachable interfaces.</div>
         <form id="manual-trade-form">
           <div class="manual-grid">
             <label>
@@ -474,7 +452,7 @@
           </div>
           <div class="manual-actions">
             <button class="button button-primary" id="manual-open-button" type="submit">Queue Open Command</button>
-            <div id="manual-status" class="subtle">Log in to queue manual trades.</div>
+            <div id="manual-status" class="subtle">Ready to queue manual trades.</div>
           </div>
         </form>
         <div id="manual-command-state" class="subtle">No manual command has been queued yet.</div>
@@ -534,16 +512,16 @@
 
     let dashboardAuth = {
       configured: false,
-      authenticated: false,
-      controls_enabled: false,
+      authenticated: true,
+      controls_enabled: true,
       csrf_token: null,
     };
 
     const setManualControlsEnabled = (enabled) => {
-      const ids = ["manual-side", "manual-lot-size", "manual-stop-loss", "manual-take-profit", "manual-open-button", "login-password", "login-button", "logout-button"];
+      const ids = ["manual-side", "manual-lot-size", "manual-stop-loss", "manual-take-profit", "manual-open-button"];
       ids.forEach((id) => {
         const el = document.getElementById(id);
-        if (el) el.disabled = !enabled && id !== "logout-button";
+        if (el) el.disabled = !enabled;
       });
       const manualCard = document.getElementById("manual-trade-card");
       if (manualCard) {
@@ -556,56 +534,17 @@
         ...dashboardAuth,
         ...(auth || {}),
       };
-      const authenticated = Boolean(dashboardAuth.authenticated && dashboardAuth.controls_enabled);
-      const configured = Boolean(dashboardAuth.configured);
-      const state = document.getElementById("auth-state");
-      const details = document.getElementById("auth-details");
-      const message = document.getElementById("auth-message");
-      const loginButton = document.getElementById("login-button");
-      const logoutButton = document.getElementById("logout-button");
-      const loginPassword = document.getElementById("login-password");
-      if (state) {
-        state.textContent = authenticated ? "Unlocked" : "Locked";
-        state.className = `auth-state ${authenticated ? "authenticated" : "locked"}`;
-      }
-      if (details) {
-        if (!configured) {
-          details.textContent = "Manual controls are not configured on this dashboard instance.";
-        } else if (authenticated) {
-          details.textContent = `Manual controls unlocked for ${dashboardAuth.username || "operator"}.`;
-        } else {
-          details.textContent = "Manual controls are locked until you log in.";
-        }
-      }
-      if (message) {
-        message.textContent = authenticated
-          ? "Manual commands are now active. The bot will confirm them in the status panel."
-          : configured
-            ? "Manual controls stay locked until the dashboard confirms a login session."
-            : "Manual controls are disabled because dashboard auth is not configured.";
-      }
-      if (loginButton) {
-        loginButton.disabled = !configured || authenticated;
-        loginButton.textContent = authenticated ? "Logged in" : "Log in";
-      }
-      if (logoutButton) {
-        logoutButton.disabled = !authenticated;
-      }
-      if (loginPassword) {
-        loginPassword.disabled = !configured || authenticated;
-      }
-      setManualControlsEnabled(authenticated);
+      const enabled = Boolean(dashboardAuth.controls_enabled);
+      setManualControlsEnabled(enabled);
     };
 
-    const postJson = async (url, payload, {csrf = false} = {}) => {
+    const postJson = async (url, payload) => {
       const res = await fetch(url, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          ...(csrf && dashboardAuth.csrf_token ? {"X-CSRF-Token": dashboardAuth.csrf_token} : {}),
         },
         body: JSON.stringify(payload),
-        credentials: "same-origin",
       });
       const body = await res.json();
       if (!res.ok) {
@@ -780,7 +719,7 @@
       event.preventDefault();
       const status = document.getElementById("manual-status");
       if (!dashboardAuth.controls_enabled) {
-        status.textContent = "Log in to queue manual trades.";
+        status.textContent = "Manual controls are unavailable on this dashboard.";
         return;
       }
       status.textContent = "Queueing open command...";
@@ -791,7 +730,7 @@
           lot_size: Number(document.getElementById("manual-lot-size").value),
           stop_loss: Number(document.getElementById("manual-stop-loss").value),
           take_profit: Number(document.getElementById("manual-take-profit").value),
-        }, {csrf: true});
+        });
         status.textContent = "Open command queued. Waiting for bot confirmation.";
         await tick();
       } catch (error) {
@@ -804,51 +743,14 @@
       if (!button) return;
       const status = document.getElementById("manual-status");
       if (!dashboardAuth.controls_enabled) {
-        status.textContent = "Log in to close manual positions.";
+        status.textContent = "Manual controls are unavailable on this dashboard.";
         return;
       }
       const positionId = button.getAttribute("data-manual-close");
       status.textContent = `Queueing close command for #${positionId}...`;
       try {
-        await postJson("/api/manual-close", {command: "close", position_id: positionId}, {csrf: true});
+        await postJson("/api/manual-close", {command: "close", position_id: positionId});
         status.textContent = `Close command queued for #${positionId}. Waiting for bot confirmation.`;
-        await tick();
-      } catch (error) {
-        status.textContent = String(error);
-      }
-    });
-
-    document.getElementById("login-form").addEventListener("submit", async (event) => {
-      event.preventDefault();
-      const status = document.getElementById("auth-message");
-      const password = document.getElementById("login-password").value;
-      status.textContent = "Logging in...";
-      try {
-        const body = await postJson("/api/login", {password}, {csrf: false});
-        dashboardAuth = {
-          ...(body.data || {}),
-          csrf_token: body.data?.csrf_token || null,
-        };
-        document.getElementById("login-password").value = "";
-        status.textContent = "Login confirmed. Manual controls unlocked.";
-        await tick();
-      } catch (error) {
-        status.textContent = String(error);
-      }
-    });
-
-    document.getElementById("logout-button").addEventListener("click", async () => {
-      const status = document.getElementById("auth-message");
-      status.textContent = "Logging out...";
-      try {
-        await postJson("/api/logout", {}, {csrf: true});
-        dashboardAuth = {
-          configured: dashboardAuth.configured,
-          authenticated: false,
-          controls_enabled: false,
-          csrf_token: null,
-        };
-        status.textContent = "Logged out. Manual controls locked.";
         await tick();
       } catch (error) {
         status.textContent = String(error);

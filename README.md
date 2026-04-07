@@ -51,8 +51,8 @@ This repo is intended to be sufficient to rebuild the application and redeploy i
   - same broker/account
   - separate command path
   - ignored by Oracle limits, memory, and management logic
-  - manual controls require a dashboard login session
-  - dashboard auth reads `ORACLE_DASHBOARD_AUTH_*` values from the process environment or `~/.config/working_keys.env`
+  - dashboard manual controls are exposed without app-level login
+  - access is expected to be restricted by VPN/localhost-only network rules
 
 ## Rebuild From Scratch
 

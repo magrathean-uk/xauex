@@ -29,15 +29,9 @@ XAUEX also supports a separate manual command lane through:
 
 - `/var/lib/xauex/manual_trade_cmd.json`
 
-The dashboard writes manual commands there after a dashboard login. XAUEX executes them with the same broker connection, but Oracle ignores those manual positions for its own daily limits, predictor memory, and session management.
+The dashboard writes manual commands there directly. XAUEX executes them with the same broker connection, but Oracle ignores those manual positions for its own daily limits, predictor memory, and session management.
 
-Dashboard login credentials are loaded from `ORACLE_DASHBOARD_AUTH_*` values in the process environment or from `~/.config/working_keys.env`.
-
-- `ORACLE_DASHBOARD_AUTH_USERNAME`
-- `ORACLE_DASHBOARD_AUTH_PASSWORD`
-- `ORACLE_DASHBOARD_AUTH_SECRET`
-
-Manual dashboard actions require an authenticated session and a CSRF token.
+There is no app-level dashboard password now. Access is expected to stay limited by VPN/localhost-only network rules.
 
 The current live signal path is `direct`:
 

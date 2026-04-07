@@ -2,13 +2,11 @@ from __future__ import annotations
 
 import json
 import os
-import secrets
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from dotenv import dotenv_values
-from flask import Flask, Response, abort, jsonify, render_template, request, session
+from flask import Flask, Response, abort, jsonify, render_template, request
 
 
 STATE_PATH = Path(os.getenv("STATE_FILE_PATH", "/var/lib/xauex/state.json"))
@@ -21,42 +19,6 @@ BRIEF_PATH = Path(os.getenv("BRIDGE_BRIEF_OUTPUT_PATH", "/var/lib/xauex/latest_s
 BRIEF_META_PATH = BRIEF_PATH.with_suffix(".json")
 EVIDENCE_PATH = Path(os.getenv("BRIDGE_EVIDENCE_OUTPUT_PATH", "/var/lib/xauex/latest_signal_evidence.json"))
 MIROFISH_URL = os.getenv("MIROFISH_URL", "http://10.8.0.1:8088").rstrip("/")
-AUTH_FILE_PATH = Path(
-    os.getenv(
-        "ORACLE_DASHBOARD_AUTH_FILE",
-        str(Path.home() / ".config" / "working_keys.env"),
-    )
-)
-
-
-def _env_or_file(*names: str, default: str = "") -> str:
-    for name in names:
-        value = os.getenv(name)
-        if value:
-            return value
-    if AUTH_FILE_PATH.exists():
-        auth_values = dotenv_values(AUTH_FILE_PATH)
-        for name in names:
-            value = auth_values.get(name)
-            if value:
-                return str(value)
-    return default
-
-
-def _load_dashboard_auth_config() -> dict[str, Any]:
-    username = _env_or_file("ORACLE_DASHBOARD_AUTH_USERNAME", "ORACLE_DASHBOARD_USERNAME", default="bolyki")
-    password = _env_or_file("ORACLE_DASHBOARD_AUTH_PASSWORD", "ORACLE_DASHBOARD_PASSWORD")
-    secret = _env_or_file("ORACLE_DASHBOARD_AUTH_SECRET", "ORACLE_DASHBOARD_SECRET")
-    configured = bool(password and secret)
-    return {
-        "username": username,
-        "password": password,
-        "secret": secret,
-        "configured": configured,
-    }
-
-
-AUTH_CONFIG = _load_dashboard_auth_config()
 
 
 def _load_json(path: Path, default: Any) -> Any:
@@ -175,43 +137,19 @@ def _request_payload() -> dict[str, Any]:
     return form if form else {}
 
 
-def _auth_enabled() -> bool:
-    return bool(AUTH_CONFIG["configured"])
-
-
-def _is_authenticated() -> bool:
-    return bool(session.get("oracle_dashboard_authenticated"))
-
-
-def _csrf_token() -> str:
-    token = session.get("oracle_dashboard_csrf_token")
-    if not token:
-        token = secrets.token_urlsafe(32)
-        session["oracle_dashboard_csrf_token"] = token
-    return token
-
-
 def _dashboard_auth_payload() -> dict[str, Any]:
-    authenticated = _is_authenticated()
     return {
-        "configured": _auth_enabled(),
-        "authenticated": authenticated,
-        "username": session.get("oracle_dashboard_username") if authenticated else None,
-        "controls_enabled": authenticated and _auth_enabled(),
-        "csrf_token": _csrf_token() if authenticated else None,
+        "configured": False,
+        "authenticated": True,
+        "username": None,
+        "controls_enabled": True,
+        "csrf_token": None,
     }
 
 
 def _manual_controls_allowed() -> tuple[bool, str | None]:
-    if not _auth_enabled():
-        return False, "Dashboard manual auth is not configured."
-    if not _is_authenticated():
-        return False, "Login required."
     if not request.is_json:
         return False, "JSON body required."
-    token = request.headers.get("X-CSRF-Token") or request.headers.get("X-CSRFToken")
-    if not token or token != session.get("oracle_dashboard_csrf_token"):
-        return False, "Missing or invalid CSRF token."
     return True, None
 
 
@@ -397,11 +335,6 @@ def _build_payload() -> dict[str, Any]:
 
 def create_app() -> Flask:
     app = Flask(__name__, template_folder="templates")
-    app.secret_key = AUTH_CONFIG["secret"] or os.getenv("FLASK_SECRET_KEY") or secrets.token_hex(32)
-    app.config.update(
-        SESSION_COOKIE_HTTPONLY=True,
-        SESSION_COOKIE_SAMESITE="Strict",
-    )
 
     @app.get("/")
     def index() -> str:
@@ -433,34 +366,11 @@ def create_app() -> Flask:
     def dashboard_data():
         return jsonify({"success": True, "data": _build_payload()})
 
-    @app.post("/api/login")
-    def dashboard_login():
-        if not _auth_enabled():
-            return jsonify({"success": False, "error": "Dashboard auth is not configured"}), 503
-        payload = _request_payload()
-        password = str(payload.get("password") or "")
-        if not password or password != AUTH_CONFIG["password"]:
-            return jsonify({"success": False, "error": "Invalid password"}), 401
-        session.clear()
-        session["oracle_dashboard_authenticated"] = True
-        session["oracle_dashboard_username"] = AUTH_CONFIG["username"]
-        session["oracle_dashboard_csrf_token"] = secrets.token_urlsafe(32)
-        return jsonify({"success": True, "data": _dashboard_auth_payload()})
-
-    @app.post("/api/logout")
-    def dashboard_logout():
-        if _is_authenticated():
-            token = request.headers.get("X-CSRF-Token") or request.headers.get("X-CSRFToken")
-            if token and token != session.get("oracle_dashboard_csrf_token"):
-                return jsonify({"success": False, "error": "Missing or invalid CSRF token"}), 403
-        session.clear()
-        return jsonify({"success": True, "data": {"authenticated": False}})
-
     @app.post("/api/manual-trade")
     def manual_trade():
         allowed, reason = _manual_controls_allowed()
         if not allowed:
-            return jsonify({"success": False, "error": reason}), 401 if reason == "Login required." else 403 if "CSRF" in reason else 503
+            return jsonify({"success": False, "error": reason}), 400
         command = _manual_trade_command(_request_payload())
         if command is None:
             return jsonify({"success": False, "error": "Invalid manual trade command"}), 400
@@ -477,7 +387,7 @@ def create_app() -> Flask:
     def manual_close():
         allowed, reason = _manual_controls_allowed()
         if not allowed:
-            return jsonify({"success": False, "error": reason}), 401 if reason == "Login required." else 403 if "CSRF" in reason else 503
+            return jsonify({"success": False, "error": reason}), 400
         command = _manual_close_command(_request_payload())
         if command is None:
             return jsonify({"success": False, "error": "Invalid manual close command"}), 400
