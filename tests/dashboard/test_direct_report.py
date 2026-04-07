@@ -94,6 +94,7 @@ def test_direct_report_route_renders_local_artifacts(monkeypatch, tmp_path):
     assert "Breakout confirmed from local momentum." in body
     assert "Fed is dovish." in body
     assert "Macro context remains supportive for gold." in body
+    assert "Diagnostics" in body
 
 
 def test_dashboard_payload_uses_direct_report_link_when_report_id_missing(monkeypatch, tmp_path):

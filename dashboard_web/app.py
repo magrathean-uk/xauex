@@ -8,6 +8,8 @@ from typing import Any
 
 from flask import Flask, Response, abort, jsonify, render_template, request
 
+from diagnostics import build_diagnostics_snapshot
+
 
 STATE_PATH = Path(os.getenv("STATE_FILE_PATH", "/var/lib/xauex/state.json"))
 CMD_PATH = Path(os.getenv("CMD_FILE_PATH", "/var/lib/xauex/cmd.json"))
@@ -214,6 +216,25 @@ def _build_brief_meta() -> dict[str, Any]:
     }
 
 
+def _format_manual_reply(command: dict[str, Any], diagnostics: dict[str, Any]) -> str:
+    quote = (diagnostics.get("components", {}) or {}).get("quote", {}) or {}
+    bid = quote.get("bid")
+    ask = quote.get("ask")
+    action = str(command.get("action") or command.get("side") or "MANUAL").upper()
+    cmd = str(command.get("command") or "open").lower()
+    if cmd == "close":
+        position_id = command.get("position_id") or command.get("trade_id") or "-"
+        return f"Manual close queued for #{position_id}. {diagnostics.get('reply') or diagnostics.get('summary') or 'Waiting for bot confirmation.'}"
+    lot_size = command.get("lot_size")
+    if bid is not None and ask is not None:
+        return (
+            f"Manual {action} queued for {float(lot_size):.2f} lot(s). "
+            f"Live quote bid {float(bid):.2f} / ask {float(ask):.2f}. "
+            "The bot will confirm or reject it on the next execution poll."
+        )
+    return f"Manual {action} queued for {float(lot_size):.2f} lot(s). Waiting for the next live quote."
+
+
 def _trade_explanation(signal: dict[str, Any], open_positions: list[dict[str, Any]], account: dict[str, Any]) -> str:
     action = str(signal.get("action") or "HOLD").upper()
     oracle_positions = [
@@ -273,6 +294,12 @@ def _build_payload() -> dict[str, Any]:
     journal = _load_json(JOURNAL_PATH, [])
     review = _load_json(REVIEW_PATH, {})
     risk_state = _load_json(RISK_PATH, {})
+    if isinstance(state, dict):
+        diagnostics = state.get("diagnostics", {}) or {}
+    else:
+        diagnostics = {}
+    if not diagnostics:
+        diagnostics = build_diagnostics_snapshot(state)
 
     account = state.get("account", {}) or {}
     risk = state.get("risk", {}) or {}
@@ -287,7 +314,6 @@ def _build_payload() -> dict[str, Any]:
     runtime = state.get("runtime", {}) or {}
     manual_trade_status = runtime.get("manual_trade_status", {}) or {}
     latest_quote = runtime.get("latest_quote", {}) or {}
-
     return {
         "meta": {
             "bot_status": meta.get("bot_status", "UNKNOWN"),
@@ -314,6 +340,7 @@ def _build_payload() -> dict[str, Any]:
             "quote": latest_quote,
         },
         "quote": latest_quote,
+        "diagnostics": diagnostics,
         "levels": state.get("levels", {}) or {},
         "weekly_review": review,
         "risk_state": risk_state,
@@ -373,20 +400,42 @@ def create_app() -> Flask:
     def dashboard_data():
         return jsonify({"success": True, "data": _build_payload()})
 
+    @app.get("/api/diagnostics")
+    def diagnostics_data():
+        payload = _build_payload()
+        return jsonify({"success": True, "data": payload.get("diagnostics", {}) or {}})
+
     @app.post("/api/manual-trade")
     def manual_trade():
         allowed, reason = _manual_controls_allowed()
         if not allowed:
-            return jsonify({"success": False, "error": reason}), 400
+            payload = _build_payload()
+            return jsonify({
+                "success": False,
+                "error": reason,
+                "reply": reason,
+                "diagnostics": payload.get("diagnostics", {}) or {},
+            }), 400
         command = _manual_trade_command(_request_payload())
         if command is None:
-            return jsonify({"success": False, "error": "Invalid manual trade command"}), 400
+            payload = _build_payload()
+            diagnostics = payload.get("diagnostics", {}) or {}
+            return jsonify({
+                "success": False,
+                "error": "Invalid manual trade command",
+                "reply": diagnostics.get("reply") or "Invalid manual trade command.",
+                "diagnostics": diagnostics,
+            }), 400
         _write_json_atomic(MANUAL_CMD_PATH, command)
+        payload = _build_payload()
+        diagnostics = payload.get("diagnostics", {}) or {}
         return jsonify({
             "success": True,
             "status": "queued",
+            "reply": _format_manual_reply(command, diagnostics),
             "manual_command_pending": True,
             "data": command,
+            "diagnostics": diagnostics,
             "auth": _dashboard_auth_payload(),
         })
 
@@ -394,16 +443,33 @@ def create_app() -> Flask:
     def manual_close():
         allowed, reason = _manual_controls_allowed()
         if not allowed:
-            return jsonify({"success": False, "error": reason}), 400
+            payload = _build_payload()
+            return jsonify({
+                "success": False,
+                "error": reason,
+                "reply": reason,
+                "diagnostics": payload.get("diagnostics", {}) or {},
+            }), 400
         command = _manual_close_command(_request_payload())
         if command is None:
-            return jsonify({"success": False, "error": "Invalid manual close command"}), 400
+            payload = _build_payload()
+            diagnostics = payload.get("diagnostics", {}) or {}
+            return jsonify({
+                "success": False,
+                "error": "Invalid manual close command",
+                "reply": diagnostics.get("reply") or "Invalid manual close command.",
+                "diagnostics": diagnostics,
+            }), 400
         _write_json_atomic(MANUAL_CMD_PATH, command)
+        payload = _build_payload()
+        diagnostics = payload.get("diagnostics", {}) or {}
         return jsonify({
             "success": True,
             "status": "queued",
+            "reply": _format_manual_reply(command, diagnostics),
             "manual_command_pending": True,
             "data": command,
+            "diagnostics": diagnostics,
             "auth": _dashboard_auth_payload(),
         })
 

@@ -4,11 +4,19 @@ import asyncio
 import json
 import logging
 import os
+import sys
 import tempfile
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
+from pathlib import Path
 
 from config import Config
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from diagnostics import build_diagnostics_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -186,6 +194,29 @@ class StateWriter:
             "trend": trend,
             "runtime": runtime,
             "last_error": last_error,
+            "diagnostics": build_diagnostics_snapshot({
+                "meta": {
+                    "bot_status": bot_status,
+                    "last_updated_utc": now,
+                },
+                "account": account or {},
+                "risk": risk_section,
+                "levels": levels_section,
+                "open_positions": positions_section,
+                "closed_trades_today": closed_trades,
+                "recent_h1_closes": recent_h1_closes,
+                "trade_entries_on_chart": trade_entries_on_chart,
+                "last_signal": last_signal,
+                "signal_history": signal_history,
+                "strategy": strategy,
+                "shadow_last_signal": shadow_last_signal,
+                "shadow_signal_history": shadow_signal_history,
+                "macro_regime": macro_regime,
+                "trade_policy": trade_policy,
+                "trend": trend,
+                "runtime": runtime,
+                "last_error": last_error,
+            }),
             "observe_only": self.config.observe_only,
         }
 

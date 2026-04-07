@@ -134,6 +134,50 @@
       text-transform: uppercase;
       letter-spacing: 0.08em;
     }
+    .diag-summary {
+      font-size: 18px;
+      font-weight: 700;
+      line-height: 1.35;
+    }
+    .diag-issues {
+      display: grid;
+      gap: 10px;
+      margin-top: 12px;
+    }
+    .diag-issue {
+      border-radius: 14px;
+      border: 1px solid var(--line);
+      background: rgba(23, 37, 58, 0.82);
+      padding: 12px;
+    }
+    .diag-issue-top {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .diag-issue-code {
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      font-size: 12px;
+    }
+    .diag-issue-summary {
+      font-weight: 700;
+    }
+    .diag-issue-details {
+      color: var(--muted);
+      margin-top: 6px;
+      line-height: 1.5;
+      font-size: 14px;
+    }
+    .diag-issue-next {
+      color: #bfd2ff;
+      margin-top: 8px;
+      line-height: 1.5;
+      font-size: 14px;
+    }
     @media (max-width: 960px) {
       .hero { flex-direction: column; align-items: start; }
       .span-4, .span-8, .span-12 { grid-column: span 12; }
@@ -196,6 +240,29 @@
         <div class="label">Supporting Data</div>
         <div class="subtle">Trade explanation: {{ dashboard.trade_explanation or "No execution explanation available." }}</div>
         <pre style="margin-top:12px;">{{ dashboard.health | tojson(indent=2) }}</pre>
+      </div>
+
+      <div class="card span-12">
+        <div class="label">Diagnostics</div>
+        <div class="diag-summary">{{ dashboard.diagnostics.summary or "No diagnostics available." }}</div>
+        <div class="subtle">{{ dashboard.diagnostics.reply or "No diagnostics reply available." }}</div>
+        <div class="subtle">Recommended action: {{ dashboard.diagnostics.recommended_action or "No immediate action required." }}</div>
+        <div class="diag-issues">
+          {% for issue in dashboard.diagnostics.current_issues or [] %}
+            <div class="diag-issue">
+              <div class="diag-issue-top">
+                <div class="diag-issue-summary">{{ issue.summary }}</div>
+                <div class="diag-issue-code">{{ issue.severity | upper }} · {{ issue.component }} · {{ issue.code }}</div>
+              </div>
+              <div class="diag-issue-details">{{ issue.details or "No additional details provided." }}</div>
+              {% if issue.next_action %}
+                <div class="diag-issue-next">Next: {{ issue.next_action }}</div>
+              {% endif %}
+            </div>
+          {% else %}
+            <div class="subtle">No active issues. The dashboard is healthy.</div>
+          {% endfor %}
+        </div>
       </div>
     </div>
   </div>

@@ -145,6 +145,32 @@ def test_dashboard_payload_exposes_auth_and_manual_status(monkeypatch, tmp_path)
     assert payload["manual_trade_status"]["reason"] == "waiting for operator"
 
 
+def test_dashboard_payload_includes_diagnostics(monkeypatch, tmp_path):
+    dashboard_app = _load_dashboard_module(monkeypatch, tmp_path)
+    client = dashboard_app.app.test_client()
+
+    response = client.get("/api/dashboard")
+
+    assert response.status_code == 200
+    payload = response.get_json()["data"]
+    assert payload["diagnostics"]["schema_version"] == 1
+    assert payload["diagnostics"]["components"]["quote"]["state"] in {"live", "stale"}
+    assert payload["diagnostics"]["reply"]
+
+
+def test_diagnostics_endpoint_returns_structured_snapshot(monkeypatch, tmp_path):
+    dashboard_app = _load_dashboard_module(monkeypatch, tmp_path)
+    client = dashboard_app.app.test_client()
+
+    response = client.get("/api/diagnostics")
+
+    assert response.status_code == 200
+    payload = response.get_json()["data"]
+    assert payload["schema_version"] == 1
+    assert payload["summary"]
+    assert payload["reply"]
+
+
 def test_manual_trade_requires_json(monkeypatch, tmp_path):
     dashboard_app = _load_dashboard_module(monkeypatch, tmp_path)
     client = dashboard_app.app.test_client()
@@ -167,6 +193,8 @@ def test_manual_trade_endpoint_writes_manual_command_file(monkeypatch, tmp_path)
     body = response.get_json()
     assert body["success"] is True
     assert body["status"] == "queued"
+    assert body["reply"]
+    assert body["diagnostics"]["schema_version"] == 1
     command = json.loads(dashboard_app.MANUAL_CMD_PATH.read_text(encoding="utf-8"))
     assert command["command"] == "open"
     assert command["action"] == "BUY"
@@ -200,6 +228,8 @@ def test_manual_close_endpoint_writes_manual_close_command(monkeypatch, tmp_path
     body = response.get_json()
     assert body["success"] is True
     assert body["status"] == "queued"
+    assert body["reply"]
+    assert body["diagnostics"]["schema_version"] == 1
     command = json.loads(dashboard_app.MANUAL_CMD_PATH.read_text(encoding="utf-8"))
     assert command["command"] == "close"
     assert command["position_id"] == "m-123"
