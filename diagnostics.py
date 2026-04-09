@@ -26,6 +26,22 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return default
 
 
+def count_london_signal_runs(risk: Mapping[str, Any], runtime: Mapping[str, Any] | None = None) -> int:
+    runtime_dict = _safe_dict(runtime)
+    signal_runs = _safe_int(runtime_dict.get("mirofish_signal_runs_taken_london"))
+    runtime_signal_runs = runtime_dict.get("mirofish_signal_runs_london")
+    if isinstance(runtime_signal_runs, list):
+        signal_runs = len([item for item in runtime_signal_runs if bool(item.get("terminal", True))])
+
+    risk_signal_runs = risk.get("mirofish_signal_runs_london")
+    if isinstance(risk_signal_runs, list):
+        signal_runs = len([item for item in risk_signal_runs if bool(item.get("terminal", True))])
+    elif signal_runs == 0:
+        signal_runs = _safe_int(risk.get("mirofish_signal_runs_taken_london"))
+
+    return signal_runs
+
+
 def _parse_timestamp(value: Any) -> datetime | None:
     if not value:
         return None
@@ -247,12 +263,17 @@ def _positions_section(open_positions: list[dict[str, Any]]) -> tuple[dict[str, 
     )
 
 
-def _risk_section(risk: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
+def _risk_section(risk: dict[str, Any], runtime: dict[str, Any] | None = None) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
     issues: list[dict[str, Any]] = []
     events: list[dict[str, Any]] = []
     daily_halted = bool(risk.get("daily_halted"))
     weekly_halted = bool(risk.get("weekly_halted"))
+    runtime = runtime or {}
     trades_taken = _safe_int(risk.get("mirofish_trades_taken_london"))
+    signal_runs = count_london_signal_runs(risk, runtime)
+    run_cap = _safe_int(runtime.get("mirofish_max_trades_per_day"), 2)
+    if run_cap <= 0:
+        run_cap = 2
 
     if daily_halted:
         issues.append(
@@ -278,13 +299,43 @@ def _risk_section(risk: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, 
                 next_action="Review weekly drawdown and only resume after manual clearance.",
             )
         )
-    if trades_taken >= 1:
+    if signal_runs >= 1:
         events.append(
             {
                 "component": "risk",
                 "severity": "info",
-                "code": "DAILY_TRADE_USED",
-                "summary": f"Today's London trade counter is {trades_taken}.",
+                "code": "DAILY_SIGNAL_SLOT_USED",
+                "summary": f"Today's Oracle slot usage is {signal_runs}/{run_cap}.",
+                "details": "The Oracle signal engine has consumed this many run slots today.",
+                "evidence": {
+                    "mirofish_signal_runs_london": risk.get("mirofish_signal_runs_london", []),
+                    "mirofish_trade_date_london": risk.get("mirofish_trade_date_london"),
+                },
+                "updated_at_utc": _now_utc(),
+            }
+        )
+    if signal_runs >= run_cap and trades_taken < run_cap:
+        events.append(
+            {
+                "component": "risk",
+                "severity": "info",
+                "code": "DAILY_SIGNAL_SLOT_LIMIT_REACHED",
+                "summary": f"Today's Oracle run slot budget is fully used ({signal_runs}/{run_cap}).",
+                "details": "The oracle will skip further slots today until next London weekday.",
+                "evidence": {
+                    "mirofish_signal_runs_london": risk.get("mirofish_signal_runs_london", []),
+                    "mirofish_max_trades_per_day": run_cap,
+                },
+                "updated_at_utc": _now_utc(),
+            }
+        )
+    if trades_taken >= run_cap:
+        events.append(
+            {
+                "component": "risk",
+                "severity": "info",
+                "code": "DAILY_TRADE_LIMIT_REACHED",
+                "summary": f"Today's London trade counter is {trades_taken}/{run_cap}.",
                 "details": "The Oracle lane already used its daily trade budget.",
                 "evidence": {"mirofish_trade_date_london": risk.get("mirofish_trade_date_london")},
                 "updated_at_utc": _now_utc(),
@@ -298,6 +349,8 @@ def _risk_section(risk: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, 
             "daily_halted": daily_halted,
             "weekly_halted": weekly_halted,
             "trades_taken_today": trades_taken,
+            "signal_runs_taken_today": signal_runs,
+            "run_cap": run_cap,
             "day_start_balance": _safe_float(risk.get("day_start_balance")),
             "week_start_balance": _safe_float(risk.get("week_start_balance")),
         },
@@ -461,14 +514,19 @@ def _strategy_section(runtime: dict[str, Any]) -> tuple[dict[str, Any], list[dic
     return {"active": current, "shadow": shadow}, issues, events
 
 
-def build_diagnostics_snapshot(state: Mapping[str, Any], *, reference_time: datetime | None = None) -> dict[str, Any]:
+def build_diagnostics_snapshot(
+    state: Mapping[str, Any],
+    *,
+    oracle_signal: Mapping[str, Any] | None = None,
+    reference_time: datetime | None = None,
+) -> dict[str, Any]:
     state_dict = dict(state or {})
     meta = _safe_dict(state_dict.get("meta"))
     account = _safe_dict(state_dict.get("account"))
     risk = _safe_dict(state_dict.get("risk"))
     runtime = _safe_dict(state_dict.get("runtime"))
     open_positions = state_dict.get("open_positions") or []
-    last_signal = _safe_dict(state_dict.get("last_signal"))
+    last_signal = _safe_dict(oracle_signal) or _safe_dict(state_dict.get("last_signal"))
     signal_history = state_dict.get("signal_history") or []
 
     if not last_signal and signal_history:
@@ -479,7 +537,7 @@ def build_diagnostics_snapshot(state: Mapping[str, Any], *, reference_time: date
     quote_section, quote_issues, quote_events = _quote_section(_safe_dict(runtime.get("latest_quote")), reference_time=reference_time)
     signal_section, signal_issues, signal_events = _signal_section(last_signal, reference_time=reference_time)
     positions_section, position_issues, position_events = _positions_section(open_positions if isinstance(open_positions, list) else [])
-    risk_section, risk_issues, risk_events = _risk_section(risk)
+    risk_section, risk_issues, risk_events = _risk_section(risk, runtime=runtime)
     manual_section, manual_issues, manual_events = _manual_section(runtime, _safe_dict(runtime.get("latest_quote")))
     strategy_section, strategy_issues, strategy_events = _strategy_section(runtime)
 

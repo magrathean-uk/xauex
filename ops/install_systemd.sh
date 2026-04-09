@@ -45,12 +45,27 @@ systemctl disable xauex.service >/dev/null 2>&1 || true
 systemctl enable mirofish-backend.service mirofish-bridge.timer xauex-start.timer xauex-stop.timer xauex-trade-journal.timer xauex-weekly-review.timer oracle-dashboard.service
 systemctl restart mirofish-backend.service
 systemctl restart oracle-dashboard.service
-systemctl stop xauex.service >/dev/null 2>&1 || true
 systemctl restart mirofish-bridge.timer
 systemctl restart xauex-start.timer
 systemctl restart xauex-stop.timer
 systemctl restart xauex-trade-journal.timer
 systemctl restart xauex-weekly-review.timer
+
+LONDON_DOW="$(TZ=Europe/London date +%u)"
+LONDON_HHMM="$(TZ=Europe/London date +%H:%M)"
+SHOULD_RUN_XAUEX=0
+if [[ "$LONDON_DOW" -ge 1 && "$LONDON_DOW" -le 4 && "$LONDON_HHMM" > "07:24" ]]; then
+  SHOULD_RUN_XAUEX=1
+elif [[ "$LONDON_DOW" -eq 5 && "$LONDON_HHMM" > "07:24" && "$LONDON_HHMM" < "15:06" ]]; then
+  SHOULD_RUN_XAUEX=1
+fi
+
+if systemctl is-active --quiet xauex.service; then
+  systemctl restart xauex.service
+elif [[ "$SHOULD_RUN_XAUEX" -eq 1 ]]; then
+  systemctl start xauex.service
+fi
+
 logrotate -f /etc/logrotate.d/mirofish-gold-oracle >/dev/null 2>&1 || true
 journalctl --vacuum-time=14d >/dev/null 2>&1 || true
 journalctl --vacuum-size=256M >/dev/null 2>&1 || true

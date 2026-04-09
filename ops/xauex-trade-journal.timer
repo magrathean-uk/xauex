@@ -1,8 +1,8 @@
 [Unit]
-Description=Run XAUEX post-trade journal after each London session
+Description=Run XAUEX post-trade journal after the London force-flat boundary
 
 [Timer]
-OnCalendar=Mon-Fri *-*-* 12:06:00 Europe/London
+OnCalendar=Mon-Fri *-*-* 15:07:00 Europe/London
 Persistent=true
 Unit=xauex-trade-journal.service
 

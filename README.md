@@ -8,10 +8,12 @@ GoldOracle is a repo-packaged London-open XAUUSD demo trading system built from 
 
 The current live production path is:
 
-1. `mirofish-backend.service` keeps the backend API up.
-2. `mirofish-bridge.timer` runs before London open on weekdays and generates a fresh direct predictor signal from curated context, price structure, and recent local trade memory.
-3. `xauex.service` polls `/var/lib/xauex/cmd.json` and executes one London-morning trade per day.
+1. `oracle-dashboard.service` exposes the operator dashboard on `8089`.
+2. `mirofish-bridge.timer` runs on weekdays at both morning and midday windows and generates fresh direct predictor signals from curated context, price structure, and recent local trade memory.
+3. `xauex.service` polls `/var/lib/xauex/cmd.json` and can execute up to two London slots per weekday (morning and late-morning), capped by `MIROFISH_MAX_TRADES_PER_DAY`.
 4. journal and weekly-review timers write trade summaries after the session.
+
+`mirofish-backend.service` is still kept for legacy research and compatibility workflows, but the direct live trading path no longer depends on it.
 
 ## What Is In This Repo
 
@@ -28,7 +30,7 @@ This repo is intended to be sufficient to rebuild the application and redeploy i
 ## Current Trading Model
 
 - Trade instrument: `XAUUSD`
-- Trade window: London open
+- Trade windows: London morning and late-morning slot (currently configurable in London time)
 - Phase-1 live path uses a direct weighted predictor, not a daily Zep graph build
 - Weighted signal blend:
   - price action / market structure: `45%`
@@ -38,13 +40,13 @@ This repo is intended to be sufficient to rebuild the application and redeploy i
   - enable with `QDRANT_ENABLED=1`
   - store path: `QDRANT_PATH=/var/lib/xauex/qdrant_local`
   - uses embedded `qdrant-client` local storage, so there is no separate Qdrant service to run
-- One trade max per London day in phase 1
+- Up to two signal windows per London day in phase 1 (hard-capped by `MIROFISH_MAX_TRADES_PER_DAY`)
 - Oracle uses a staged session manager:
   - `OBSERVE` after entry
   - `PROTECT` after the move proves itself
   - `TRAIL` after stronger follow-through
 - Cash risk stays capped while the live stop can widen beyond the raw signal stop using structure/ATR logic
-- Forced flat before late London morning cutoff
+- Forced flat at the configured London afternoon cutoff
 - Weekends off
 - Rare `HOLD`, reserved for hard blockers or genuinely strong conflict
 - Dashboard manual trades are fully independent from Oracle:
@@ -57,6 +59,8 @@ This repo is intended to be sufficient to rebuild the application and redeploy i
 ## Rebuild From Scratch
 
 Read [docs/REBUILD.md](docs/REBUILD.md). The short version is:
+
+Python 3.11+ is the supported runtime.
 
 ```bash
 git clone <your-repo-url>
@@ -74,6 +78,7 @@ Then fill in:
 
 - root `.env` for backend/bridge LLM settings and optional memory settings
 - `xauex/.env` for cTrader credentials and execution settings
+- for cTrader, keep `CTRADER_HOST=demo-uk-eqx-01.p.c-trader.com` and `CTRADER_TLS_SERVER_NAME=connect.spotware.com` unless your broker provides a different endpoint
 
 ## Key Paths
 

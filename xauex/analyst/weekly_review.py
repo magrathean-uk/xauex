@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from analyst._utils import (
+    default_model,
     atomic_write_json,
     call_claude,
     is_state_stale,
@@ -16,7 +17,7 @@ from analyst._utils import (
 
 logger = logging.getLogger(__name__)
 
-MODEL = "gemini-3.1-pro-preview"
+MODEL = default_model()
 STALE_SECONDS = 60 * 60  # 1 hour (weekly review is less time-sensitive)
 
 STATE_PATH = os.environ.get("XAUEX_STATE_FILE", os.environ.get("STATE_FILE_PATH", "/var/lib/xauex/state.json"))
@@ -68,7 +69,7 @@ def build_review_prompt(
     week_start: datetime,
     week_end: datetime,
 ) -> str:
-    """Build the Gemini prompt for the weekly review."""
+    """Build the analyst prompt for the weekly review."""
     risk = state.get("risk", {})
     signals = state.get("signal_history", [])
     shadow = state.get("shadow_signal_history", [])
@@ -167,7 +168,7 @@ def run(
     )
 
     prompt = build_review_prompt(state, journal, scores, week_start, week_end)
-    logger.info("[WEEKLY] Calling Gemini 3.1 Pro...")
+    logger.info("[WEEKLY] Calling analyst model (%s)...", MODEL)
     review_text = call_claude(prompt, MODEL)
 
     result = {

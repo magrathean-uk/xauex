@@ -97,6 +97,55 @@ def test_direct_report_route_renders_local_artifacts(monkeypatch, tmp_path):
     assert "Diagnostics" in body
 
 
+def test_direct_report_route_reuses_normalized_oracle_signal(monkeypatch, tmp_path):
+    dashboard_app = _load_dashboard_module(monkeypatch, tmp_path)
+    client = dashboard_app.app.test_client()
+
+    dashboard_app.STATE_PATH.write_text(
+        json.dumps(
+            {
+                "meta": {"bot_status": "RUNNING", "last_updated_utc": "2026-04-07T01:02:03Z"},
+                "account": {"balance": 12345.67, "equity": 12400.1, "open_pnl": 54.43},
+                "risk": {"daily_pnl": 12.5, "weekly_pnl": 34.5, "mirofish_trades_taken_london": 0},
+                "open_positions": [],
+                "closed_trades_today": [],
+                "signal_history": [{"action": "SELL", "confidence": 0.2}],
+                "runtime": {
+                    "latest_quote": {
+                        "bid": 2362.2,
+                        "ask": 2362.7,
+                        "mid": 2362.45,
+                        "updated_at_utc": "2026-04-07T01:02:05Z",
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    dashboard_app.CMD_PATH.write_text(
+        json.dumps(
+            {
+                "generated_at_utc": "2026-04-07T01:00:00Z",
+                "mirofish_signal": {
+                    "action": "BUY",
+                    "symbol": "XAUUSD",
+                    "confidence": 0.81,
+                    "reasoning": "Breakout confirmed from local momentum.",
+                    "source": {"mode": "direct"},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    response = client.get("/report/direct")
+
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert "BUY" in body
+    assert "SELL" not in body
+
+
 def test_dashboard_payload_uses_direct_report_link_when_report_id_missing(monkeypatch, tmp_path):
     dashboard_app = _load_dashboard_module(monkeypatch, tmp_path)
     client = dashboard_app.app.test_client()

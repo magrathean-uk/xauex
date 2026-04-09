@@ -19,7 +19,7 @@ import queue
 import signal
 import sys
 from collections import deque
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional, List, Dict, Tuple
 from zoneinfo import ZoneInfo
@@ -49,6 +49,8 @@ _EXECUTION_BAR_LOOKBACK = 500
 _DAILY_BAR_LOOKBACK = 120
 _SCALP_BAR_LOOKBACK = 2500
 _EMA_PULLBACK_BAR_LOOKBACK = 260
+_MIROFISH_SLOT_RETRY_BACKOFF_SECONDS = 45
+_MIROFISH_CLOSE_REQUEST_TTL_SECONDS = 180
 
 
 def build_mirofish_initial_stop_distance(
@@ -314,8 +316,9 @@ class BotOrchestrator:
         self.bot_status = "INITIALIZING"
         self.last_error: Optional[str] = None
         self.kill_switch_active = False
-        self._last_mirofish_signal_id: Optional[str] = None
-        self._mirofish_close_requested: set[str] = set()
+        self._last_mirofish_signal_id_by_slot: dict[str, Optional[str]] = {}
+        self._last_mirofish_signal_seen_utc: dict[str, float] = {}
+        self._mirofish_close_requested: dict[str, datetime] = {}
         self._manual_trade_status: Dict[str, object] = {}
         self._latest_quote: Dict[str, object] = {}
         self.last_tick_time = time.monotonic()
@@ -505,6 +508,7 @@ class BotOrchestrator:
 
         self.health_check = HealthCheck(
             self,
+            host=getattr(self.config, "health_check_host", "127.0.0.1"),
             port=getattr(self.config, "health_check_port", 8051),
             watchdog=self.watchdog,
         )
@@ -797,11 +801,12 @@ class BotOrchestrator:
                 action = "OBSERVE_ONLY" if self.config.observe_only else "FAILED"
 
             if pos_id and len(self._recent_h1_closes) > 0:
-                self._trade_entries_on_chart.append({
-                    "bar_index": len(self._recent_h1_closes) - 1,
-                    "direction": "LONG" if direction > 0 else "SHORT",
-                    "price": level,
-                })
+                self._append_trade_entry_on_chart(
+                    None,
+                    "LONG" if direction > 0 else "SHORT",
+                    level,
+                    "strategy",
+                )
 
         self._record_signal(
             pattern_result.pattern,
@@ -918,11 +923,12 @@ class BotOrchestrator:
                         )
                         if pos_id:
                             self._record_strategy_entry("EMA_PULLBACK_H1", decision.reference_level, decision.direction)
-                            self._trade_entries_on_chart.append({
-                                "bar_index": len(self._recent_h1_closes) - 1,
-                                "direction": "LONG" if decision.direction > 0 else "SHORT",
-                                "price": decision.entry_price,
-                            })
+                            self._append_trade_entry_on_chart(
+                                None,
+                                "LONG" if decision.direction > 0 else "SHORT",
+                                decision.entry_price,
+                                "strategy",
+                            )
                             action = "EXECUTED"
                         else:
                             action = "OBSERVE_ONLY" if self.config.observe_only else "FAILED"
@@ -1076,12 +1082,11 @@ class BotOrchestrator:
                         )
                         if pos_id:
                             self._record_strategy_entry("SCALP_V1", decision.reference_level, decision.direction)
-                            self._trade_entries_on_chart.append(
-                                {
-                                    "bar_index": len(self._recent_h1_closes) - 1,
-                                    "direction": "LONG" if decision.direction > 0 else "SHORT",
-                                    "price": decision.entry_price,
-                                }
+                            self._append_trade_entry_on_chart(
+                                None,
+                                "LONG" if decision.direction > 0 else "SHORT",
+                                decision.entry_price,
+                                "strategy",
                             )
                             action = "EXECUTED"
                         else:
@@ -1631,56 +1636,189 @@ class BotOrchestrator:
         hour_text, minute_text = value.split(":", 1)
         return max(0, min(23, int(hour_text))), max(0, min(59, int(minute_text)))
 
+    def _mirofish_entry_slot(self, now_utc: datetime) -> Optional[str]:
+        london = now_utc.astimezone(self._mirofish_timezone())
+        if london.weekday() >= 5:
+            return None
+
+        morning_start = self._parse_hhmm(self.config.mirofish_entry_start_london)
+        morning_end = self._parse_hhmm(self.config.mirofish_entry_end_london)
+        second_start = self._parse_hhmm(self.config.mirofish_entry_second_start_london)
+        second_end = self._parse_hhmm(self.config.mirofish_entry_second_end_london)
+
+        minute_of_day = london.hour * 60 + london.minute
+        morning_start_minute = morning_start[0] * 60 + morning_start[1]
+        morning_end_minute = morning_end[0] * 60 + morning_end[1]
+        second_start_minute = second_start[0] * 60 + second_start[1]
+        second_end_minute = second_end[0] * 60 + second_end[1]
+
+        if morning_start_minute <= minute_of_day < morning_end_minute:
+            return "MORNING"
+        if second_start_minute <= minute_of_day < second_end_minute:
+            return "MIDDAY"
+        return None
+
     def _today_london(self, now_utc: Optional[datetime] = None) -> str:
         now_utc = now_utc or datetime.now(timezone.utc)
         return now_utc.astimezone(self._mirofish_timezone()).strftime("%Y-%m-%d")
 
-    def _reset_mirofish_trade_count_if_new_london_day(self, now_utc: Optional[datetime] = None) -> None:
-        today_london = self._today_london(now_utc)
-        if self.risk_state.mirofish_trade_date_london != today_london:
-            self.risk_state.mirofish_trade_date_london = today_london
+    def _clear_mirofish_runs_for_new_day(self, now_utc: Optional[datetime] = None) -> None:
+        london_date = self._today_london(now_utc)
+        if self.risk_state.mirofish_trade_date_london != london_date:
+            self.risk_state.mirofish_trade_date_london = london_date
             self.risk_state.mirofish_trades_taken_london = 0
+            self.risk_state.mirofish_signal_runs_london = []
+            self._last_mirofish_signal_id_by_slot = {}
+            self._last_mirofish_signal_seen_utc = {}
+            self._mirofish_close_requested = {}
+        existing = self.risk_state.mirofish_signal_runs_london
+        existing_runs = [item for item in existing if str(item.get("date_london", "")) == london_date]
+        if len(existing_runs) != len(existing):
+            self.risk_state.mirofish_signal_runs_london = existing_runs
+
+    def _reset_mirofish_trade_count_if_new_london_day(self, now_utc: Optional[datetime] = None) -> None:
+        now_utc = now_utc or datetime.now(timezone.utc)
+        self._clear_mirofish_runs_for_new_day(now_utc)
 
     def _mirofish_trades_taken_today(self, now_utc: Optional[datetime] = None) -> int:
         self._reset_mirofish_trade_count_if_new_london_day(now_utc)
         return self.risk_state.mirofish_trades_taken_london
 
+    def _mirofish_signal_runs_taken_today(self, now_utc: Optional[datetime] = None) -> int:
+        self._reset_mirofish_trade_count_if_new_london_day(now_utc)
+        return sum(
+            1
+            for item in self.risk_state.mirofish_signal_runs_london
+            if str(item.get("date_london", "")) == self._today_london(now_utc)
+            and bool(item.get("terminal", True))
+        )
+
+    def _slot_terminal_for_today(self, slot: str, *, now_utc: Optional[datetime] = None) -> bool:
+        self._reset_mirofish_trade_count_if_new_london_day(now_utc)
+        now_utc = now_utc or datetime.now(timezone.utc)
+        return any(
+            str(item.get("slot", "")) == slot
+            and str(item.get("date_london", "")) == self._today_london(now_utc)
+            and bool(item.get("terminal", True))
+            for item in self.risk_state.mirofish_signal_runs_london
+        )
+
+    def _should_retry_signal_in_slot(self, slot: str, signal_id: str, now_utc: datetime) -> bool:
+        last_signal = self._last_mirofish_signal_id_by_slot.get(slot)
+        if signal_id == "" or signal_id != last_signal:
+            return True
+        last_seen = self._last_mirofish_signal_seen_utc.get(slot)
+        if last_seen is None:
+            return True
+        age = now_utc.timestamp() - float(last_seen)
+        return age >= _MIROFISH_SLOT_RETRY_BACKOFF_SECONDS
+
+    def _has_run_slot_been_used_today(self, slot: str, *, now_utc: Optional[datetime] = None) -> bool:
+        return self._slot_terminal_for_today(slot, now_utc=now_utc)
+
+    def _record_mirofish_signal_run(
+        self,
+        *,
+        slot: str,
+        signal_id: str,
+        action: str,
+        signal_time: datetime,
+        signal_reason: Optional[str] = None,
+        signal_confidence: Optional[float] = None,
+        terminal: bool = True,
+    ) -> None:
+        self._reset_mirofish_trade_count_if_new_london_day(signal_time)
+        self.risk_state.mirofish_signal_runs_london.append(
+            {
+                "date_london": self._today_london(signal_time),
+                "slot": slot,
+                "signal_id": signal_id,
+                "action": action,
+                "confidence": signal_confidence,
+                "reason": signal_reason,
+                "terminal": terminal,
+                "recorded_at_utc": signal_time.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            }
+        )
+
+    def _mark_slot_used(
+        self,
+        *,
+        slot: str,
+        signal_id: str,
+        reason: str,
+        signal_time: datetime,
+        terminal: bool = True,
+    ) -> None:
+        self._record_mirofish_signal_run(
+            slot=slot,
+            signal_id=signal_id,
+            action=reason,
+            signal_time=signal_time,
+            signal_reason=reason,
+            signal_confidence=None,
+            terminal=terminal,
+        )
+        self._last_mirofish_signal_id_by_slot[slot] = signal_id
+
+    def _refresh_signal_window_tracking(self, *, slot: str, signal_id: str, signal_time: datetime) -> None:
+        self._last_mirofish_signal_id_by_slot[slot] = signal_id
+        self._last_mirofish_signal_seen_utc[slot] = signal_time.timestamp()
+
+    def _clear_stale_close_requests(self, *, open_position_ids: set[str], now_utc: datetime) -> None:
+        stale_cutoff = now_utc - timedelta(seconds=_MIROFISH_CLOSE_REQUEST_TTL_SECONDS)
+        self._mirofish_close_requested = {
+            position_id: requested_at
+            for position_id, requested_at in self._mirofish_close_requested.items()
+            if position_id in open_position_ids and requested_at >= stale_cutoff
+        }
+
     def _record_mirofish_trade(self, now_utc: Optional[datetime] = None) -> None:
         self._reset_mirofish_trade_count_if_new_london_day(now_utc)
         self.risk_state.mirofish_trades_taken_london += 1
 
-    def _append_trade_entry_on_chart(self, entry_id: str, direction: str, price: float, owner: str) -> None:
+    def _append_trade_entry_on_chart(self, entry_id: Optional[str], direction: str, price: float, owner: str) -> None:
         if len(self._recent_h1_closes) <= 0:
             return
-        for item in self._trade_entries_on_chart:
-            if str(item.get("id", "")) == str(entry_id):
-                return
-        self._trade_entries_on_chart.append(
-            {
-                "id": str(entry_id),
-                "bar_index": len(self._recent_h1_closes) - 1,
-                "direction": direction,
-                "price": round(price, 2),
-                "owner": owner,
-            }
-        )
+        entry_key = str(entry_id).strip() if entry_id is not None else ""
+        if entry_key:
+            for item in self._trade_entries_on_chart:
+                if str(item.get("id", "")) == entry_key:
+                    return
+        payload = {
+            "bar_index": len(self._recent_h1_closes) - 1,
+            "direction": direction,
+            "price": round(price, 2),
+            "owner": owner,
+        }
+        if entry_key:
+            payload["id"] = entry_key
+        self._trade_entries_on_chart.append(payload)
+        max_entries = max(1, len(self._recent_h1_closes))
+        if len(self._trade_entries_on_chart) > max_entries:
+            self._trade_entries_on_chart = self._trade_entries_on_chart[-max_entries:]
 
     def _mirofish_entry_window_gate(self, now_utc: datetime) -> Optional[str]:
         london = now_utc.astimezone(self._mirofish_timezone())
         if london.weekday() >= 5:
             return "WEEKEND"
 
-        start_hour, start_minute = self._parse_hhmm(self.config.mirofish_entry_start_london)
-        end_hour, end_minute = self._parse_hhmm(self.config.mirofish_entry_end_london)
-        minute_of_day = london.hour * 60 + london.minute
-        start_minute_of_day = start_hour * 60 + start_minute
-        end_minute_of_day = end_hour * 60 + end_minute
+        slot = self._mirofish_entry_slot(now_utc)
+        if slot is not None:
+            return None
 
-        if minute_of_day < start_minute_of_day:
+        morning_start_hour, morning_start_minute = self._parse_hhmm(self.config.mirofish_entry_start_london)
+        second_start_hour, second_start_minute = self._parse_hhmm(self.config.mirofish_entry_second_start_london)
+        minute_of_day = london.hour * 60 + london.minute
+        morning_start_minute_of_day = morning_start_hour * 60 + morning_start_minute
+        second_start_minute_of_day = second_start_hour * 60 + second_start_minute
+
+        if minute_of_day < morning_start_minute_of_day:
             return "TOO_EARLY"
-        if minute_of_day >= end_minute_of_day:
+
+        if minute_of_day >= second_start_minute_of_day:
             return "ENTRY_WINDOW_CLOSED"
-        return None
+        return "ENTRY_WINDOW_CLOSED"
 
     def _mirofish_force_flat_due(self, now_utc: datetime) -> bool:
         london = now_utc.astimezone(self._mirofish_timezone())
@@ -1690,6 +1828,24 @@ class BotOrchestrator:
         minute_of_day = london.hour * 60 + london.minute
         flat_minute_of_day = flat_hour * 60 + flat_minute
         return minute_of_day >= flat_minute_of_day
+
+    def _mirofish_slot_start_utc(self, slot: str, *, now_utc: datetime) -> datetime:
+        london = now_utc.astimezone(self._mirofish_timezone())
+        if slot == "MIDDAY":
+            hour, minute = self._parse_hhmm(self.config.mirofish_entry_second_start_london)
+        else:
+            hour, minute = self._parse_hhmm(self.config.mirofish_entry_start_london)
+        return london.replace(hour=hour, minute=minute, second=0, microsecond=0).astimezone(timezone.utc)
+
+    def _stale_signal_should_consume_slot(
+        self,
+        *,
+        slot: str,
+        signal_time: datetime,
+        now_utc: datetime,
+    ) -> bool:
+        slot_start_utc = self._mirofish_slot_start_utc(slot, now_utc=now_utc)
+        return signal_time >= slot_start_utc
 
     def _mirofish_lot_multiplier(self, confidence: float) -> float:
         if confidence >= self.config.mirofish_confidence_full_threshold:
@@ -1740,13 +1896,21 @@ class BotOrchestrator:
         )
 
     def _mirofish_structure_stop_distance(self, direction: int, current_price: float) -> float:
-        daily_levels = (self.level_manager._raw or {}).get("daily") if self.level_manager else None
+        daily_levels = None
+        if self.level_manager:
+            raw_levels = getattr(self.level_manager, "_raw", None)
+            if isinstance(raw_levels, dict):
+                daily_levels = raw_levels.get("daily")
+            else:
+                daily_levels = raw_levels
         closes = [float(value) for value in self._recent_h1_closes if value is not None]
         buffer_usd = float(self.config.mirofish_session_structure_buffer_usd)
         if direction > 0:
             floor = None
             if isinstance(daily_levels, dict):
                 floor = daily_levels.get("low")
+            elif daily_levels is not None:
+                floor = getattr(daily_levels, "day_low", None)
             if floor is None and closes:
                 floor = min(closes)
             if floor is None:
@@ -1755,6 +1919,8 @@ class BotOrchestrator:
         ceiling = None
         if isinstance(daily_levels, dict):
             ceiling = daily_levels.get("high")
+        elif daily_levels is not None:
+            ceiling = getattr(daily_levels, "day_high", None)
         if ceiling is None and closes:
             ceiling = max(closes)
         if ceiling is None:
@@ -1872,7 +2038,7 @@ class BotOrchestrator:
             return
         levels = self.level_manager._raw if self.level_manager else None
         open_positions = self.executor.position_manager.get_open_positions() if self.executor else []
-        closed_trades = self.executor._closed_trades_today if self.executor else []
+        closed_trades = self.executor.get_closed_trades_today() if self.executor else []
         await self.state_writer.write(
             bot_status=self.bot_status,
             account=self.account,
@@ -1924,6 +2090,8 @@ class BotOrchestrator:
                 "latest_quote": dict(self._latest_quote),
                 "mirofish_trade_date_london": self.risk_state.mirofish_trade_date_london,
                 "mirofish_trades_taken_london": self.risk_state.mirofish_trades_taken_london,
+                "mirofish_signal_runs_taken_london": len(self.risk_state.mirofish_signal_runs_london),
+                "mirofish_max_trades_per_day": self.config.mirofish_max_trades_per_day,
                 "strategy_data_status": self._strategy_data_status.get(self.active_strategy_mode),
                 "shadow_strategy_data_status": (
                     self._strategy_data_status.get(self.shadow_strategy_mode)
@@ -1980,15 +2148,34 @@ class BotOrchestrator:
             if sig is None:
                 continue
 
-            signal_id = sig.get("timestamp_utc", "")
-            if signal_id == self._last_mirofish_signal_id:
+            signal_id = str(sig.get("timestamp_utc", "") or "").strip()
+            now_utc = datetime.now(timezone.utc)
+            slot = self._mirofish_entry_slot(now_utc)
+            if slot is None:
+                entry_gate = self._mirofish_entry_window_gate(now_utc)
+                if entry_gate == "TOO_EARLY":
+                    logger.info(
+                        "[MIROFISH] Signal ready but the London entry window has not opened yet."
+                    )
+                elif entry_gate is not None:
+                    logger.info("[MIROFISH] Blocked by entry window: %s", entry_gate)
                 continue
+
+            if self._has_run_slot_been_used_today(slot, now_utc=now_utc):
+                logger.info("[MIROFISH] Slot %s already used today. Ignoring signal %s.", slot, signal_id)
+                continue
+
+            if not self._should_retry_signal_in_slot(slot, signal_id, now_utc):
+                continue
+
+            self._refresh_signal_window_tracking(slot=slot, signal_id=signal_id, signal_time=now_utc)
 
             action = str(sig.get("action", "HOLD")).upper()
             direction = _DIRECTION_MAP.get(action)
             if direction is None:
-                logger.info("[MIROFISH] Signal action=%s - no trade (HOLD or unknown)", action)
-                self._last_mirofish_signal_id = signal_id
+                logger.info("[MIROFISH] Signal action=%s - treated as HOLD / no trade", action)
+                self._mark_slot_used(slot=slot, signal_id=signal_id, reason="HOLD", signal_time=now_utc, terminal=True)
+                await self.write_state()
                 continue
 
             try:
@@ -1998,195 +2185,243 @@ class BotOrchestrator:
 
             try:
                 ts = datetime.fromisoformat(signal_id.replace("Z", "+00:00"))
-                now_utc = datetime.now(timezone.utc)
                 age = (now_utc - ts).total_seconds()
                 if age > self.config.mirofish_signal_max_age_seconds:
+                    terminal_stale = self._stale_signal_should_consume_slot(
+                        slot=slot,
+                        signal_time=ts.astimezone(timezone.utc),
+                        now_utc=now_utc,
+                    )
                     logger.info(
                         "[MIROFISH] Signal is %.0fs old (max %ds) - stale, skipping",
                         age,
                         self.config.mirofish_signal_max_age_seconds,
                     )
-                    self._last_mirofish_signal_id = signal_id
+                    self._mark_slot_used(
+                        slot=slot,
+                        signal_id=signal_id,
+                        reason="STALE",
+                        signal_time=now_utc,
+                        terminal=terminal_stale,
+                    )
+                    await self.write_state()
                     continue
             except (ValueError, TypeError):
-                logger.warning("[MIROFISH] Cannot parse timestamp '%s' - executing anyway", signal_id)
-                now_utc = datetime.now(timezone.utc)
-
-            self._reset_mirofish_trade_count_if_new_london_day(now_utc)
-
-            entry_gate = self._mirofish_entry_window_gate(now_utc)
-            if entry_gate == "TOO_EARLY":
-                logger.info("[MIROFISH] Signal ready but London entry window has not opened yet.")
-                continue
-            if entry_gate is not None:
-                logger.info("[MIROFISH] Blocked by entry window: %s", entry_gate)
-                self._last_mirofish_signal_id = signal_id
-                continue
-
-            if self._mirofish_trades_taken_today(now_utc) >= self.config.mirofish_max_trades_per_day:
-                logger.info(
-                    "[MIROFISH] Daily London trade cap reached (%d/%d).",
-                    self.risk_state.mirofish_trades_taken_london,
-                    self.config.mirofish_max_trades_per_day,
-                )
-                self._last_mirofish_signal_id = signal_id
-                continue
-
-            if self.symbol_spec is None:
-                logger.warning("[MIROFISH] Symbol spec not loaded yet - skipping")
-                continue
-
-            signal_symbol = str(sig.get("symbol") or "").upper()
-            live_symbol = str(getattr(self.symbol_spec, "symbol", "") or "").upper()
-            if signal_symbol and live_symbol and signal_symbol != live_symbol:
-                logger.info(
-                    "[MIROFISH] Signal symbol %s does not match configured symbol %s - skipping",
-                    signal_symbol,
-                    live_symbol,
-                )
-                self._last_mirofish_signal_id = signal_id
-                continue
-
-            distance_unit = str(sig.get("distance_unit", "usd") or "usd").lower()
-            if distance_unit not in ("usd", "dollars", "price"):
-                logger.info(
-                    "[MIROFISH] Signal distance_unit=%s is not executable by the current XAUEX runtime - skipping",
-                    distance_unit,
-                )
-                self._last_mirofish_signal_id = signal_id
-                continue
-
-            gate_result = await self._environment_gate(apply_risk_gates=True)
-            if gate_result is not None:
-                logger.info("[MIROFISH] Blocked by gate: %s", gate_result)
-                continue
-
-            bid = self.api_client._last_bid
-            ask = self.api_client._last_ask
-            if bid is None or ask is None:
-                logger.warning("[MIROFISH] No bid/ask available yet - skipping")
+                logger.warning("[MIROFISH] Cannot parse signal timestamp '%s' - skipping", signal_id)
+                self._mark_slot_used(slot=slot, signal_id=signal_id, reason="INVALID_SIGNAL_TIMESTAMP", signal_time=now_utc, terminal=True)
+                await self.write_state()
                 continue
 
             try:
-                signal_stop_distance = float(sig.get("stop_loss_usd", sig.get("stop_loss_distance", 12.0)))
-                signal_tp_distance = float(sig.get("take_profit_usd", sig.get("take_profit_distance", 24.0)))
-            except (TypeError, ValueError):
-                logger.warning("[MIROFISH] Invalid stop or take-profit values in signal - skipping")
-                self._last_mirofish_signal_id = signal_id
-                continue
+                self._reset_mirofish_trade_count_if_new_london_day(now_utc)
 
-            if signal_stop_distance <= 0 or signal_tp_distance <= 0:
-                logger.info("[MIROFISH] Non-positive stop or take-profit distance - skipping")
-                self._last_mirofish_signal_id = signal_id
-                continue
+                if self._mirofish_trades_taken_today(now_utc) >= self.config.mirofish_max_trades_per_day:
+                    logger.info(
+                        "[MIROFISH] Daily London trade cap reached (%d/%d).",
+                        self.risk_state.mirofish_trades_taken_london,
+                        self.config.mirofish_max_trades_per_day,
+                    )
+                    self._mark_slot_used(slot=slot, signal_id=signal_id, reason="CAP_REACHED", signal_time=now_utc, terminal=True)
+                    await self.write_state()
+                    continue
 
-            atr_stop_distance = self._mirofish_recent_atr_distance()
-            current_price = ask if direction == 1 else bid
-            structure_stop_distance = self._mirofish_structure_stop_distance(direction, current_price)
-            max_stop_distance = max(signal_stop_distance * 2.0, float(self.config.sl_max_dollars), 25.0)
-            sl_distance = build_mirofish_initial_stop_distance(
-                signal_stop=signal_stop_distance,
-                atr_stop=atr_stop_distance,
-                structure_stop=structure_stop_distance,
-                min_stop=float(self.config.sl_min_dollars),
-                max_stop=max_stop_distance,
-            )
-            tp_distance = max(float(signal_tp_distance), round(sl_distance * 1.5, 2))
+                if self.symbol_spec is None:
+                    logger.warning("[MIROFISH] Symbol spec not loaded yet - skipping")
+                    self._mark_slot_used(
+                        slot=slot,
+                        signal_id=signal_id,
+                        reason="SYMBOL_SPEC_MISSING",
+                        signal_time=now_utc,
+                        terminal=False,
+                    )
+                    await self.write_state()
+                    continue
 
-            if direction == 1:
-                stop_loss_price = current_price - sl_distance
-                take_profit_price = current_price + tp_distance
-            else:
-                stop_loss_price = current_price + sl_distance
-                take_profit_price = current_price - tp_distance
+                signal_symbol = str(sig.get("symbol") or "").upper()
+                live_symbol = str(getattr(self.symbol_spec, "symbol", "") or "").upper()
+                if signal_symbol and live_symbol and signal_symbol != live_symbol:
+                    logger.info(
+                        "[MIROFISH] Signal symbol %s does not match configured symbol %s - skipping",
+                        signal_symbol,
+                        live_symbol,
+                    )
+                    self._mark_slot_used(slot=slot, signal_id=signal_id, reason="SYMBOL_MISMATCH", signal_time=now_utc, terminal=True)
+                    await self.write_state()
+                    continue
 
-            cash_risk_budget = self._mirofish_cash_risk_budget()
-            if cash_risk_budget <= 0:
-                logger.info("[MIROFISH] Cash risk budget is non-positive - skipping")
-                self._last_mirofish_signal_id = signal_id
-                continue
+                distance_unit = str(sig.get("distance_unit", "usd") or "usd").lower()
+                if distance_unit not in ("usd", "dollars", "price"):
+                    logger.info(
+                        "[MIROFISH] Signal distance_unit=%s is not executable by the current XAUEX runtime - skipping",
+                        distance_unit,
+                    )
+                    self._mark_slot_used(slot=slot, signal_id=signal_id, reason="INVALID_DISTANCE_UNIT", signal_time=now_utc, terminal=True)
+                    await self.write_state()
+                    continue
 
-            lot = calculate_mirofish_lot_size_from_cash_risk(
-                cash_risk=cash_risk_budget,
-                stop_distance=sl_distance,
-                lot_size=float(self.symbol_spec.lot_size),
-                volume_step=float(self.symbol_spec.volume_step),
-                volume_min=float(self.symbol_spec.volume_min),
-                volume_max=float(self.symbol_spec.volume_max),
-                max_lot_size=float(getattr(self.config, "max_lot_size", self.symbol_spec.volume_max)),
-            )
-            if lot is None:
-                logger.info("[MIROFISH] Lot size calculation returned None - skipping")
-                self._last_mirofish_signal_id = signal_id
-                continue
-            scaled_lot = self._scale_lot_to_confidence(lot, confidence)
-            if scaled_lot is None:
-                logger.info(
-                    "[MIROFISH] Confidence-scaled lot fell below broker minimum | base_lot=%.5f confidence=%.2f",
-                    lot,
-                    confidence,
+                gate_result = await self._environment_gate(apply_risk_gates=True)
+                if gate_result is not None:
+                    logger.info("[MIROFISH] Blocked by gate: %s", gate_result)
+                    self._mark_slot_used(slot=slot, signal_id=signal_id, reason=gate_result, signal_time=now_utc, terminal=False)
+                    await self.write_state()
+                    continue
+
+                bid = self.api_client._last_bid
+                ask = self.api_client._last_ask
+                if bid is None or ask is None:
+                    logger.warning("[MIROFISH] No bid/ask available yet - skipping")
+                    self._mark_slot_used(slot=slot, signal_id=signal_id, reason="NO_QUOTE", signal_time=now_utc, terminal=False)
+                    await self.write_state()
+                    continue
+
+                try:
+                    signal_stop_distance = float(sig.get("stop_loss_usd", sig.get("stop_loss_distance", 12.0)))
+                    signal_tp_distance = float(sig.get("take_profit_usd", sig.get("take_profit_distance", 24.0)))
+                except (TypeError, ValueError):
+                    logger.warning("[MIROFISH] Invalid stop or take-profit values in signal - skipping")
+                    self._mark_slot_used(slot=slot, signal_id=signal_id, reason="INVALID_DISTANCE_VALUES", signal_time=now_utc, terminal=True)
+                    await self.write_state()
+                    continue
+
+                if signal_stop_distance <= 0 or signal_tp_distance <= 0:
+                    logger.info("[MIROFISH] Non-positive stop or take-profit distance - skipping")
+                    self._mark_slot_used(slot=slot, signal_id=signal_id, reason="NONPOSITIVE_DISTANCE", signal_time=now_utc, terminal=True)
+                    await self.write_state()
+                    continue
+
+                atr_stop_distance = self._mirofish_recent_atr_distance()
+                current_price = ask if direction == 1 else bid
+                structure_stop_distance = self._mirofish_structure_stop_distance(direction, current_price)
+                max_stop_distance = max(signal_stop_distance * 2.0, float(self.config.sl_max_dollars), 25.0)
+                sl_distance = build_mirofish_initial_stop_distance(
+                    signal_stop=signal_stop_distance,
+                    atr_stop=atr_stop_distance,
+                    structure_stop=structure_stop_distance,
+                    min_stop=float(self.config.sl_min_dollars),
+                    max_stop=max_stop_distance,
                 )
-                self._last_mirofish_signal_id = signal_id
-                continue
+                tp_distance = max(float(signal_tp_distance), round(sl_distance * 1.5, 2))
 
-            reasoning = sig.get("reasoning", "MiroFish signal")
-            dir_label = "LONG" if direction == 1 else "SHORT"
-            confidence_bucket, protect_r, trail_r = self._mirofish_session_thresholds(confidence)
-            session_metadata = {
-                "session": {
-                    "phase": "OBSERVE",
-                    "direction": dir_label,
-                    "entry_price": round(current_price, 2),
-                    "initial_risk_distance": round(sl_distance, 2),
-                    "confidence": round(confidence, 2),
-                    "confidence_bucket": confidence_bucket,
-                    "protect_r": protect_r,
-                    "trail_r": trail_r,
-                    "created_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                    "signal_id": signal_id,
-                }
-            }
-            logger.info(
-                "[MIROFISH] Executing %s %s | Lot:%.2f base_lot:%.2f multiplier:%.2f SL:%.2f TP:%.2f signal_sl:%.2f atr_sl:%.2f structure_sl:%.2f cash_risk:%.2f | Confidence:%.2f | %s",
-                signal_symbol or live_symbol or "XAUUSD",
-                dir_label,
-                scaled_lot,
-                lot,
-                self._mirofish_lot_multiplier(confidence),
-                stop_loss_price,
-                take_profit_price,
-                signal_stop_distance,
-                atr_stop_distance,
-                structure_stop_distance,
-                cash_risk_budget,
-                confidence,
-                reasoning,
-            )
-
-            pos_id = await self.executor.place_market_order(
-                direction=direction,
-                lot_size=scaled_lot,
-                stop_loss_price=stop_loss_price,
-                take_profit_price=take_profit_price,
-                pattern=PatternType.NONE,
-                level=current_price,
-                owner="oracle",
-                metadata=session_metadata,
-            )
-
-            if pos_id:
-                logger.info("[MIROFISH] Order placed: position_id=%s", pos_id)
-                self._record_mirofish_trade(now_utc)
-                if not str(pos_id).startswith("order:"):
-                    self._append_trade_entry_on_chart(str(pos_id), dir_label, current_price, "oracle")
-            else:
-                if self.config.observe_only:
-                    logger.info("[MIROFISH] OBSERVE_ONLY - order logged but not placed")
+                if direction == 1:
+                    stop_loss_price = current_price - sl_distance
+                    take_profit_price = current_price + tp_distance
                 else:
-                    logger.warning("[MIROFISH] Order placement returned None")
+                    stop_loss_price = current_price + sl_distance
+                    take_profit_price = current_price - tp_distance
 
-            self._last_mirofish_signal_id = signal_id
-            await self.write_state()
+                cash_risk_budget = self._mirofish_cash_risk_budget()
+                if cash_risk_budget <= 0:
+                    logger.info("[MIROFISH] Cash risk budget is non-positive - skipping")
+                    self._mark_slot_used(slot=slot, signal_id=signal_id, reason="NO_RISK_BUDGET", signal_time=now_utc, terminal=False)
+                    await self.write_state()
+                    continue
+
+                lot = calculate_mirofish_lot_size_from_cash_risk(
+                    cash_risk=cash_risk_budget,
+                    stop_distance=sl_distance,
+                    lot_size=float(self.symbol_spec.lot_size),
+                    volume_step=float(self.symbol_spec.volume_step),
+                    volume_min=float(self.symbol_spec.volume_min),
+                    volume_max=float(self.symbol_spec.volume_max),
+                    max_lot_size=float(getattr(self.config, "max_lot_size", self.symbol_spec.volume_max)),
+                )
+                if lot is None:
+                    logger.info("[MIROFISH] Lot size calculation returned None - skipping")
+                    self._mark_slot_used(slot=slot, signal_id=signal_id, reason="LOT_CALCULATION", signal_time=now_utc, terminal=True)
+                    await self.write_state()
+                    continue
+
+                scaled_lot = self._scale_lot_to_confidence(lot, confidence)
+                if scaled_lot is None:
+                    logger.info(
+                        "[MIROFISH] Confidence-scaled lot fell below broker minimum | base_lot=%.5f confidence=%.2f",
+                        lot,
+                        confidence,
+                    )
+                    self._mark_slot_used(slot=slot, signal_id=signal_id, reason="LOT_FLOORED", signal_time=now_utc, terminal=True)
+                    await self.write_state()
+                    continue
+
+                reasoning = sig.get("reasoning", "MiroFish signal")
+                dir_label = "LONG" if direction == 1 else "SHORT"
+                confidence_bucket, protect_r, trail_r = self._mirofish_session_thresholds(confidence)
+                session_metadata = {
+                    "session": {
+                        "phase": "OBSERVE",
+                        "direction": dir_label,
+                        "entry_price": round(current_price, 2),
+                        "initial_risk_distance": round(sl_distance, 2),
+                        "confidence": round(confidence, 2),
+                        "confidence_bucket": confidence_bucket,
+                        "protect_r": protect_r,
+                        "trail_r": trail_r,
+                        "created_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                        "signal_id": signal_id,
+                    }
+                }
+                logger.info(
+                    "[MIROFISH] Executing %s %s | Lot:%.2f base_lot:%.2f multiplier:%.2f SL:%.2f TP:%.2f signal_sl:%.2f atr_sl:%.2f structure_sl:%.2f cash_risk:%.2f | Confidence:%.2f | %s",
+                    signal_symbol or live_symbol or "XAUUSD",
+                    dir_label,
+                    scaled_lot,
+                    lot,
+                    self._mirofish_lot_multiplier(confidence),
+                    stop_loss_price,
+                    take_profit_price,
+                    signal_stop_distance,
+                    atr_stop_distance,
+                    structure_stop_distance,
+                    cash_risk_budget,
+                    confidence,
+                    reasoning,
+                )
+
+                pos_id = await self.executor.place_market_order(
+                    direction=direction,
+                    lot_size=scaled_lot,
+                    stop_loss_price=stop_loss_price,
+                    take_profit_price=take_profit_price,
+                    pattern=PatternType.NONE,
+                    level=current_price,
+                    owner="oracle",
+                    metadata=session_metadata,
+                )
+
+                if pos_id:
+                    logger.info("[MIROFISH] Order placed: position_id=%s", pos_id)
+                    self._record_mirofish_trade(now_utc)
+                    await self.write_state()
+                    if not str(pos_id).startswith("order:"):
+                        self._append_trade_entry_on_chart(str(pos_id), dir_label, current_price, "oracle")
+                else:
+                    if self.config.observe_only:
+                        logger.info("[MIROFISH] OBSERVE_ONLY - order logged but not placed")
+                    else:
+                        logger.warning("[MIROFISH] Order placement returned None")
+
+                self._mark_slot_used(
+                    slot=slot,
+                    signal_id=signal_id,
+                    reason="ORDER_PLACED" if pos_id is not None else "ORDER_NOT_PLACED",
+                    signal_time=now_utc,
+                    terminal=True,
+                )
+                await self.write_state()
+            except Exception:
+                logger.exception(
+                    "[MIROFISH] Signal poll iteration crashed for slot=%s signal_id=%s; keeping poller alive.",
+                    slot,
+                    signal_id,
+                )
+                self._mark_slot_used(
+                    slot=slot,
+                    signal_id=signal_id,
+                    reason="EXECUTION_EXCEPTION",
+                    signal_time=now_utc,
+                    terminal=False,
+                )
+                await self.write_state()
+                continue
 
     async def _monitor_mirofish_positions(self) -> None:
         """Close MiroFish positions on cash TP/SL or at the London force-flat time."""
@@ -2202,7 +2437,7 @@ class BotOrchestrator:
                 continue
 
             open_ids = {position.position_id for position in positions}
-            self._mirofish_close_requested.intersection_update(open_ids)
+            self._clear_stale_close_requests(open_position_ids=open_ids, now_utc=datetime.now(timezone.utc))
             self.risk_gates.set_open_position_count(count_tradeable_open_positions(positions))
 
             if not positions:
@@ -2282,7 +2517,7 @@ class BotOrchestrator:
                 )
 
                 if self.config.observe_only:
-                    self._mirofish_close_requested.add(position.position_id)
+                    self._mirofish_close_requested[position.position_id] = now_utc
                     continue
 
                 closed = await self.api_client.close_position(
@@ -2290,7 +2525,7 @@ class BotOrchestrator:
                     volume_lots=position.volume,
                 )
                 if closed:
-                    self._mirofish_close_requested.add(position.position_id)
+                    self._mirofish_close_requested[position.position_id] = now_utc
 
     async def _poll_manual_trade_commands(self) -> None:
         """Poll the separate manual trade command file and execute manual-only actions."""

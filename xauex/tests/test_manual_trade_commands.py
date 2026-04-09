@@ -2,6 +2,7 @@ import json
 import sys
 import importlib.util
 import asyncio
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -212,3 +213,19 @@ def test_manual_position_close_does_not_touch_risk_gates():
     asyncio.run(executor.on_position_closed("manual-closed", close_price=4691.0, pnl=-0.61))
 
     assert executor.risk_gates.closed == []
+
+
+def test_closed_trades_today_resets_on_new_utc_day():
+    executor = Executor(
+        config=SimpleNamespace(observe_only=False),
+        api_client=SimpleNamespace(get_current_quote=lambda: (4700.0, 4700.2)),
+        level_manager=None,
+    )
+    executor._closed_trades_date_utc = "2026-04-07"
+    executor._closed_trades_today = [{"position_id": "old-trade"}]
+
+    trades = executor.get_closed_trades_today(datetime(2026, 4, 8, 0, 1, tzinfo=timezone.utc))
+
+    assert trades == []
+    assert executor._closed_trades_today == []
+    assert executor._closed_trades_date_utc == "2026-04-08"

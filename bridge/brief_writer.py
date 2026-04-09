@@ -8,8 +8,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from openai import OpenAI
-
 from bridge.assets import AssetProfile
 from bridge.config import BridgeConfig
 
@@ -35,6 +33,8 @@ def write_brief(
     output_path: str,
     config: BridgeConfig,
 ) -> dict[str, Any]:
+    from openai import OpenAI
+
     client = OpenAI(api_key=config.parser_llm_api_key, base_url=config.parser_llm_base_url)
     action_lines = _action_lines(actions)
     prompt = (

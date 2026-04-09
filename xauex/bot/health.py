@@ -40,6 +40,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _DEFAULT_PORT = 8051
+_DEFAULT_HOST = "127.0.0.1"
 
 
 class HealthCheck:
@@ -48,10 +49,12 @@ class HealthCheck:
     def __init__(
         self,
         orchestrator: "BotOrchestrator",
+        host: str = _DEFAULT_HOST,
         port: int = _DEFAULT_PORT,
         watchdog=None,
     ):
         self.orchestrator = orchestrator
+        self.host         = host
         self.port         = port
         self.watchdog     = watchdog
         self._start_time  = time.monotonic()
@@ -77,9 +80,9 @@ class HealthCheck:
 
         self._runner = web.AppRunner(app)
         await self._runner.setup()
-        site = web.TCPSite(self._runner, "0.0.0.0", self.port)
+        site = web.TCPSite(self._runner, self.host, self.port)
         await site.start()
-        logger.info("[HEALTH] Listening on http://0.0.0.0:%d/health", self.port)
+        logger.info("[HEALTH] Listening on http://%s:%d/health", self.host, self.port)
 
         # Keep running until cancelled
         try:

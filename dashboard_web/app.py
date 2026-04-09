@@ -8,7 +8,7 @@ from typing import Any
 
 from flask import Flask, Response, abort, jsonify, render_template, request
 
-from diagnostics import build_diagnostics_snapshot
+from diagnostics import build_diagnostics_snapshot, count_london_signal_runs
 
 
 STATE_PATH = Path(os.getenv("STATE_FILE_PATH", "/var/lib/xauex/state.json"))
@@ -21,6 +21,9 @@ BRIEF_PATH = Path(os.getenv("BRIDGE_BRIEF_OUTPUT_PATH", "/var/lib/xauex/latest_s
 BRIEF_META_PATH = BRIEF_PATH.with_suffix(".json")
 EVIDENCE_PATH = Path(os.getenv("BRIDGE_EVIDENCE_OUTPUT_PATH", "/var/lib/xauex/latest_signal_evidence.json"))
 MIROFISH_URL = os.getenv("MIROFISH_URL", "http://10.8.0.1:8088").rstrip("/")
+MAX_SIGNAL_HISTORY = 12
+MAX_CHART_POINTS = 20
+MAX_SIGNAL_RUN_SLOTS = 2
 
 
 def _load_json(path: Path, default: Any) -> Any:
@@ -34,6 +37,13 @@ def _load_json(path: Path, default: Any) -> Any:
 def _safe_float(value: Any, default: float = 0.0) -> float:
     try:
         return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
     except (TypeError, ValueError):
         return default
 
@@ -85,12 +95,68 @@ def _normalise_trade(entry: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _daily_metrics(account: dict[str, Any], risk: dict[str, Any]) -> dict[str, Any]:
+def _leading_list(value: Any, limit: int) -> list[Any]:
+    if not isinstance(value, list):
+        return []
+    return value[:limit]
+
+
+def _as_trade_list(payload: Any) -> list[dict[str, Any]]:
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if isinstance(payload, dict):
+        for key in ("trades", "entries", "journal"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, dict)]
+    return []
+
+
+def _build_chart_payload(state: dict[str, Any], latest_quote: dict[str, Any]) -> dict[str, Any]:
+    raw_closes = state.get("recent_h1_closes", []) or []
+    if not isinstance(raw_closes, list):
+        raw_closes = []
+    raw_entries = state.get("trade_entries_on_chart", []) or []
+    if not isinstance(raw_entries, list):
+        raw_entries = []
+
+    closes = raw_closes[-MAX_CHART_POINTS:]
+    window_start = max(0, len(raw_closes) - len(closes))
+    window_end = window_start + len(closes)
+    trade_entries: list[dict[str, Any]] = []
+    for item in raw_entries:
+        if not isinstance(item, dict):
+            continue
+        try:
+            bar_index = int(item.get("bar_index"))
+        except (TypeError, ValueError):
+            continue
+        if bar_index < window_start or bar_index >= window_end:
+            continue
+        entry = dict(item)
+        entry["bar_index"] = bar_index - window_start
+        trade_entries.append(entry)
+
+    return {
+        "recent_h1_closes": closes,
+        "trade_entries": trade_entries,
+        "quote": latest_quote,
+    }
+
+
+def _daily_metrics(account: dict[str, Any], risk: dict[str, Any], runtime: dict[str, Any] | None = None) -> dict[str, Any]:
+    runtime = runtime or {}
     balance = _safe_float(account.get("balance"))
     equity = _safe_float(account.get("equity"))
     open_pnl = _safe_float(account.get("open_pnl"))
     day_start = _safe_float(risk.get("day_start_balance"), balance)
     week_start = _safe_float(risk.get("week_start_balance"), balance)
+    signal_runs = count_london_signal_runs(risk, runtime)
+    trades_taken = _safe_int(
+        risk.get("mirofish_trades_taken_london"),
+        _safe_int(runtime.get("mirofish_trades_taken_london")),
+    )
+    trade_cap = max(1, _safe_int(runtime.get("mirofish_max_trades_per_day"), 2))
     return {
         "balance": balance,
         "equity": equity,
@@ -102,7 +168,10 @@ def _daily_metrics(account: dict[str, Any], risk: dict[str, Any]) -> dict[str, A
         "week_start_balance": week_start,
         "daily_halted": bool(risk.get("daily_halted")),
         "weekly_halted": bool(risk.get("weekly_halted")),
-        "trades_taken_today": int(risk.get("mirofish_trades_taken_london", 0) or 0),
+        "trades_taken_today": trades_taken,
+        "trade_cap": trade_cap,
+        "signal_runs_taken_today": int(signal_runs),
+        "signal_runs_cap": MAX_SIGNAL_RUN_SLOTS,
     }
 
 
@@ -235,8 +304,16 @@ def _format_manual_reply(command: dict[str, Any], diagnostics: dict[str, Any]) -
     return f"Manual {action} queued for {float(lot_size):.2f} lot(s). Waiting for the next live quote."
 
 
-def _trade_explanation(signal: dict[str, Any], open_positions: list[dict[str, Any]], account: dict[str, Any]) -> str:
+def _trade_explanation(
+    signal: dict[str, Any],
+    open_positions: list[dict[str, Any]],
+    account: dict[str, Any],
+) -> str:
     action = str(signal.get("action") or "HOLD").upper()
+    max_trades_per_day = max(1, _safe_int(account.get("trade_cap"), 2))
+    signal_runs_cap = max(1, _safe_int(account.get("signal_runs_cap"), MAX_SIGNAL_RUN_SLOTS))
+    signal_runs_taken = int(account.get("signal_runs_taken_today", 0) or 0)
+    trades_taken = int(account.get("trades_taken_today", 0) or 0)
     oracle_positions = [
         position for position in open_positions
         if str(position.get("owner", "") or "").lower() == "oracle"
@@ -251,9 +328,10 @@ def _trade_explanation(signal: dict[str, Any], open_positions: list[dict[str, An
         return "Manual positions are open, but Oracle has no live managed trade right now."
     if action == "HOLD":
         return "No trade is open because the latest oracle decision is HOLD."
-    trades_taken = int(account.get("trades_taken_today", 0) or 0)
-    if trades_taken >= 1:
-        return "No trade is open because today’s single London trade has already been used or closed."
+    if trades_taken >= max_trades_per_day:
+        return f"No trade is open because today’s Oracle trade budget ({max_trades_per_day}) is already used."
+    if signal_runs_taken >= signal_runs_cap:
+        return "No trade is open because both scheduled London run slots for today are already used."
     return "There is a directional signal, but no live position is open right now. That usually means the entry window was missed, the trade already closed, or execution conditions blocked it."
 
 
@@ -294,26 +372,24 @@ def _build_payload() -> dict[str, Any]:
     journal = _load_json(JOURNAL_PATH, [])
     review = _load_json(REVIEW_PATH, {})
     risk_state = _load_json(RISK_PATH, {})
-    if isinstance(state, dict):
-        diagnostics = state.get("diagnostics", {}) or {}
-    else:
-        diagnostics = {}
-    if not diagnostics:
-        diagnostics = build_diagnostics_snapshot(state)
-
     account = state.get("account", {}) or {}
     risk = state.get("risk", {}) or {}
     meta = state.get("meta", {}) or {}
     open_positions = state.get("open_positions", []) or []
-    recent_trades = [_normalise_trade(item) for item in journal[-20:]][::-1]
+    journal_entries = _as_trade_list(journal)
+    recent_trades = [_normalise_trade(item) for item in journal_entries[-20:]][::-1]
     closed_today = [_normalise_trade(item) for item in state.get("closed_trades_today", [])]
     signal = _extract_signal(cmd)
-    account_payload = _daily_metrics(account, risk)
+    diagnostics = build_diagnostics_snapshot(state, oracle_signal=signal)
     brief_meta = _build_brief_meta()
     evidence = _build_evidence()
     runtime = state.get("runtime", {}) or {}
     manual_trade_status = runtime.get("manual_trade_status", {}) or {}
     latest_quote = runtime.get("latest_quote", {}) or {}
+    account_payload = _daily_metrics(account, risk, runtime)
+    chart_payload = _build_chart_payload(state, latest_quote)
+    signal_history = _leading_list(state.get("signal_history", []) or [], MAX_SIGNAL_HISTORY)
+    shadow_signal_history = _leading_list(state.get("shadow_signal_history", []) or [], MAX_SIGNAL_HISTORY)
     return {
         "meta": {
             "bot_status": meta.get("bot_status", "UNKNOWN"),
@@ -330,15 +406,11 @@ def _build_payload() -> dict[str, Any]:
         ],
         "closed_trades_today": closed_today,
         "recent_trades": recent_trades,
-        "signal_history": state.get("signal_history", []) or [],
-        "shadow_signal_history": state.get("shadow_signal_history", []) or [],
-        "recent_h1_closes": state.get("recent_h1_closes", []) or [],
-        "trade_entries_on_chart": state.get("trade_entries_on_chart", []) or [],
-        "chart": {
-            "recent_h1_closes": state.get("recent_h1_closes", []) or [],
-            "trade_entries": state.get("trade_entries_on_chart", []) or [],
-            "quote": latest_quote,
-        },
+        "signal_history": signal_history,
+        "shadow_signal_history": shadow_signal_history,
+        "recent_h1_closes": chart_payload["recent_h1_closes"],
+        "trade_entries_on_chart": chart_payload["trade_entries"],
+        "chart": chart_payload,
         "quote": latest_quote,
         "diagnostics": diagnostics,
         "levels": state.get("levels", {}) or {},

@@ -27,10 +27,11 @@ from tui_diagnostics import format_diagnostics_panel
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
+from textual.css.query import NoMatches
 from textual.widgets import Footer, Header, Static
 
-DEFAULT_HEALTH_URL = "http://10.8.0.1:8051/health"
-DEFAULT_STATE_URL = "http://10.8.0.1:8051/state"
+DEFAULT_HEALTH_URL = "http://127.0.0.1:8051/health"
+DEFAULT_STATE_URL = "http://127.0.0.1:8051/state"
 
 _STATUS_COLOURS = {
     "RUNNING": "green",
@@ -263,6 +264,11 @@ class RemoteXAUEXDashboard(App):
             self._refresh_in_flight = False
 
     def _update_ui(self, snapshot: RemoteSnapshot) -> None:
+        try:
+            status_bar = self.query_one("#status-bar", Static)
+        except NoMatches:
+            return
+
         health = snapshot.health or {}
         state = snapshot.state or {}
         meta = state.get("meta", {})
@@ -300,7 +306,7 @@ class RemoteXAUEXDashboard(App):
         day_start = risk.get("day_start_balance", balance)
         week_start = risk.get("week_start_balance", balance)
         endpoint_note = f"health={self.health_url}  state={self.state_url}"
-        self.query_one("#status-bar", Static).update(
+        status_bar.update(
             f"[{colour}]● {bot_status}[/{colour}]  {updated}\n{endpoint_note}"
         )
         self.query_one("#overview-panel", Static).update(

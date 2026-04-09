@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 from analyst._utils import (
+    default_model,
     append_to_json_list,
     call_claude,
     is_state_stale,
@@ -18,7 +19,7 @@ from analyst._utils import (
 
 logger = logging.getLogger(__name__)
 
-MODEL = "gemini-3.1-pro-preview"
+MODEL = default_model()
 STALE_SECONDS = 10 * 60
 
 STATE_PATH = os.environ.get("XAUEX_STATE_FILE", os.environ.get("STATE_FILE_PATH", "/var/lib/xauex/state.json"))
@@ -51,7 +52,7 @@ def find_new_signals(signals: List[Dict], cursor: Dict) -> List[Dict]:
 
 
 def build_score_prompt(signal: Dict, trend: Optional[Dict] = None) -> str:
-    """Build Claude prompt for scoring a single setup."""
+    """Build the analyst prompt for scoring a single setup."""
     pattern = signal.get("pattern", "UNKNOWN")
     level = signal.get("level_checked", "?")
     gate = signal.get("gate_result", "?")

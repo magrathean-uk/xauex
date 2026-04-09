@@ -1,7 +1,10 @@
 from dataclasses import replace
+from pathlib import Path
+from types import SimpleNamespace
 
 from bridge.config import BridgeConfig
 from bridge.qdrant_memory import QdrantMemoryConfig
+import bridge.run as bridge_run
 from bridge.run import build_direct_prediction_artifacts
 
 
@@ -173,3 +176,94 @@ def test_build_direct_prediction_artifacts_continues_when_qdrant_fails(monkeypat
     )
 
     assert artifacts["payload"]["retrieved_memory"] == []
+
+
+def test_dry_run_does_not_overwrite_live_brief_or_evidence(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
+    monkeypatch.setenv("BRIDGE_PREDICTION_MODE", "direct")
+    monkeypatch.setenv("SIGNAL_OUTPUT_PATH", str(tmp_path / "cmd.json"))
+    monkeypatch.setenv("BRIDGE_BRIEF_OUTPUT_PATH", str(tmp_path / "latest_signal_brief.md"))
+    monkeypatch.setenv("BRIDGE_EVIDENCE_OUTPUT_PATH", str(tmp_path / "latest_signal_evidence.json"))
+    monkeypatch.setattr(bridge_run, "load_dotenv", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        bridge_run,
+        "_parse_args",
+        lambda: SimpleNamespace(
+            asset="XAUUSD",
+            news=None,
+            news_text="# Context\nFed dovish and gold-sensitive yields softened after the release.",
+            auto_context=False,
+            lookback_hours=72,
+            max_sources=10,
+            max_items_per_source=4,
+            include_manual_sources=False,
+            list_sources=False,
+            dump_context=None,
+            dry_run=True,
+            output=None,
+            max_rounds=None,
+        ),
+    )
+
+    brief_path = tmp_path / "latest_signal_brief.md"
+    evidence_path = tmp_path / "latest_signal_evidence.json"
+    signal_path = tmp_path / "cmd.json"
+    brief_path.write_text("brief-before", encoding="utf-8")
+    evidence_path.write_text("{\"before\": true}", encoding="utf-8")
+    signal_path.write_text("{\"before\": true}", encoding="utf-8")
+
+    def fake_build_direct_prediction_artifacts(**kwargs):
+        return {
+            "payload": {
+                "context_excerpt": kwargs["context_markdown"],
+                "recent_runs": [],
+                "weights": {},
+                "price_features": {},
+            },
+            "results": {
+                "actions": [{"agent_name": "oracle", "action_type": "report"}],
+                "report_markdown": "report",
+                "simulation_id": None,
+                "report_id": None,
+                "fallback_reused": False,
+                "prediction_mode": "direct",
+            },
+        }
+
+    def fake_parse_signal(*, asset, actions, report_markdown, config):
+        return {
+            "schema_version": 2,
+            "symbol": asset.symbol,
+            "action": "BUY",
+            "confidence": 0.7,
+            "reasoning": "Fed backdrop supports gold",
+        }
+
+    calls = {"brief": 0, "evidence": 0, "signal": 0}
+
+    def fake_write_brief(**kwargs):
+        calls["brief"] += 1
+        target = Path(kwargs["output_path"])
+        target.write_text("brief-after", encoding="utf-8")
+        return {"path": str(target)}
+
+    def fake_write_evidence_pack(**kwargs):
+        calls["evidence"] += 1
+        kwargs["output_path"].write_text("{\"after\": true}", encoding="utf-8")
+
+    def fake_write_signal(signal, output_path):
+        calls["signal"] += 1
+        Path(output_path).write_text("{\"after\": true}", encoding="utf-8")
+
+    monkeypatch.setattr(bridge_run, "build_direct_prediction_artifacts", fake_build_direct_prediction_artifacts)
+    monkeypatch.setattr("bridge.signal_parser.parse_signal", fake_parse_signal)
+    monkeypatch.setattr("bridge.brief_writer.write_brief", fake_write_brief)
+    monkeypatch.setattr("bridge.evidence_writer.write_evidence_pack", fake_write_evidence_pack)
+    monkeypatch.setattr("bridge.signal_writer.write_signal", fake_write_signal)
+
+    bridge_run.main()
+
+    assert calls == {"brief": 0, "evidence": 0, "signal": 0}
+    assert brief_path.read_text(encoding="utf-8") == "brief-before"
+    assert evidence_path.read_text(encoding="utf-8") == "{\"before\": true}"
+    assert signal_path.read_text(encoding="utf-8") == "{\"before\": true}"

@@ -17,10 +17,10 @@ This repository is the only runtime folder. Do not use `/home/bolyki/xauex` for 
 - `oracle-dashboard.service`: lightweight web dashboard on port `8089` for bot state, signal, positions, trades, and account metrics.
 - `xauex.service`: weekday trading process that stays up through the work week.
 - `xauex-start.timer`: starts `xauex.service` at `07:25 Europe/London`, Monday to Friday.
-- `xauex-stop.timer`: stops `xauex.service` at `12:05 Europe/London` on Friday so it does not run on weekends.
-- `xauex-trade-journal.timer`: journals the day’s closed trades at `12:06 Europe/London`, Monday to Friday.
-- `xauex-weekly-review.timer`: writes the current-week review at `12:15 Europe/London` on Friday.
-- `mirofish-bridge.timer`: refreshes the signal once per weekday at `07:35 Europe/London`.
+- `xauex-stop.timer`: stops `xauex.service` at `15:06 Europe/London` on Friday so it does not run on weekends.
+- `xauex-trade-journal.timer`: journals the day’s closed trades at `15:07 Europe/London`, Monday to Friday.
+- `xauex-weekly-review.timer`: writes the current-week review at `15:15 Europe/London` on Friday.
+- `mirofish-bridge.timer`: refreshes the signal on weekdays at `08:00 Europe/London` and `11:30 Europe/London`.
 - `mirofish-bridge.service`: one-shot signal generation job triggered by the timer or manually.
 
 XAUEX is configured to poll `/var/lib/xauex/cmd.json` and trade Oracle signals when `MIROFISH_MODE=true` in `xauex/.env`.
@@ -37,7 +37,7 @@ The current live signal path is `direct`:
 
 - fetch fresh curated macro / gold context
 - blend that with local price structure and recent local trade memory
-- generate one morning `BUY` / `SELL` / rare `HOLD`
+- generate fresh `BUY` / `SELL` / `HOLD` signals for each configured London entry window
 - write:
   - `/var/lib/xauex/cmd.json`
   - `/var/lib/xauex/latest_signal_brief.md`
@@ -71,7 +71,6 @@ Start everything:
 
 ```bash
 sudo systemctl start mirofish-backend.service
-sudo systemctl start xauex.service
 sudo systemctl start xauex-start.timer
 sudo systemctl start xauex-stop.timer
 sudo systemctl start xauex-trade-journal.timer
@@ -89,8 +88,8 @@ sudo systemctl stop xauex-start.timer
 sudo systemctl stop xauex-stop.timer
 sudo systemctl stop xauex-trade-journal.timer
 sudo systemctl stop xauex-weekly-review.timer
-sudo systemctl stop oracle-dashboard.service
 sudo systemctl stop xauex.service
+sudo systemctl stop oracle-dashboard.service
 sudo systemctl stop mirofish-backend.service
 ```
 
@@ -98,7 +97,6 @@ Restart after code or config changes:
 
 ```bash
 sudo systemctl restart mirofish-backend.service
-sudo systemctl restart xauex.service
 sudo systemctl restart xauex-start.timer
 sudo systemctl restart xauex-stop.timer
 sudo systemctl restart xauex-trade-journal.timer
@@ -106,6 +104,8 @@ sudo systemctl restart xauex-weekly-review.timer
 sudo systemctl restart oracle-dashboard.service
 sudo systemctl start mirofish-bridge.service
 ```
+
+The `xauex-start.timer`, `mirofish-bridge.timer`, `xauex-stop.timer`, `xauex-trade-journal.timer`, and `xauex-weekly-review.timer` all use `Persistent=true`, so they catch up after reboots or downtime.
 
 ## Status
 
@@ -144,6 +144,7 @@ Dashboard:
 
 - local URL: `http://127.0.0.1:8089`
 - LAN URL: `http://10.8.0.1:8089`
+- XAUEX health endpoint: `http://127.0.0.1:8051/health` only
 
 Retention policy:
 
@@ -156,13 +157,17 @@ Retention policy:
 This machine is intended to keep trading on demo. Confirm these values in `xauex/.env`:
 
 ```dotenv
+CTRADER_HOST=demo-uk-eqx-01.p.c-trader.com
+CTRADER_TLS_SERVER_NAME=connect.spotware.com
 OBSERVE_ONLY=false
 MIROFISH_MODE=true
 RISK_PERCENT=1.5
 MIROFISH_ENTRY_START_LONDON=08:00
 MIROFISH_ENTRY_END_LONDON=08:05
-MIROFISH_FORCE_FLAT_LONDON=11:30
-MIROFISH_MAX_TRADES_PER_DAY=1
+MIROFISH_ENTRY_SECOND_START_LONDON=11:30
+MIROFISH_ENTRY_SECOND_END_LONDON=11:35
+MIROFISH_FORCE_FLAT_LONDON=15:00
+MIROFISH_MAX_TRADES_PER_DAY=2
 MIROFISH_CASH_TAKE_PROFIT_GBP=50
 MIROFISH_CASH_STOP_LOSS_GBP=50
 CMD_FILE_PATH=/var/lib/xauex/cmd.json
@@ -178,7 +183,7 @@ cd /home/bolyki/mirofish-gold-oracle
 
 Expected live behavior:
 
-- phase 1: one trade max per London weekday
+- phase 1: up to `MIROFISH_MAX_TRADES_PER_DAY` signal windows per London weekday
 - `HOLD` is allowed, but should be rare and reserved for hard blockers or strong conflict
 - optional local Qdrant memory can be enabled with `QDRANT_ENABLED=1` and `QDRANT_PATH=/var/lib/xauex/qdrant_local`
 - the current local Qdrant implementation is embedded via `qdrant-client`; there is no separate daemon or port to manage

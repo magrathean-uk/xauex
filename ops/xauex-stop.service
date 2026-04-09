@@ -1,5 +1,5 @@
 [Unit]
-Description=Stop XAUEX after the London morning session
+Description=Stop XAUEX after the London force-flat boundary
 After=xauex.service
 
 [Service]

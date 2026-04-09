@@ -152,6 +152,7 @@ class ApiClient:
         self._transport = CTraderTransport(
             self.config.ctrader_host,
             self.config.ctrader_port,
+            tls_server_name=getattr(self.config, "ctrader_tls_server_name", "") or None,
         )
         self._transport.set_message_callback(self._route_message)
         self._transport.set_disconnect_callback(self._on_disconnect)
@@ -160,6 +161,7 @@ class ApiClient:
         self._connected = True
 
         await self._app_auth()
+        await self._validate_access_token_accounts()
         await self._account_auth()
         logger.info("[API] Connected and authenticated to account %s",
                     self.config.ctrader_account_id)
@@ -248,7 +250,8 @@ class ApiClient:
         req = ProtoOAApplicationAuthReq()
         req.clientId     = self.config.ctrader_client_id
         req.clientSecret = self.config.ctrader_client_secret
-        await self._send_and_wait(req)
+        response = await self._send_and_wait(req)
+        self._raise_for_error_response(response, "Application auth")
 
     async def _account_auth(self) -> None:
         """Authenticate the trading account (access token)."""
@@ -258,7 +261,43 @@ class ApiClient:
         req = ProtoOAAccountAuthReq()
         req.ctidTraderAccountId = int(self.config.ctrader_account_id)
         req.accessToken         = self.config.ctrader_access_token
-        await self._send_and_wait(req)
+        response = await self._send_and_wait(req)
+        self._raise_for_error_response(response, "Account auth")
+
+    async def _validate_access_token_accounts(self) -> None:
+        """Confirm the configured account is available for the current access token."""
+        from ctrader_open_api.messages.OpenApiMessages_pb2 import (
+            ProtoOAGetAccountListByAccessTokenReq,
+        )
+
+        req = ProtoOAGetAccountListByAccessTokenReq()
+        req.accessToken = self.config.ctrader_access_token
+        response = await self._send_and_wait(req)
+        self._raise_for_error_response(response, "Access-token account lookup")
+
+        account_ids = {str(account_id) for account_id in getattr(response, "ctidTraderAccountId", [])}
+        if not account_ids:
+            logger.warning(
+                "[API] Access-token account lookup returned no account IDs. "
+                "Continuing with direct account auth for %s.",
+                self.config.ctrader_account_id,
+            )
+            return
+        if self.config.ctrader_account_id not in account_ids:
+            known = ", ".join(sorted(account_ids)) if account_ids else "none"
+            raise RuntimeError(
+                f"Configured cTrader account {self.config.ctrader_account_id} is not present in "
+                f"the access-token account list ({known})."
+            )
+
+    @staticmethod
+    def _raise_for_error_response(response, step: str) -> None:
+        """Turn Open API error payloads into actionable exceptions."""
+        error_code = getattr(response, "errorCode", None)
+        description = getattr(response, "description", "") or ""
+        if error_code:
+            detail = f"{error_code}: {description}" if description else str(error_code)
+            raise RuntimeError(f"{step} failed: {detail}")
 
     # ──────────────────────────────────────────────────────────────────────────
     # Token refresh

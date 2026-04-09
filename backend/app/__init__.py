@@ -10,7 +10,6 @@ import warnings
 warnings.filterwarnings("ignore", message=".*resource_tracker.*")
 
 from flask import Flask, request
-from flask_cors import CORS
 
 from .config import Config
 from .utils.logger import setup_logger, get_logger
@@ -18,6 +17,8 @@ from .utils.logger import setup_logger, get_logger
 
 def create_app(config_class=Config):
     """Flask应用工厂函数"""
+    from flask_cors import CORS
+
     app = Flask(__name__)
     app.config.from_object(config_class)
     
@@ -77,4 +78,3 @@ def create_app(config_class=Config):
         logger.info("MiroFish Backend 启动完成")
     
     return app
-

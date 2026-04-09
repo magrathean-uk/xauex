@@ -1,4 +1,4 @@
-"""Gemini-powered macro regime classifier for XAUUSD."""
+"""LLM-powered macro regime classifier for XAUUSD."""
 
 from __future__ import annotations
 
@@ -9,11 +9,11 @@ import sys
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from analyst._utils import atomic_write_json, call_claude, is_state_stale, read_json_file, utcnow_str
+from analyst._utils import atomic_write_json, call_claude, default_model, is_state_stale, read_json_file, utcnow_str
 
 logger = logging.getLogger(__name__)
 
-MODEL = "gemini-3.1-pro-preview"
+MODEL = default_model()
 STATE_PATH = os.environ.get("XAUEX_STATE_FILE", os.environ.get("STATE_FILE_PATH", "/var/lib/xauex/state.json"))
 _STATE_DIR = os.path.dirname(STATE_PATH) or "."
 NEWS_CACHE_PATH = os.environ.get("XAUEX_NEWS_CACHE", os.path.join(_STATE_DIR, "news_calendar_cache.json"))
@@ -125,7 +125,7 @@ def run(
     stale = is_state_stale(state, max_age_seconds=STALE_SECONDS)
     prompt = build_prompt(state, news_cache, now_utc, stale=stale)
 
-    logger.info("[MACRO] Calling Gemini (%s)...", MODEL)
+    logger.info("[MACRO] Calling analyst model (%s)...", MODEL)
     response = call_claude(prompt, MODEL)
     parsed = _extract_json(response)
 

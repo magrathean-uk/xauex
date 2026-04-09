@@ -10,9 +10,7 @@ import json
 from typing import Dict, Any, List, Optional, Callable
 from dataclasses import dataclass
 from datetime import datetime
-from queue import Queue, Empty
-
-from zep_cloud.client import Zep
+from queue import Queue, Empty, Full
 
 from ..config import Config
 from ..utils.logger import get_logger
@@ -228,6 +226,10 @@ class ZepGraphMemoryUpdater:
     # 重试配置
     MAX_RETRIES = 3
     RETRY_DELAY = 2  # 秒
+
+    # 内存保护
+    MAX_QUEUE_SIZE = 2000
+    MAX_PLATFORM_BUFFER_SIZE = 1000
     
     def __init__(self, graph_id: str, api_key: Optional[str] = None):
         """
@@ -242,11 +244,13 @@ class ZepGraphMemoryUpdater:
         
         if not self.api_key:
             raise ValueError("ZEP_API_KEY未配置")
-        
+
+        from zep_cloud.client import Zep
+
         self.client = Zep(api_key=self.api_key)
         
         # 活动队列
-        self._activity_queue: Queue = Queue()
+        self._activity_queue: Queue = Queue(maxsize=self.MAX_QUEUE_SIZE)
         
         # 按平台分组的活动缓冲区（每个平台各自累积到BATCH_SIZE后批量发送）
         self._platform_buffers: Dict[str, List[AgentActivity]] = {
@@ -265,6 +269,7 @@ class ZepGraphMemoryUpdater:
         self._total_items_sent = 0  # 成功发送到Zep的活动条数
         self._failed_count = 0      # 发送失败的批次数
         self._skipped_count = 0     # 被过滤跳过的活动数（DO_NOTHING）
+        self._dropped_count = 0     # 因队列/缓冲区上限被丢弃的活动数
         
         logger.info(f"ZepGraphMemoryUpdater 初始化完成: graph_id={graph_id}, batch_size={self.BATCH_SIZE}")
     
@@ -333,7 +338,21 @@ class ZepGraphMemoryUpdater:
             self._skipped_count += 1
             return
         
-        self._activity_queue.put(activity)
+        try:
+            self._activity_queue.put_nowait(activity)
+        except Full:
+            try:
+                self._activity_queue.get_nowait()
+                self._dropped_count += 1
+            except Empty:
+                pass
+            try:
+                self._activity_queue.put_nowait(activity)
+            except Full:
+                self._dropped_count += 1
+                logger.warning("Zep活动队列已满，活动被丢弃: %s - %s", activity.agent_name, activity.action_type)
+                return
+            logger.warning("Zep活动队列已满，已丢弃最旧活动以保留最新事件。")
         self._total_activities += 1
         logger.debug(f"添加活动到Zep队列: {activity.agent_name} - {activity.action_type}")
     
@@ -373,9 +392,7 @@ class ZepGraphMemoryUpdater:
                     # 将活动添加到对应平台的缓冲区
                     platform = activity.platform.lower()
                     with self._buffer_lock:
-                        if platform not in self._platform_buffers:
-                            self._platform_buffers[platform] = []
-                        self._platform_buffers[platform].append(activity)
+                        self._append_to_platform_buffer(activity)
                         
                         # 检查该平台是否达到批量大小
                         if len(self._platform_buffers[platform]) >= self.BATCH_SIZE:
@@ -431,6 +448,18 @@ class ZepGraphMemoryUpdater:
                 else:
                     logger.error(f"批量发送到Zep失败，已重试{self.MAX_RETRIES}次: {e}")
                     self._failed_count += 1
+
+    def _append_to_platform_buffer(self, activity: AgentActivity) -> None:
+        platform = activity.platform.lower()
+        if platform not in self._platform_buffers:
+            self._platform_buffers[platform] = []
+        buffer = self._platform_buffers[platform]
+        buffer.append(activity)
+        overflow = len(buffer) - self.MAX_PLATFORM_BUFFER_SIZE
+        if overflow > 0:
+            del buffer[:overflow]
+            self._dropped_count += overflow
+            logger.warning("Zep平台缓冲区已满，已丢弃 %s 条最旧活动: platform=%s", overflow, platform)
     
     def _flush_remaining(self):
         """发送队列和缓冲区中剩余的活动"""
@@ -438,11 +467,8 @@ class ZepGraphMemoryUpdater:
         while not self._activity_queue.empty():
             try:
                 activity = self._activity_queue.get_nowait()
-                platform = activity.platform.lower()
                 with self._buffer_lock:
-                    if platform not in self._platform_buffers:
-                        self._platform_buffers[platform] = []
-                    self._platform_buffers[platform].append(activity)
+                    self._append_to_platform_buffer(activity)
             except Empty:
                 break
         
@@ -470,6 +496,7 @@ class ZepGraphMemoryUpdater:
             "items_sent": self._total_items_sent,        # 成功发送的活动条数
             "failed_count": self._failed_count,          # 发送失败的批次数
             "skipped_count": self._skipped_count,        # 被过滤跳过的活动数（DO_NOTHING）
+            "dropped_count": self._dropped_count,        # 因背压保护丢弃的活动数
             "queue_size": self._activity_queue.qsize(),
             "buffer_sizes": buffer_sizes,                # 各平台缓冲区大小
             "running": self._running,

@@ -6,7 +6,6 @@ LLM客户端封装
 import json
 import re
 from typing import Optional, Dict, Any, List
-from openai import OpenAI
 
 from ..config import Config
 
@@ -20,6 +19,8 @@ class LLMClient:
         base_url: Optional[str] = None,
         model: Optional[str] = None
     ):
+        from openai import OpenAI
+
         self.api_key = api_key or Config.LLM_API_KEY
         self.base_url = base_url or Config.LLM_BASE_URL
         self.model = model or Config.LLM_MODEL_NAME
@@ -100,4 +101,3 @@ class LLMClient:
             return json.loads(cleaned_response)
         except json.JSONDecodeError:
             raise ValueError(f"LLM返回的JSON格式无效: {cleaned_response}")
-

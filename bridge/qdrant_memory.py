@@ -36,6 +36,23 @@ class QdrantMemoryConfig:
     check_compatibility: bool
 
 
+@dataclass(frozen=True)
+class _FallbackVectorParams:
+    size: int
+    distance: str
+
+
+@dataclass(frozen=True)
+class _FallbackPointStruct:
+    id: str
+    vector: list[float]
+    payload: dict[str, Any]
+
+
+class _FallbackDistance:
+    COSINE = "cosine"
+
+
 def load_qdrant_memory_config(env: Mapping[str, str] | None = None) -> QdrantMemoryConfig:
     source = env or os.environ
     location = _clean_str(_env_lookup(source, "BRIDGE_QDRANT_LOCATION", "QDRANT_LOCATION"))
@@ -409,10 +426,10 @@ def _memory_point_id(asset_symbol: str, close_time: str, journal: str) -> str:
 def _load_qdrant_model_types(*, include_point_struct: bool = False) -> tuple[Any, Any] | tuple[Any, Any, Any]:
     try:
         from qdrant_client.http.models import Distance, PointStruct, VectorParams
-    except ImportError as exc:  # pragma: no cover - depends on optional dependency
-        raise RuntimeError(
-            "qdrant-client is not installed; add it before enabling the memory layer"
-        ) from exc
+    except ImportError:  # pragma: no cover - depends on optional dependency
+        Distance = _FallbackDistance
+        PointStruct = _FallbackPointStruct
+        VectorParams = _FallbackVectorParams
     if include_point_struct:
         return PointStruct, VectorParams, Distance
     return VectorParams, Distance

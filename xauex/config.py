@@ -25,6 +25,7 @@ class Config:
     ctrader_client_secret: str
     ctrader_host: str
     ctrader_port: int
+    ctrader_tls_server_name: str
     ctrader_account_id: str
 
     # OAuth tokens (empty before first auth run — that is valid)
@@ -78,6 +79,8 @@ class Config:
     mirofish_entry_timezone: str
     mirofish_entry_start_london: str
     mirofish_entry_end_london: str
+    mirofish_entry_second_start_london: str
+    mirofish_entry_second_end_london: str
     mirofish_force_flat_london: str
     mirofish_max_trades_per_day: int
     mirofish_cash_take_profit_gbp: float
@@ -118,6 +121,7 @@ class Config:
     observe_only: bool
 
     # Health check endpoint
+    health_check_host: str
     health_check_port: int
 
     # File paths
@@ -163,6 +167,19 @@ def _one_of(key: str, allowed: tuple[str, ...], default: str) -> str:
     return raw
 
 
+def _hhmm_to_minutes(value: str, key: str) -> int:
+    text = str(value or "").strip()
+    try:
+        hour_text, minute_text = text.split(":", 1)
+        hour = int(hour_text)
+        minute = int(minute_text)
+    except (AttributeError, TypeError, ValueError):
+        raise ConfigError(f"{key} must be in HH:MM format, got: {value!r}")
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        raise ConfigError(f"{key} must be in HH:MM format, got: {value!r}")
+    return hour * 60 + minute
+
+
 def load_config(env_file: str = ".env") -> Config:
     """Load and validate configuration from .env file.
 
@@ -183,8 +200,10 @@ def load_config(env_file: str = ".env") -> Config:
 
     client_id     = collect(_require, "CTRADER_CLIENT_ID")
     client_secret = collect(_require, "CTRADER_CLIENT_SECRET")
-    host          = os.getenv("CTRADER_HOST", "demo.ctraderapi.com")
+    # Match the live deployment examples unless the operator overrides them.
+    host          = os.getenv("CTRADER_HOST", "demo-uk-eqx-01.p.c-trader.com")
     port          = collect(_int_range, "CTRADER_PORT", 1, 65535, 5035)
+    tls_server_name = os.getenv("CTRADER_TLS_SERVER_NAME", "connect.spotware.com").strip()
     account_id    = collect(_require, "CTRADER_ACCOUNT_ID")
 
     # Tokens: empty is OK pre-auth
@@ -294,9 +313,11 @@ def load_config(env_file: str = ".env") -> Config:
     mirofish_entry_timezone = os.getenv("MIROFISH_ENTRY_TIMEZONE", "Europe/London")
     mirofish_entry_start_london = os.getenv("MIROFISH_ENTRY_START_LONDON", "08:00")
     mirofish_entry_end_london = os.getenv("MIROFISH_ENTRY_END_LONDON", "08:05")
-    mirofish_force_flat_london = os.getenv("MIROFISH_FORCE_FLAT_LONDON", "11:30")
+    mirofish_entry_second_start_london = os.getenv("MIROFISH_ENTRY_SECOND_START_LONDON", "11:30")
+    mirofish_entry_second_end_london = os.getenv("MIROFISH_ENTRY_SECOND_END_LONDON", "11:35")
+    mirofish_force_flat_london = os.getenv("MIROFISH_FORCE_FLAT_LONDON", "15:00")
     mirofish_max_trades_per_day = collect(
-        _int_range, "MIROFISH_MAX_TRADES_PER_DAY", 1, 5, 1
+        _int_range, "MIROFISH_MAX_TRADES_PER_DAY", 1, 5, 2
     )
     mirofish_cash_take_profit_gbp = collect(
         _float_range, "MIROFISH_CASH_TAKE_PROFIT_GBP", 1.0, 5000.0, 50.0
@@ -400,8 +421,80 @@ def load_config(env_file: str = ".env") -> Config:
             f"SL_MAX_DOLLARS ({sl_max_dollars})"
         )
 
+    morning_start_minutes = collect(
+        _hhmm_to_minutes, mirofish_entry_start_london, "MIROFISH_ENTRY_START_LONDON"
+    )
+    morning_end_minutes = collect(
+        _hhmm_to_minutes, mirofish_entry_end_london, "MIROFISH_ENTRY_END_LONDON"
+    )
+    second_start_minutes = collect(
+        _hhmm_to_minutes, mirofish_entry_second_start_london, "MIROFISH_ENTRY_SECOND_START_LONDON"
+    )
+    second_end_minutes = collect(
+        _hhmm_to_minutes, mirofish_entry_second_end_london, "MIROFISH_ENTRY_SECOND_END_LONDON"
+    )
+    force_flat_minutes = collect(
+        _hhmm_to_minutes, mirofish_force_flat_london, "MIROFISH_FORCE_FLAT_LONDON"
+    )
+
+    if (
+        morning_start_minutes is not None
+        and morning_end_minutes is not None
+        and morning_end_minutes <= morning_start_minutes
+    ):
+        errors.append(
+            "MIROFISH_ENTRY_END_LONDON must be later than MIROFISH_ENTRY_START_LONDON"
+        )
+
+    if (
+        second_start_minutes is not None
+        and second_end_minutes is not None
+        and second_end_minutes <= second_start_minutes
+    ):
+        errors.append(
+            "MIROFISH_ENTRY_SECOND_END_LONDON must be later than MIROFISH_ENTRY_SECOND_START_LONDON"
+        )
+
+    if (
+        morning_end_minutes is not None
+        and second_start_minutes is not None
+        and second_start_minutes < morning_end_minutes
+    ):
+        errors.append(
+            "MIROFISH_ENTRY_SECOND_START_LONDON must be at or after MIROFISH_ENTRY_END_LONDON"
+        )
+
+    if (
+        second_end_minutes is not None
+        and force_flat_minutes is not None
+        and force_flat_minutes <= second_end_minutes
+    ):
+        errors.append(
+            "MIROFISH_FORCE_FLAT_LONDON must be later than MIROFISH_ENTRY_SECOND_END_LONDON"
+        )
+
+    if (
+        mirofish_confidence_medium_threshold is not None
+        and mirofish_confidence_full_threshold is not None
+        and mirofish_confidence_medium_threshold > mirofish_confidence_full_threshold
+    ):
+        errors.append(
+            "MIROFISH_CONFIDENCE_MEDIUM_THRESHOLD must be <= MIROFISH_CONFIDENCE_FULL_THRESHOLD"
+        )
+
+    if (
+        mirofish_low_confidence_lot_multiplier is not None
+        and mirofish_medium_confidence_lot_multiplier is not None
+        and mirofish_low_confidence_lot_multiplier > mirofish_medium_confidence_lot_multiplier
+    ):
+        errors.append(
+            "MIROFISH_LOW_CONFIDENCE_LOT_MULTIPLIER must be <= "
+            "MIROFISH_MEDIUM_CONFIDENCE_LOT_MULTIPLIER"
+        )
+
     observe_only = os.getenv("OBSERVE_ONLY", "true").lower() == "true"
 
+    health_check_host = os.getenv("HEALTH_CHECK_HOST", "127.0.0.1").strip() or "127.0.0.1"
     health_check_port = collect(_int_range, "HEALTH_CHECK_PORT", 1024, 65535, 8051) or 8051
 
     state_file_path = os.getenv("STATE_FILE_PATH", "/var/lib/xauex/state.json")
@@ -417,6 +510,7 @@ def load_config(env_file: str = ".env") -> Config:
         ctrader_client_secret=client_secret,
         ctrader_host=host,
         ctrader_port=port,
+        ctrader_tls_server_name=tls_server_name,
         ctrader_account_id=account_id,
         ctrader_access_token=access_token,
         ctrader_refresh_token=refresh_token,
@@ -466,6 +560,8 @@ def load_config(env_file: str = ".env") -> Config:
         mirofish_entry_timezone=mirofish_entry_timezone,
         mirofish_entry_start_london=mirofish_entry_start_london,
         mirofish_entry_end_london=mirofish_entry_end_london,
+        mirofish_entry_second_start_london=mirofish_entry_second_start_london,
+        mirofish_entry_second_end_london=mirofish_entry_second_end_london,
         mirofish_force_flat_london=mirofish_force_flat_london,
         mirofish_max_trades_per_day=mirofish_max_trades_per_day,
         mirofish_cash_take_profit_gbp=mirofish_cash_take_profit_gbp,
@@ -502,6 +598,7 @@ def load_config(env_file: str = ".env") -> Config:
         scalp_max_trades_per_day=scalp_max_trades_per_day,
         scalp_reentry_cooldown_bars=scalp_reentry_cooldown_bars,
         observe_only=observe_only,
+        health_check_host=health_check_host,
         health_check_port=health_check_port,
         state_file_path=state_file_path,
         cmd_file_path=cmd_file_path,

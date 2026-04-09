@@ -110,6 +110,22 @@ class Executor:
         self._order_to_pair: Dict[str, _InsideBarPair] = {}
         self._pending_market_orders: Dict[str, dict] = {}
         self._closed_trades_today: List[dict] = []
+        self._closed_trades_date_utc: str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    @staticmethod
+    def _today_utc(now_utc: Optional[datetime] = None) -> str:
+        now_utc = now_utc or datetime.now(timezone.utc)
+        return now_utc.astimezone(timezone.utc).strftime("%Y-%m-%d")
+
+    def _reset_closed_trades_if_new_day(self, now_utc: Optional[datetime] = None) -> None:
+        today = self._today_utc(now_utc)
+        if self._closed_trades_date_utc != today:
+            self._closed_trades_today = []
+            self._closed_trades_date_utc = today
+
+    def get_closed_trades_today(self, now_utc: Optional[datetime] = None) -> List[dict]:
+        self._reset_closed_trades_if_new_day(now_utc)
+        return self._closed_trades_today
 
     @staticmethod
     def should_apply_generic_trailing(position: TrackedPosition) -> bool:
@@ -413,6 +429,7 @@ class Executor:
 
     async def on_position_closed(self, position_id: str, close_price: float, pnl: float) -> None:
         """Handle position close event from API stream."""
+        self._reset_closed_trades_if_new_day()
         position = self.position_manager._positions.get(position_id)
 
         if position is None:
@@ -435,7 +452,7 @@ class Executor:
             if self.state_writer:
                 await self.state_writer.write(
                     open_positions=self.position_manager.get_open_positions(),
-                    closed_trades=self._closed_trades_today,
+                    closed_trades=self.get_closed_trades_today(),
                 )
             return
 
@@ -471,7 +488,7 @@ class Executor:
         if self.state_writer:
             await self.state_writer.write(
                 open_positions=self.position_manager.get_open_positions(),
-                closed_trades=self._closed_trades_today,
+                closed_trades=self.get_closed_trades_today(),
             )
 
     # ──────────────────────────────────────────────────────────────

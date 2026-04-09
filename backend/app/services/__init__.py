@@ -1,73 +1,57 @@
 """
 业务服务模块
+
+避免在包导入阶段就加载所有可选依赖。
+按需导入可以让轻量脚本和单元测试只加载它们真正使用的服务。
 """
 
-from .ontology_generator import OntologyGenerator
-from .graph_builder import GraphBuilderService
-from .text_processor import TextProcessor
-from .zep_entity_reader import ZepEntityReader, EntityNode, FilteredEntities
-from .oasis_profile_generator import OasisProfileGenerator, OasisAgentProfile
-from .simulation_manager import SimulationManager, SimulationState, SimulationStatus
-from .simulation_config_generator import (
-    SimulationConfigGenerator, 
-    SimulationParameters,
-    AgentActivityConfig,
-    TimeSimulationConfig,
-    EventConfig,
-    PlatformConfig
-)
-from .simulation_runner import (
-    SimulationRunner,
-    SimulationRunState,
-    RunnerStatus,
-    AgentAction,
-    RoundSummary
-)
-from .zep_graph_memory_updater import (
-    ZepGraphMemoryUpdater,
-    ZepGraphMemoryManager,
-    AgentActivity
-)
-from .simulation_ipc import (
-    SimulationIPCClient,
-    SimulationIPCServer,
-    IPCCommand,
-    IPCResponse,
-    CommandType,
-    CommandStatus
-)
+from __future__ import annotations
 
-__all__ = [
-    'OntologyGenerator', 
-    'GraphBuilderService', 
-    'TextProcessor',
-    'ZepEntityReader',
-    'EntityNode',
-    'FilteredEntities',
-    'OasisProfileGenerator',
-    'OasisAgentProfile',
-    'SimulationManager',
-    'SimulationState',
-    'SimulationStatus',
-    'SimulationConfigGenerator',
-    'SimulationParameters',
-    'AgentActivityConfig',
-    'TimeSimulationConfig',
-    'EventConfig',
-    'PlatformConfig',
-    'SimulationRunner',
-    'SimulationRunState',
-    'RunnerStatus',
-    'AgentAction',
-    'RoundSummary',
-    'ZepGraphMemoryUpdater',
-    'ZepGraphMemoryManager',
-    'AgentActivity',
-    'SimulationIPCClient',
-    'SimulationIPCServer',
-    'IPCCommand',
-    'IPCResponse',
-    'CommandType',
-    'CommandStatus',
-]
+from importlib import import_module
 
+
+_EXPORTS = {
+    'OntologyGenerator': ('ontology_generator', 'OntologyGenerator'),
+    'GraphBuilderService': ('graph_builder', 'GraphBuilderService'),
+    'TextProcessor': ('text_processor', 'TextProcessor'),
+    'ZepEntityReader': ('zep_entity_reader', 'ZepEntityReader'),
+    'EntityNode': ('zep_entity_reader', 'EntityNode'),
+    'FilteredEntities': ('zep_entity_reader', 'FilteredEntities'),
+    'OasisProfileGenerator': ('oasis_profile_generator', 'OasisProfileGenerator'),
+    'OasisAgentProfile': ('oasis_profile_generator', 'OasisAgentProfile'),
+    'SimulationManager': ('simulation_manager', 'SimulationManager'),
+    'SimulationState': ('simulation_manager', 'SimulationState'),
+    'SimulationStatus': ('simulation_manager', 'SimulationStatus'),
+    'SimulationConfigGenerator': ('simulation_config_generator', 'SimulationConfigGenerator'),
+    'SimulationParameters': ('simulation_config_generator', 'SimulationParameters'),
+    'AgentActivityConfig': ('simulation_config_generator', 'AgentActivityConfig'),
+    'TimeSimulationConfig': ('simulation_config_generator', 'TimeSimulationConfig'),
+    'EventConfig': ('simulation_config_generator', 'EventConfig'),
+    'PlatformConfig': ('simulation_config_generator', 'PlatformConfig'),
+    'SimulationRunner': ('simulation_runner', 'SimulationRunner'),
+    'SimulationRunState': ('simulation_runner', 'SimulationRunState'),
+    'RunnerStatus': ('simulation_runner', 'RunnerStatus'),
+    'AgentAction': ('simulation_runner', 'AgentAction'),
+    'RoundSummary': ('simulation_runner', 'RoundSummary'),
+    'ZepGraphMemoryUpdater': ('zep_graph_memory_updater', 'ZepGraphMemoryUpdater'),
+    'ZepGraphMemoryManager': ('zep_graph_memory_updater', 'ZepGraphMemoryManager'),
+    'AgentActivity': ('zep_graph_memory_updater', 'AgentActivity'),
+    'SimulationIPCClient': ('simulation_ipc', 'SimulationIPCClient'),
+    'SimulationIPCServer': ('simulation_ipc', 'SimulationIPCServer'),
+    'IPCCommand': ('simulation_ipc', 'IPCCommand'),
+    'IPCResponse': ('simulation_ipc', 'IPCResponse'),
+    'CommandType': ('simulation_ipc', 'CommandType'),
+    'CommandStatus': ('simulation_ipc', 'CommandStatus'),
+}
+
+__all__ = list(_EXPORTS)
+
+
+def __getattr__(name: str):
+    if name not in _EXPORTS:
+        raise AttributeError(name)
+    module_name, attr_name = _EXPORTS[name]
+    module = import_module(f'.{module_name}', __name__)
+    value = getattr(module, attr_name)
+    globals()[name] = value
+    return value

@@ -7,6 +7,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 from analyst._utils import (
+    default_model,
     atomic_write_json,
     call_claude,
     is_state_stale,
@@ -16,7 +17,7 @@ from analyst._utils import (
 
 logger = logging.getLogger(__name__)
 
-MODEL = "gemini-3.1-pro-preview"
+MODEL = default_model()
 STATE_PATH = os.environ.get("XAUEX_STATE_FILE", os.environ.get("STATE_FILE_PATH", "/var/lib/xauex/state.json"))
 _STATE_DIR = os.path.dirname(STATE_PATH) or "."
 NEWS_CACHE_PATH = os.environ.get(
@@ -56,7 +57,7 @@ def build_news_section(news_cache_path: str) -> str:
 
 
 def build_prompt(state: dict, news_section: str, stale: bool = False) -> str:
-    """Build the Gemini prompt for the morning brief."""
+    """Build the analyst prompt for the morning brief."""
     meta = state.get("meta", {})
     account = state.get("account", {})
     risk = state.get("risk", {})
@@ -123,7 +124,7 @@ def run(
     news_section = build_news_section(news_cache_path)
     prompt = build_prompt(state, news_section, stale=stale)
 
-    logger.info("[BRIEF] Calling Gemini (%s)...", MODEL)
+    logger.info("[BRIEF] Calling analyst model (%s)...", MODEL)
     brief_text = call_claude(prompt, MODEL)
 
     result = {

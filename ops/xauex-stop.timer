@@ -1,8 +1,8 @@
 [Unit]
-Description=Stop XAUEX after the London trading week
+Description=Stop XAUEX after the London force-flat boundary
 
 [Timer]
-OnCalendar=Fri *-*-* 12:05:00 Europe/London
+OnCalendar=Fri *-*-* 15:06:00 Europe/London
 Persistent=true
 Unit=xauex-stop.service
 

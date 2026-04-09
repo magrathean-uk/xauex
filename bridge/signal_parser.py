@@ -9,8 +9,6 @@ from datetime import datetime, timezone
 from math import exp
 from typing import Any
 
-from openai import OpenAI
-
 from bridge.assets import AssetProfile
 from bridge.config import BridgeConfig
 
@@ -32,6 +30,8 @@ def parse_signal(
     report_markdown: str,
     config: BridgeConfig,
 ) -> dict:
+    from openai import OpenAI
+
     client = OpenAI(api_key=config.parser_llm_api_key, base_url=config.parser_llm_base_url)
 
     action_summary = _summarize_actions(actions)

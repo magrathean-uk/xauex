@@ -1,5 +1,5 @@
 # MiroFish Gold Oracle — Unified Requirements
-# Python 3.12+ required
+# Python 3.11+ required
 
 # === MiroFish Backend ===
 flask>=3.0.0

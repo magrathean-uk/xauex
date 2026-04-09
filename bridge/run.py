@@ -175,6 +175,10 @@ def main() -> None:
     )
     print(json.dumps(signal, indent=2))
 
+    if args.dry_run:
+        logger.info('DRY RUN - signal/brief/evidence not written')
+        return
+
     brief_meta = write_brief(
         asset=asset,
         signal=signal,
@@ -196,10 +200,6 @@ def main() -> None:
             price_features=payload['price_features'],
             prediction_mode='direct',
         )
-
-    if args.dry_run:
-        logger.info('DRY RUN - signal not written')
-        return
 
     output_path = args.output or config.signal_output_path
     write_signal(signal, output_path)

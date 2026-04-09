@@ -131,6 +131,88 @@ def test_dashboard_payload_includes_chart_section(monkeypatch, tmp_path):
     assert payload["manual_positions"][0]["position_id"] == "m-123"
 
 
+def test_dashboard_payload_keeps_signal_run_cap_distinct_from_trade_cap(monkeypatch, tmp_path):
+    dashboard_app = _load_dashboard_module(monkeypatch, tmp_path)
+    client = dashboard_app.app.test_client()
+
+    dashboard_app.STATE_PATH.write_text(
+        json.dumps(
+            {
+                "meta": {"bot_status": "RUNNING", "last_updated_utc": "2026-04-07T01:02:03Z"},
+                "account": {"balance": 12345.67, "equity": 12400.1, "open_pnl": 54.43},
+                "risk": {
+                    "daily_pnl": 12.5,
+                    "weekly_pnl": 34.5,
+                    "mirofish_trades_taken_london": 0,
+                    "mirofish_signal_runs_london": [
+                        {"slot": "MORNING", "date_london": "2026-04-07"},
+                    ],
+                },
+                "open_positions": [],
+                "closed_trades_today": [],
+                "signal_history": [{"action": "BUY", "confidence": 0.8}],
+                "runtime": {
+                    "mirofish_max_trades_per_day": 1,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    response = client.get("/api/dashboard")
+
+    assert response.status_code == 200
+    payload = response.get_json()["data"]
+    assert payload["account"]["signal_runs_taken_today"] == 1
+    assert payload["account"]["signal_runs_cap"] == 2
+    assert payload["account"]["trade_cap"] == 1
+    assert "both scheduled London run slots" not in payload["trade_explanation"]
+
+
+def test_dashboard_payload_caps_chart_window_and_signal_histories(monkeypatch, tmp_path):
+    dashboard_app = _load_dashboard_module(monkeypatch, tmp_path)
+    client = dashboard_app.app.test_client()
+
+    dashboard_app.STATE_PATH.write_text(
+        json.dumps(
+            {
+                "meta": {"bot_status": "RUNNING", "last_updated_utc": "2026-04-07T01:02:03Z"},
+                "account": {"balance": 12345.67, "equity": 12400.1, "open_pnl": 54.43},
+                "risk": {"daily_pnl": 12.5, "weekly_pnl": 34.5, "mirofish_trades_taken_london": 1},
+                "open_positions": [],
+                "closed_trades_today": [],
+                "recent_h1_closes": list(range(30)),
+                "trade_entries_on_chart": [
+                    {"bar_index": 5, "direction": "BUY", "price": 5.0},
+                    {"bar_index": 28, "direction": "SELL", "price": 28.0},
+                ],
+                "signal_history": [{"action": f"SIG-{idx}"} for idx in range(25)],
+                "shadow_signal_history": [{"action": f"SHADOW-{idx}"} for idx in range(25)],
+                "runtime": {
+                    "latest_quote": {
+                        "bid": 2362.2,
+                        "ask": 2362.7,
+                        "mid": 2362.45,
+                        "updated_at_utc": "2026-04-07T01:02:05Z",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    response = client.get("/api/dashboard")
+
+    assert response.status_code == 200
+    payload = response.get_json()["data"]
+    assert payload["recent_h1_closes"] == list(range(10, 30))
+    assert payload["chart"]["recent_h1_closes"] == list(range(10, 30))
+    assert payload["trade_entries_on_chart"] == [{"bar_index": 18, "direction": "SELL", "price": 28.0}]
+    assert payload["chart"]["trade_entries"] == [{"bar_index": 18, "direction": "SELL", "price": 28.0}]
+    assert len(payload["signal_history"]) == 12
+    assert len(payload["shadow_signal_history"]) == 12
+
+
 def test_dashboard_payload_exposes_auth_and_manual_status(monkeypatch, tmp_path):
     dashboard_app = _load_dashboard_module(monkeypatch, tmp_path)
     client = dashboard_app.app.test_client()
@@ -156,6 +238,62 @@ def test_dashboard_payload_includes_diagnostics(monkeypatch, tmp_path):
     assert payload["diagnostics"]["schema_version"] == 1
     assert payload["diagnostics"]["components"]["quote"]["state"] in {"live", "stale"}
     assert payload["diagnostics"]["reply"]
+
+
+def test_dashboard_payload_reuses_normalized_oracle_signal_and_run_count(monkeypatch, tmp_path):
+    dashboard_app = _load_dashboard_module(monkeypatch, tmp_path)
+    client = dashboard_app.app.test_client()
+
+    dashboard_app.STATE_PATH.write_text(
+        json.dumps(
+            {
+                "meta": {"bot_status": "RUNNING", "last_updated_utc": "2026-04-07T01:02:03Z"},
+                "account": {"balance": 12345.67, "equity": 12400.1, "open_pnl": 54.43},
+                "risk": {
+                    "daily_pnl": 12.5,
+                    "weekly_pnl": 34.5,
+                    "mirofish_trades_taken_london": 0,
+                },
+                "open_positions": [],
+                "closed_trades_today": [],
+                "signal_history": [{"action": "SELL", "confidence": 0.2}],
+                "runtime": {
+                    "mirofish_signal_runs_taken_london": 1,
+                    "latest_quote": {
+                        "bid": 2362.2,
+                        "ask": 2362.7,
+                        "mid": 2362.45,
+                        "updated_at_utc": "2026-04-07T01:02:05Z",
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    dashboard_app.CMD_PATH.write_text(
+        json.dumps(
+            {
+                "generated_at_utc": "2026-04-07T01:00:00Z",
+                "mirofish_signal": {
+                    "action": "BUY",
+                    "symbol": "XAUUSD",
+                    "confidence": 0.81,
+                    "reasoning": "Breakout confirmed from local momentum.",
+                    "source": {"mode": "direct"},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    response = client.get("/api/dashboard")
+
+    assert response.status_code == 200
+    payload = response.get_json()["data"]
+    assert payload["signal"]["action"] == "BUY"
+    assert payload["diagnostics"]["components"]["signal"]["action"] == "BUY"
+    assert payload["account"]["signal_runs_taken_today"] == 1
+    assert payload["diagnostics"]["components"]["risk"]["signal_runs_taken_today"] == 1
 
 
 def test_diagnostics_endpoint_returns_structured_snapshot(monkeypatch, tmp_path):

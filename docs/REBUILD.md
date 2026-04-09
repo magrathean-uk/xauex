@@ -5,6 +5,7 @@ This guide is for recreating GoldOracle on a fresh Linux host.
 It assumes:
 
 - Ubuntu 22.04+ or similar Debian-based system
+- Python 3.11+ for the virtualenv and test runs
 - passwordless `sudo` or root access
 - outbound HTTPS access
 - a cTrader demo account
@@ -111,6 +112,8 @@ Fill in at minimum:
 Current live-style settings should include values equivalent to:
 
 ```dotenv
+CTRADER_HOST=demo-uk-eqx-01.p.c-trader.com
+CTRADER_TLS_SERVER_NAME=connect.spotware.com
 OBSERVE_ONLY=false
 MIROFISH_MODE=true
 CMD_FILE_PATH=/var/lib/xauex/cmd.json
@@ -119,6 +122,8 @@ STATE_FILE_PATH=/var/lib/xauex/state.json
 ```
 
 Then add your London-open timing and risk configuration as required by your deployment.
+
+Analyst jobs such as the trade journal and weekly review now reuse the same OpenAI-compatible API settings from the repo root `.env` by default. If you want a different cheap reporting model, set `XAUEX_ANALYST_MODEL` in `xauex/.env`.
 
 ## 6. Install Services
 

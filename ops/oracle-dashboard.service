@@ -5,8 +5,10 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=bolyki
+User=__RUN_USER__
 WorkingDirectory=__REPO_ROOT__
+EnvironmentFile=__REPO_ROOT__/.env
+EnvironmentFile=__REPO_ROOT__/xauex/.env
 Environment=PYTHONUNBUFFERED=1
 ExecStart=__REPO_ROOT__/ops/run_oracle_dashboard.sh
 Restart=always

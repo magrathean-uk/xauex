@@ -1,8 +1,8 @@
 [Unit]
 Description=MiroFish Bridge Signal Refresh
-After=network-online.target mirofish-backend.service xauex.service
+After=network-online.target xauex.service
 Wants=network-online.target
-Requires=mirofish-backend.service xauex.service
+Requires=xauex.service
 
 [Service]
 Type=oneshot

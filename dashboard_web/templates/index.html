@@ -451,7 +451,7 @@
 
     <div class="grid">
       <div class="card span-4">
-        <div class="label">Current Signal</div>
+        <div class="label">Oracle Signal</div>
         <div class="signal">
           <div>
             <div id="signal-action" class="signal-action hold">HOLD</div>
@@ -466,6 +466,7 @@
           <div><strong>Take Profit</strong><span id="signal-tp">-</span></div>
         </div>
         <div id="trade-explanation" class="explain">Checking why there is or is not a live trade.</div>
+        <div class="subtle">The signal card and diagnostics card are built from the same live Oracle snapshot.</div>
       </div>
 
       <div class="card span-4">
@@ -483,7 +484,8 @@
       <div class="card span-4">
         <div class="label">Risk / Session</div>
         <div class="kv">
-          <div><strong>Trades Today</strong><span id="trades-today">-</span></div>
+          <div><strong>Signal Runs Today</strong><span id="signal-runs-today">-</span></div>
+          <div><strong>Trades Executed</strong><span id="trades-taken-today">-</span></div>
           <div><strong>Open Positions</strong><span id="positions-count">-</span></div>
           <div><strong>Mode</strong><span id="active-mode">-</span></div>
           <div><strong>Shadow Mode</strong><span id="shadow-mode">-</span></div>
@@ -817,7 +819,12 @@
       document.getElementById("open-pnl").textContent = fmtMoney(data.account.open_pnl, ccy);
       document.getElementById("daily-pnl").textContent = fmtMoney(data.account.daily_pnl, ccy);
       document.getElementById("weekly-pnl").textContent = fmtMoney(data.account.weekly_pnl, ccy);
-      document.getElementById("trades-today").textContent = data.account.trades_taken_today ?? 0;
+      const signalRuns = data.account.signal_runs_taken_today ?? 0;
+      const signalRunCap = data.account.signal_runs_cap ?? 2;
+      const tradesTaken = data.account.trades_taken_today ?? 0;
+      const tradeCap = data.account.trade_cap ?? 2;
+      document.getElementById("signal-runs-today").textContent = `${signalRuns}/${signalRunCap}`;
+      document.getElementById("trades-taken-today").textContent = `${tradesTaken}/${tradeCap}`;
       document.getElementById("positions-count").textContent = data.health.positions_open ?? 0;
       document.getElementById("active-mode").textContent = data.meta.active_mode || "-";
       document.getElementById("shadow-mode").textContent = data.meta.shadow_mode || "-";

@@ -6,6 +6,7 @@ import sys
 from typing import Any, Dict, List
 
 from analyst._utils import (
+    default_model,
     append_to_json_list,
     call_claude,
     is_state_stale,
@@ -17,7 +18,7 @@ from analyst._utils import (
 
 logger = logging.getLogger(__name__)
 
-MODEL = "gemini-3.1-pro-preview"
+MODEL = default_model()
 STALE_SECONDS = 10 * 60  # 10 minutes
 
 STATE_PATH = os.environ.get("XAUEX_STATE_FILE", os.environ.get("STATE_FILE_PATH", "/var/lib/xauex/state.json"))
@@ -34,7 +35,7 @@ def find_new_trades(trades: List[Dict], cursor: Dict) -> List[Dict]:
 
 
 def build_trade_prompt(trade: Dict) -> str:
-    """Build Claude prompt for a single closed trade."""
+    """Build the analyst prompt for a single closed trade."""
     direction = trade["direction"]
     entry = trade["entry_price"]
     close = trade["close_price"]

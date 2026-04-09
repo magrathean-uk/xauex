@@ -1,20 +1,44 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
 echo '=== MiroFish Status ===' && date
 echo
 echo '=== Services ==='
-systemctl --no-pager --no-legend --plain status mirofish-backend.service xauex.service mirofish-bridge.timer 2>/dev/null | sed -n '1,12p'
+systemctl --no-pager --no-legend --plain status \
+  mirofish-backend.service \
+  oracle-dashboard.service \
+  xauex.service \
+  mirofish-bridge.timer \
+  xauex-start.timer \
+  xauex-stop.timer \
+  xauex-trade-journal.timer \
+  xauex-weekly-review.timer 2>/dev/null | sed -n '1,16p'
 echo
-# Find active sim
-SIM=$(ls /home/bolyki/mirofish-gold-oracle/backend/uploads/simulations/ 2>/dev/null | tail -1)
-if [ -n "$SIM" ]; then
-  curl -s http://localhost:5001/api/simulation/$SIM/run-status | python3 -c '
-import sys,json
-d=json.load(sys.stdin)["data"]
-print("SIM:", d["simulation_id"])
-print("Status:", d["runner_status"], f"{d["progress_percent"]:.0f}%", f"round {d["current_round"]}/{d["total_rounds"]}")
-print("Error:", d["error"][:120] if d["error"] else "none")
-' 2>/dev/null
+echo '=== Oracle Snapshot ==='
+if DASHBOARD_JSON=$(curl -fsS http://127.0.0.1:8089/api/dashboard 2>/dev/null); then
+  DASHBOARD_JSON="$DASHBOARD_JSON" python3 - <<'PY'
+import json
+import os
+
+payload = json.loads(os.environ["DASHBOARD_JSON"]).get("data", {})
+signal = payload.get("signal", {}) or {}
+diagnostics = payload.get("diagnostics", {}) or {}
+account = payload.get("account", {}) or {}
+components = diagnostics.get("components", {}) or {}
+bot = components.get("bot", {}) or {}
+quote = components.get("quote", {}) or {}
+
+print("Signal:", signal.get("action", "UNKNOWN"), "|", signal.get("generated_at_utc") or "-")
+print("Signal reasoning:", signal.get("reasoning") or "No signal rationale available.")
+print("XAUEX health:", diagnostics.get("overall_status", "unknown"), "|", diagnostics.get("summary") or "-")
+print("Bot state:", bot.get("state") or "-")
+print("Quote state:", quote.get("state") or "-")
+print("Signal runs:", f"{account.get('signal_runs_taken_today', 0)}/{account.get('signal_runs_cap', 2)}")
+print("Trades used:", f"{account.get('trades_taken_today', 0)}/{account.get('trade_cap', 2)}")
+PY
+else
+  echo 'Dashboard API unavailable.'
 fi
 echo
-echo '=== Signal ===' && cat /var/lib/xauex/cmd.json 2>/dev/null | python3 -m json.tool 2>/dev/null || echo 'No signal yet'
-echo
-echo '=== Last log milestones ===' && grep -v 'httpcore\|httpx DEBUG\|receive_response\|send_request\|connect_tcp\|close\.\|start_tls\|response_body' /home/bolyki/mirofish-gold-oracle/logs/run.log | tail -5
+echo '=== Recent Oracle Logs ==='
+journalctl --no-pager -u oracle-dashboard.service -u xauex.service -u mirofish-bridge.service -n 20 2>/dev/null || echo 'No recent journal entries.'

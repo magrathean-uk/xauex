@@ -1,7 +1,7 @@
 """Trading gates based on risk management rules."""
 
 import logging
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from datetime import datetime, timezone
 from typing import Tuple
 
@@ -28,6 +28,7 @@ class RiskState:
     daily_halted: bool = False
     mirofish_trade_date_london: str = ""
     mirofish_trades_taken_london: int = 0
+    mirofish_signal_runs_london: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -47,6 +48,7 @@ class RiskState:
             daily_halted=d.get("daily_halted", False),
             mirofish_trade_date_london=d.get("mirofish_trade_date_london", ""),
             mirofish_trades_taken_london=d.get("mirofish_trades_taken_london", 0),
+            mirofish_signal_runs_london=list(d.get("mirofish_signal_runs_london", [])),
         )
 
 

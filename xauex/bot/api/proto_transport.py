@@ -59,9 +59,10 @@ class CTraderTransport:
         await transport.close()
     """
 
-    def __init__(self, host: str, port: int):
+    def __init__(self, host: str, port: int, tls_server_name: Optional[str] = None):
         self._host = host
         self._port = port
+        self._tls_server_name = tls_server_name or None
         self._reader: Optional[asyncio.StreamReader] = None
         self._writer: Optional[asyncio.StreamWriter] = None
         self._connected = False
@@ -83,7 +84,12 @@ class CTraderTransport:
         ssl_ctx = ssl.create_default_context()
         try:
             self._reader, self._writer = await asyncio.wait_for(
-                asyncio.open_connection(self._host, self._port, ssl=ssl_ctx),
+                asyncio.open_connection(
+                    self._host,
+                    self._port,
+                    ssl=ssl_ctx,
+                    server_hostname=self._tls_server_name,
+                ),
                 timeout=timeout,
             )
         except asyncio.TimeoutError:
