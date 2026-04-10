@@ -1,2 +1,0 @@
-"""Strategy modules for XAUEX."""
-

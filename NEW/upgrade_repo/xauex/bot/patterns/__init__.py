@@ -1,1 +1,0 @@
-"""Pattern detection package."""

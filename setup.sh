@@ -5,7 +5,7 @@
 # ═══════════════════════════════════════════════════════════════
 set -e
 
-echo "GoldOracle — Setup"
+echo "XAUEX - Setup"
 echo "================================"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

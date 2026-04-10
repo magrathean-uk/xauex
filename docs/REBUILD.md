@@ -1,6 +1,6 @@
 # Rebuild Guide
 
-This guide is for recreating GoldOracle on a fresh Linux host.
+This guide is for recreating XAUEX on a fresh Linux host.
 
 It assumes:
 
@@ -29,8 +29,8 @@ If the distro Python is too old for your deployment target, install Python 3.11+
 ## 2. Clone The Repo
 
 ```bash
-git clone <your-github-url> GoldOracle
-cd GoldOracle
+git clone <your-github-url> xauex
+cd xauex
 ```
 
 ## 3. Create Python Environment
@@ -188,7 +188,7 @@ The expected nginx site points to:
 
 If you are rebuilding nginx manually, ensure the site has:
 
-- `root /path/to/GoldOracle/frontend/dist;`
+- `root /path/to/xauex/frontend/dist;`
 - `try_files $uri $uri/ /index.html;`
 - `/api` proxying to the backend service
 

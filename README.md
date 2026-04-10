@@ -1,6 +1,6 @@
-# GoldOracle
+# XAUEX
 
-GoldOracle is a repo-packaged London-open XAUUSD demo trading system built from three parts:
+XAUEX is the canonical repo-packaged London-open XAUUSD demo trading system built from three parts:
 
 - `backend/`: legacy MiroFish backend kept for compatibility and research workflows
 - `bridge/`: live market-context fetcher, direct predictor, brief writer, and signal parser
@@ -64,7 +64,7 @@ Python 3.11+ is the supported runtime.
 
 ```bash
 git clone <your-repo-url>
-cd GoldOracle
+cd xauex
 cp .env.example .env
 cp xauex/.env.example xauex/.env
 python3 -m venv .venv

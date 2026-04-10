@@ -29,19 +29,19 @@ Excluded:
 ## Recommended Publish Steps
 
 ```bash
-cd /path/to/GoldOracle
+cd /path/to/xauex
 git init
 git add .
-git commit -m "Initial GoldOracle import"
+git commit -m "Initial XAUEX import"
 git branch -M main
-git remote add origin git@github.com:<user>/GoldOracle.git
+git remote add origin git@github.com:<user>/xauex.git
 git push -u origin main
 ```
 
 If using HTTPS with a PAT:
 
 ```bash
-git remote add origin https://github.com/<user>/GoldOracle.git
+git remote add origin https://github.com/<user>/xauex.git
 git push -u origin main
 ```
 
