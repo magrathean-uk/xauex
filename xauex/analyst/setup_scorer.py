@@ -6,7 +6,7 @@ import sys
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
-from analyst._utils import (
+from xauex.analyst._utils import (
     default_model,
     append_to_json_list,
     call_claude,

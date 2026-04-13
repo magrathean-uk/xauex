@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from bridge.history_cache import load_recent_signal_history
+from xauex.signal.history_cache import load_recent_signal_history
 
 
 def test_load_recent_signal_history_reads_latest_entries(tmp_path: Path):

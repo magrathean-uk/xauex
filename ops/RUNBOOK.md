@@ -1,156 +1,140 @@
-# MiroFish Gold Oracle Runbook
+# XAUEX Runbook
 
-This repository is the only runtime folder. Do not use `/home/bolyki/xauex` for live operation anymore.
+This repository is the live runtime folder. Do not use an obsolete sibling checkout for production operation.
+
+For repo orientation and edit paths, read [../docs/CODEX_DISCOVERY.md](../docs/CODEX_DISCOVERY.md).
 
 ## Layout
 
-- Repo root: `/home/bolyki/mirofish-gold-oracle`
-- Backend config: `/home/bolyki/mirofish-gold-oracle/.env`
-- XAUEX config: `/home/bolyki/mirofish-gold-oracle/xauex/.env`
-- Bridge/backend logs: `/home/bolyki/mirofish-gold-oracle/logs`
-- XAUEX state and IPC: `/var/lib/xauex`
+- Repo root: `<repo-root>`
+- Root config: `<repo-root>/.env`
+- XAUEX config: `<repo-root>/xauex/.env`
+- Runtime state and IPC: `/var/lib/xauex`
 - XAUEX trade log: `/var/log/xauex/xauex.log`
 
-## Runtime Model
+## Host Model
 
-- `mirofish-backend.service`: keeps the Flask backend running all the time.
-- `oracle-dashboard.service`: lightweight web dashboard on port `8089` for bot state, signal, positions, trades, and account metrics.
-- `xauex.service`: weekday trading process that stays up through the work week.
-- `xauex-start.timer`: starts `xauex.service` at `07:25 Europe/London`, Monday to Friday.
-- `xauex-stop.timer`: stops `xauex.service` at `15:06 Europe/London` on Friday so it does not run on weekends.
-- `xauex-trade-journal.timer`: journals the day’s closed trades at `15:07 Europe/London`, Monday to Friday.
-- `xauex-weekly-review.timer`: writes the current-week review at `15:15 Europe/London` on Friday.
-- `mirofish-bridge.timer`: refreshes the signal on weekdays at `08:00 Europe/London` and `11:30 Europe/London`.
-- `mirofish-bridge.service`: one-shot signal generation job triggered by the timer or manually.
+- XAUEX dashboard HTTP on the VPN addresses redirects to HTTPS.
+- XAUEX dashboard HTTPS is only exposed on `10.8.0.1` and `10.9.0.1`.
+- The dashboard app itself listens on loopback only at `127.0.0.1:8089`.
+- The public relay, if present, remains public and is not managed by the XAUEX Caddy snippet.
+- If Pi-hole is installed on the host, its admin UI must be moved to `:8081` before XAUEX install so the host reverse-proxy layout matches the documented model.
+- Use [Caddyfile.root.example](Caddyfile.root.example) and [pihole-compose.override.example.yml](pihole-compose.override.example.yml) as the repo-owned reference for that split.
 
-XAUEX is configured to poll `/var/lib/xauex/cmd.json` and trade Oracle signals when `MIROFISH_MODE=true` in `xauex/.env`.
+## Services
 
-XAUEX also supports a separate manual command lane through:
+- `xauex-web.service`: operator dashboard on port `8089`
+- HTTPS dashboard over VPN: `https://10.8.0.1/` and `https://10.9.0.1/`
+- `xauex-signal.timer`: triggers signal generation before the London windows
+- `xauex-signal.service`: one-shot signal generation job
+- `xauex.service`: weekday execution bot
+- `xauex-start.timer`: starts `xauex.service` before the morning session
+- `xauex-stop.service`: stops `xauex.service` at the Friday force-flat boundary
+- `xauex-stop.timer`: schedules the stop boundary
+- `xauex-trade-journal.timer`: writes the post-session trade journal
+- `xauex-weekly-review.timer`: writes the weekly review
+- `xauex-daily-report` cron: emails a daily GMT status summary at 20:00
 
-- `/var/lib/xauex/manual_trade_cmd.json`
+The signal generator writes the latest command bundle to `/var/lib/xauex/cmd.json`. XAUEX polls that file and executes only the retained XAUEX live path.
 
-The dashboard writes manual commands there directly. XAUEX executes them with the same broker connection, but Oracle ignores those manual positions for its own daily limits, predictor memory, and session management.
+Manual dashboard trades, when used, remain separate from XAUEX-owned positions and do not count toward the XAUEX trade/session limits.
 
-There is no app-level dashboard password now. Access is expected to stay limited by VPN/localhost-only network rules.
+The dashboard app itself listens on loopback only. VPN HTTPS is terminated by Caddy on the VPN interfaces and proxied to `127.0.0.1:8089`.
+HTTP requests to the VPN dashboard hosts are redirected to HTTPS with a 308 response.
 
-The current live signal path is `direct`:
+## Important Files
 
-- fetch fresh curated macro / gold context
-- blend that with local price structure and recent local trade memory
-- generate fresh `BUY` / `SELL` / `HOLD` signals for each configured London entry window
-- write:
-  - `/var/lib/xauex/cmd.json`
-  - `/var/lib/xauex/latest_signal_brief.md`
-  - `/var/lib/xauex/latest_signal_evidence.json`
-
-The old MiroFish graph/simulation path is retained only as an explicit fallback/research path and is no longer the intended daily live dependency.
-
-## Oracle Session Manager
-
-Oracle-managed trades use a staged lifecycle:
-
-- `OBSERVE`: initial wide catastrophe stop only
-- `PROTECT`: move stop to breakeven-plus cushion after the move reaches the protect threshold
-- `TRAIL`: trail the stop by structure/ATR once follow-through is stronger
-
-Cash risk remains capped. Wider stops reduce lot size; they do not increase maximum allowed cash risk.
+- `/var/lib/xauex/cmd.json`
+- `/var/lib/xauex/latest_signal_brief.md`
+- `/var/lib/xauex/latest_signal_evidence.json`
+- `/var/lib/xauex/trade_journal.json`
+- `/var/lib/xauex/weekly_review.json`
+- `/var/lib/xauex/weekly_review.md`
 
 ## Install
 
-One-time setup:
-
 ```bash
-cd /home/bolyki/mirofish-gold-oracle
+cd <repo-root>
 chmod +x ops/*.sh
 sudo bash ops/install_systemd.sh
 ```
 
-## Start / Stop
+Before running the install script, confirm any host-owned services that use web ports have already been moved out of the way, especially Pi-hole admin on `:8081`.
 
-Start everything:
+The installer also runs:
 
 ```bash
-sudo systemctl start mirofish-backend.service
+xauex-check-host-layout --strict
+```
+
+If that fails, fix the host web-port layout before trusting the dashboard ingress again.
+
+## Start
+
+```bash
+sudo systemctl start xauex-web.service
+sudo systemctl start xauex-signal.timer
 sudo systemctl start xauex-start.timer
 sudo systemctl start xauex-stop.timer
 sudo systemctl start xauex-trade-journal.timer
 sudo systemctl start xauex-weekly-review.timer
-sudo systemctl start oracle-dashboard.service
-sudo systemctl start mirofish-bridge.timer
-sudo systemctl start mirofish-bridge.service
 ```
 
-Stop everything:
+## Stop
 
 ```bash
-sudo systemctl stop mirofish-bridge.timer
-sudo systemctl stop xauex-start.timer
-sudo systemctl stop xauex-stop.timer
-sudo systemctl stop xauex-trade-journal.timer
 sudo systemctl stop xauex-weekly-review.timer
+sudo systemctl stop xauex-trade-journal.timer
+sudo systemctl stop xauex-stop.timer
+sudo systemctl stop xauex-start.timer
+sudo systemctl stop xauex-signal.timer
 sudo systemctl stop xauex.service
-sudo systemctl stop oracle-dashboard.service
-sudo systemctl stop mirofish-backend.service
+sudo systemctl stop xauex-web.service
 ```
 
-Restart after code or config changes:
+## Restart After Changes
 
 ```bash
-sudo systemctl restart mirofish-backend.service
+sudo systemctl restart xauex-web.service
+sudo systemctl restart xauex-signal.timer
 sudo systemctl restart xauex-start.timer
 sudo systemctl restart xauex-stop.timer
 sudo systemctl restart xauex-trade-journal.timer
 sudo systemctl restart xauex-weekly-review.timer
-sudo systemctl restart oracle-dashboard.service
-sudo systemctl start mirofish-bridge.service
 ```
-
-The `xauex-start.timer`, `mirofish-bridge.timer`, `xauex-stop.timer`, `xauex-trade-journal.timer`, and `xauex-weekly-review.timer` all use `Persistent=true`, so they catch up after reboots or downtime.
 
 ## Status
 
 ```bash
-systemctl status mirofish-backend.service --no-pager
+systemctl status xauex-web.service --no-pager
 systemctl status xauex.service --no-pager
-systemctl status oracle-dashboard.service --no-pager
+systemctl status xauex-signal.timer --no-pager
 systemctl status xauex-start.timer xauex-stop.timer xauex-trade-journal.timer xauex-weekly-review.timer --no-pager
-systemctl status mirofish-bridge.timer mirofish-bridge.service --no-pager
-bash /home/bolyki/mirofish-gold-oracle/status.sh
+bash <repo-root>/status.sh
 ```
 
 ## Logs
 
 ```bash
-journalctl -u mirofish-backend.service -f
-journalctl -u oracle-dashboard.service -f
+journalctl -u xauex-web.service -f
+journalctl -u caddy -f
 journalctl -u xauex.service -f
-journalctl -u mirofish-bridge.service -f
+journalctl -u xauex-signal.service -f
 journalctl -u xauex-trade-journal.service -f
 journalctl -u xauex-weekly-review.service -f
 tail -f /var/log/xauex/xauex.log
-tail -f /home/bolyki/mirofish-gold-oracle/logs/bridge-run.log
-tail -f /home/bolyki/mirofish-gold-oracle/logs/oracle-dashboard.log
+tail -f <repo-root>/logs/xauex-signal.log
+tail -f <repo-root>/logs/xauex-web.log
+tail -f /var/log/xauex/xauex-daily-report.log
 ```
 
-Report outputs:
+## HTTPS Notes
 
-- `/var/lib/xauex/trade_journal.json`
-- `/var/lib/xauex/weekly_review.json`
-- `/var/lib/xauex/weekly_review.md`
-- `/var/lib/xauex/latest_signal_brief.md`
-- `/var/lib/xauex/latest_signal_evidence.json`
-
-Dashboard:
-
-- local URL: `http://127.0.0.1:8089`
-- LAN URL: `http://10.8.0.1:8089`
-- XAUEX health endpoint: `http://127.0.0.1:8051/health` only
-
-Retention policy:
-
-- app logs are rotated daily and kept for 14 days
-- system journal is capped at 256 MB with 14-day retention
-- app log files are budget-limited to about 1.75 GiB, keeping total logging under about 2 GiB combined
+- Caddy terminates HTTPS only on the VPN addresses and proxies to `127.0.0.1:8089`.
+- HTTP on the VPN addresses is redirected to HTTPS.
+- The certificate is issued by Caddy's internal CA, not a public CA.
+- Browsers on VPN clients will trust it only after the Caddy local root CA is installed on the client device.
+- The public relay, if used, is separate and remains public-facing; this repo does not place the dashboard behind it.
 
 ## Trading Mode
 
@@ -160,16 +144,16 @@ This machine is intended to keep trading on demo. Confirm these values in `xauex
 CTRADER_HOST=demo-uk-eqx-01.p.c-trader.com
 CTRADER_TLS_SERVER_NAME=connect.spotware.com
 OBSERVE_ONLY=false
-MIROFISH_MODE=true
+XAUEX_MODE=true
 RISK_PERCENT=1.5
-MIROFISH_ENTRY_START_LONDON=08:00
-MIROFISH_ENTRY_END_LONDON=08:05
-MIROFISH_ENTRY_SECOND_START_LONDON=11:30
-MIROFISH_ENTRY_SECOND_END_LONDON=11:35
-MIROFISH_FORCE_FLAT_LONDON=15:00
-MIROFISH_MAX_TRADES_PER_DAY=2
-MIROFISH_CASH_TAKE_PROFIT_GBP=50
-MIROFISH_CASH_STOP_LOSS_GBP=50
+XAUEX_ENTRY_START_LONDON=08:00
+XAUEX_ENTRY_END_LONDON=08:05
+XAUEX_ENTRY_SECOND_START_LONDON=11:30
+XAUEX_ENTRY_SECOND_END_LONDON=11:35
+XAUEX_FORCE_FLAT_LONDON=15:00
+XAUEX_MAX_TRADES_PER_DAY=2
+XAUEX_CASH_TAKE_PROFIT_GBP=50
+XAUEX_CASH_STOP_LOSS_GBP=50
 CMD_FILE_PATH=/var/lib/xauex/cmd.json
 LOG_FILE_PATH=/var/log/xauex/xauex.log
 ```
@@ -177,19 +161,11 @@ LOG_FILE_PATH=/var/log/xauex/xauex.log
 ## Manual Signal Refresh
 
 ```bash
-cd /home/bolyki/mirofish-gold-oracle
-./.venv/bin/python -m bridge.run --asset XAUUSD --auto-context
+cd <repo-root>
+./.venv/bin/python -m xauex.signal.run --asset XAUUSD --auto-context
 ```
-
-Expected live behavior:
-
-- phase 1: up to `MIROFISH_MAX_TRADES_PER_DAY` signal windows per London weekday
-- `HOLD` is allowed, but should be rare and reserved for hard blockers or strong conflict
-- optional local Qdrant memory can be enabled with `QDRANT_ENABLED=1` and `QDRANT_PATH=/var/lib/xauex/qdrant_local`
-- the current local Qdrant implementation is embedded via `qdrant-client`; there is no separate daemon or port to manage
-- dashboard manual trades require absolute-price SL/TP and are intentionally independent from Oracle automation
 
 ## Notes
 
-- The top-level `main.py` is still useful for interactive/manual runs, but systemd should use the scripts in `ops/`.
-- The bridge runs non-interactively as a module because that import path is reliable; direct `python bridge/run.py` is not.
+- The supported interactive run paths are the XAUEX modules and scripts in `ops/`.
+- The signal service runs non-interactively as a module because that import path is stable.

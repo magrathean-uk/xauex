@@ -43,9 +43,9 @@ def _first_env(*keys: str, default: str = "") -> str:
 def default_model() -> str:
     return _first_env(
         "XAUEX_ANALYST_MODEL",
+        "XAUEX_SIGNAL_LLM_MODEL",
         "LLM_MODEL_NAME",
-        "BRIDGE_LLM_MODEL",
-        "BRIDGE_PARSER_LLM_MODEL",
+        "XAUEX_SIGNAL_PARSER_LLM_MODEL",
         "DEEPSEEK_MODEL",
         default="llama-3.1-8b-instant",
     )
@@ -54,10 +54,10 @@ def default_model() -> str:
 def _resolve_llm_settings(model: Optional[str] = None) -> tuple[str, str, str]:
     api_key = _first_env(
         "XAUEX_ANALYST_API_KEY",
-        "BRIDGE_LLM_API_KEY",
+        "XAUEX_SIGNAL_LLM_API_KEY",
         "LLM_API_KEY",
         "DEEPSEEK_API_KEY",
-        "BRIDGE_PARSER_LLM_API_KEY",
+        "XAUEX_SIGNAL_PARSER_LLM_API_KEY",
     )
     if not api_key:
         raise RuntimeError(
@@ -66,10 +66,10 @@ def _resolve_llm_settings(model: Optional[str] = None) -> tuple[str, str, str]:
 
     base_url = _first_env(
         "XAUEX_ANALYST_BASE_URL",
-        "BRIDGE_LLM_BASE_URL",
+        "XAUEX_SIGNAL_LLM_BASE_URL",
         "LLM_BASE_URL",
         "DEEPSEEK_BASE_URL",
-        "BRIDGE_PARSER_LLM_BASE_URL",
+        "XAUEX_SIGNAL_PARSER_LLM_BASE_URL",
         default="https://api.deepseek.com/v1",
     )
     resolved_model = (model or "").strip() or default_model()

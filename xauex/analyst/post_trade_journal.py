@@ -5,7 +5,7 @@ import os
 import sys
 from typing import Any, Dict, List
 
-from analyst._utils import (
+from xauex.analyst._utils import (
     default_model,
     append_to_json_list,
     call_claude,

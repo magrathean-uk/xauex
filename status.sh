@@ -1,20 +1,19 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-echo '=== MiroFish Status ===' && date
+echo '=== XAUEX Status ===' && date
 echo
 echo '=== Services ==='
 systemctl --no-pager --no-legend --plain status \
-  mirofish-backend.service \
-  oracle-dashboard.service \
+  xauex-web.service \
   xauex.service \
-  mirofish-bridge.timer \
+  xauex-signal.timer \
   xauex-start.timer \
   xauex-stop.timer \
   xauex-trade-journal.timer \
   xauex-weekly-review.timer 2>/dev/null | sed -n '1,16p'
 echo
-echo '=== Oracle Snapshot ==='
+echo '=== XAUEX Snapshot ==='
 if DASHBOARD_JSON=$(curl -fsS http://127.0.0.1:8089/api/dashboard 2>/dev/null); then
   DASHBOARD_JSON="$DASHBOARD_JSON" python3 - <<'PY'
 import json
@@ -40,5 +39,5 @@ else
   echo 'Dashboard API unavailable.'
 fi
 echo
-echo '=== Recent Oracle Logs ==='
-journalctl --no-pager -u oracle-dashboard.service -u xauex.service -u mirofish-bridge.service -n 20 2>/dev/null || echo 'No recent journal entries.'
+echo '=== Recent XAUEX Logs ==='
+journalctl --no-pager -u xauex-web.service -u xauex.service -u xauex-signal.service -u xauex-trade-journal.service -u xauex-weekly-review.service -n 20 2>/dev/null || echo 'No recent journal entries.'

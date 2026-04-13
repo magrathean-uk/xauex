@@ -9,7 +9,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from analyst._utils import atomic_write_json, call_claude, default_model, is_state_stale, read_json_file, utcnow_str
+from xauex.analyst._utils import atomic_write_json, call_claude, default_model, is_state_stale, read_json_file, utcnow_str
 
 logger = logging.getLogger(__name__)
 

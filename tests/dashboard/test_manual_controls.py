@@ -18,7 +18,7 @@ def _load_dashboard_module(monkeypatch, tmp_path: Path):
             {
                 "meta": {"bot_status": "RUNNING", "last_updated_utc": "2026-04-07T01:02:03Z"},
                 "account": {"balance": 12345.67, "equity": 12400.1, "open_pnl": 54.43},
-                "risk": {"daily_pnl": 12.5, "weekly_pnl": 34.5, "mirofish_trades_taken_london": 1},
+                "risk": {"daily_pnl": 12.5, "weekly_pnl": 34.5, "xauex_trades_taken_london": 1},
                 "open_positions": [
                     {
                         "position_id": "m-123",
@@ -32,7 +32,7 @@ def _load_dashboard_module(monkeypatch, tmp_path: Path):
                         "direction": "SELL",
                         "entry_price": 2358.9,
                         "unrealised_pnl": -2.2,
-                        "owner": "oracle",
+                        "owner": "xauex",
                     },
                 ],
                 "closed_trades_today": [],
@@ -62,7 +62,7 @@ def _load_dashboard_module(monkeypatch, tmp_path: Path):
         json.dumps(
             {
                 "generated_at_utc": "2026-04-07T01:00:00Z",
-                "mirofish_signal": {
+                "xauex_signal": {
                     "action": "BUY",
                     "symbol": "XAUUSD",
                     "confidence": 0.81,
@@ -99,11 +99,11 @@ def _load_dashboard_module(monkeypatch, tmp_path: Path):
 
     monkeypatch.setenv("STATE_FILE_PATH", str(state_path))
     monkeypatch.setenv("CMD_FILE_PATH", str(cmd_path))
-    monkeypatch.setenv("MIROFISH_MANUAL_COMMAND_PATH", str(manual_cmd_path))
-    monkeypatch.setenv("BRIDGE_BRIEF_OUTPUT_PATH", str(brief_path))
-    monkeypatch.setenv("BRIDGE_EVIDENCE_OUTPUT_PATH", str(evidence_path))
+    monkeypatch.setenv("XAUEX_MANUAL_COMMAND_PATH", str(manual_cmd_path))
+    monkeypatch.setenv("XAUEX_SIGNAL_BRIEF_OUTPUT_PATH", str(brief_path))
+    monkeypatch.setenv("XAUEX_SIGNAL_EVIDENCE_OUTPUT_PATH", str(evidence_path))
 
-    import dashboard_web.app as dashboard_app
+    import xauex.app.app as dashboard_app
 
     dashboard_app = importlib.reload(dashboard_app)
     dashboard_app.STATE_PATH = state_path
@@ -143,8 +143,8 @@ def test_dashboard_payload_keeps_signal_run_cap_distinct_from_trade_cap(monkeypa
                 "risk": {
                     "daily_pnl": 12.5,
                     "weekly_pnl": 34.5,
-                    "mirofish_trades_taken_london": 0,
-                    "mirofish_signal_runs_london": [
+                    "xauex_trades_taken_london": 0,
+                    "xauex_signal_runs_london": [
                         {"slot": "MORNING", "date_london": "2026-04-07"},
                     ],
                 },
@@ -152,7 +152,7 @@ def test_dashboard_payload_keeps_signal_run_cap_distinct_from_trade_cap(monkeypa
                 "closed_trades_today": [],
                 "signal_history": [{"action": "BUY", "confidence": 0.8}],
                 "runtime": {
-                    "mirofish_max_trades_per_day": 1,
+                    "xauex_max_trades_per_day": 1,
                 },
             }
         ),
@@ -178,7 +178,7 @@ def test_dashboard_payload_caps_chart_window_and_signal_histories(monkeypatch, t
             {
                 "meta": {"bot_status": "RUNNING", "last_updated_utc": "2026-04-07T01:02:03Z"},
                 "account": {"balance": 12345.67, "equity": 12400.1, "open_pnl": 54.43},
-                "risk": {"daily_pnl": 12.5, "weekly_pnl": 34.5, "mirofish_trades_taken_london": 1},
+                "risk": {"daily_pnl": 12.5, "weekly_pnl": 34.5, "xauex_trades_taken_london": 1},
                 "open_positions": [],
                 "closed_trades_today": [],
                 "recent_h1_closes": list(range(30)),
@@ -252,13 +252,13 @@ def test_dashboard_payload_reuses_normalized_oracle_signal_and_run_count(monkeyp
                 "risk": {
                     "daily_pnl": 12.5,
                     "weekly_pnl": 34.5,
-                    "mirofish_trades_taken_london": 0,
+                    "xauex_trades_taken_london": 0,
                 },
                 "open_positions": [],
                 "closed_trades_today": [],
                 "signal_history": [{"action": "SELL", "confidence": 0.2}],
                 "runtime": {
-                    "mirofish_signal_runs_taken_london": 1,
+                    "xauex_signal_runs_taken_london": 1,
                     "latest_quote": {
                         "bid": 2362.2,
                         "ask": 2362.7,
@@ -274,7 +274,7 @@ def test_dashboard_payload_reuses_normalized_oracle_signal_and_run_count(monkeyp
         json.dumps(
             {
                 "generated_at_utc": "2026-04-07T01:00:00Z",
-                "mirofish_signal": {
+                "xauex_signal": {
                     "action": "BUY",
                     "symbol": "XAUUSD",
                     "confidence": 0.81,

@@ -129,8 +129,8 @@ class Executor:
 
     @staticmethod
     def should_apply_generic_trailing(position: TrackedPosition) -> bool:
-        """Oracle and manual positions use dedicated management lanes, not generic trailing."""
-        return str(getattr(position, "owner", "strategy") or "strategy").lower() not in {"manual", "oracle"}
+        """XAUEX and manual positions use dedicated management lanes, not generic trailing."""
+        return str(getattr(position, "owner", "strategy") or "strategy").lower() not in {"manual", "xauex"}
 
     def serialize_pending_market_orders(self) -> Dict[str, dict]:
         """Return JSON-safe pending market orders for restart recovery."""

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from bridge.qdrant_memory import (
+from xauex.signal.qdrant_memory import (
     QdrantMemoryConfig,
     build_qdrant_client_kwargs,
     build_memory_documents,

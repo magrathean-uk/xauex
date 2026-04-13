@@ -2,11 +2,13 @@
 Description=XAUEX Demo Trading Bot
 After=network-online.target
 Wants=network-online.target
+OnFailure=systemd-email-alert@%n.service
 
 [Service]
 Type=simple
 User=__RUN_USER__
 WorkingDirectory=__REPO_ROOT__/xauex
+EnvironmentFile=__REPO_ROOT__/.env
 EnvironmentFile=__REPO_ROOT__/xauex/.env
 Environment=PYTHONUNBUFFERED=1
 ExecStart=__REPO_ROOT__/ops/run_xauex.sh

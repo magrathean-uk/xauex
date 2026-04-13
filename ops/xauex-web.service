@@ -1,0 +1,21 @@
+[Unit]
+Description=XAUEX Web Dashboard
+After=network-online.target xauex.service
+Wants=network-online.target
+OnFailure=systemd-email-alert@%n.service
+
+[Service]
+Type=simple
+User=__RUN_USER__
+WorkingDirectory=__REPO_ROOT__
+EnvironmentFile=__REPO_ROOT__/.env
+EnvironmentFile=__REPO_ROOT__/xauex/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=__REPO_ROOT__/ops/run_xauex_web.sh
+Restart=always
+RestartSec=5
+StandardOutput=append:__REPO_ROOT__/logs/xauex-web.log
+StandardError=append:__REPO_ROOT__/logs/xauex-web-error.log
+
+[Install]
+WantedBy=multi-user.target

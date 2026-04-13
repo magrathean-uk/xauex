@@ -1,0 +1,21 @@
+[Unit]
+Description=XAUEX Signal Refresh
+After=network-online.target xauex.service
+Wants=network-online.target
+Requires=xauex.service
+OnFailure=systemd-email-alert@%n.service
+
+[Service]
+Type=oneshot
+User=__RUN_USER__
+WorkingDirectory=__REPO_ROOT__
+EnvironmentFile=__REPO_ROOT__/.env
+Environment=PYTHONUNBUFFERED=1
+Environment=LOG_LEVEL=DEBUG
+ExecStart=__REPO_ROOT__/ops/run_xauex_signal.sh
+TimeoutStartSec=3600
+StandardOutput=append:__REPO_ROOT__/logs/xauex-signal.log
+StandardError=append:__REPO_ROOT__/logs/xauex-signal-error.log
+
+[Install]
+WantedBy=multi-user.target

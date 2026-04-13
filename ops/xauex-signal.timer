@@ -1,0 +1,11 @@
+[Unit]
+Description=XAUEX Signal Refresh Timer
+
+[Timer]
+OnCalendar=Mon-Fri *-*-* 08:00:00 Europe/London
+OnCalendar=Mon-Fri *-*-* 11:30:00 Europe/London
+Persistent=true
+Unit=xauex-signal.service
+
+[Install]
+WantedBy=timers.target

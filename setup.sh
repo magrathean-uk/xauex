@@ -1,6 +1,6 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════
-# MiroFish Gold Oracle — Setup Script
+# XAUEX Setup Script
 # One-command setup for x86 VPS deployment
 # ═══════════════════════════════════════════════════════════════
 set -e
@@ -13,12 +13,12 @@ cd "$SCRIPT_DIR"
 
 # ── Check Python ─────────────────────────────────────────────
 PYTHON=""
-for cmd in python3.13 python3.12 python3 python; do
+for cmd in python3.13 python3.12 python3.11 python3 python; do
     if command -v "$cmd" &>/dev/null; then
         ver=$($cmd --version 2>&1 | grep -oP '\d+\.\d+')
         major=$(echo "$ver" | cut -d. -f1)
         minor=$(echo "$ver" | cut -d. -f2)
-        if [ "$major" -ge 3 ] && [ "$major" -ge 3 ] && [ "$minor" -ge 12 ]; then
+        if [ "$major" -gt 3 ] || { [ "$major" -eq 3 ] && [ "$minor" -ge 11 ]; }; then
             PYTHON="$cmd"
             break
         fi
@@ -26,18 +26,11 @@ for cmd in python3.13 python3.12 python3 python; do
 done
 
 if [ -z "$PYTHON" ]; then
-    echo "❌ Python 3.12+ required. Install with:"
-    echo "   sudo apt install python3.12 python3.12-venv python3.12-dev"
+    echo "Python 3.11+ required. Install with:"
+    echo "  sudo apt install python3.11 python3.11-venv python3.11-dev"
     exit 1
 fi
 echo "✓ Found $PYTHON ($($PYTHON --version))"
-
-# ── Check Node.js (required to rebuild frontend) ────────────
-if command -v node &>/dev/null; then
-    echo "✓ Found Node.js ($(node --version))"
-else
-    echo "⚠ Node.js not found — frontend build will be skipped"
-fi
 
 # ── Create virtual environment ───────────────────────────────
 echo ""
@@ -79,26 +72,18 @@ else
 fi
 
 # ── Also create per-component .env symlinks when absent ─────
-for dir in backend bridge xauex; do
+for dir in xauex; do
     if [ -d "$dir" ] && [ ! -f "$dir/.env" ]; then
         ln -sf "$SCRIPT_DIR/.env" "$dir/.env" 2>/dev/null || true
     fi
 done
 
 # ── Per-component venv symlinks (so each component finds deps) ──
-for dir in backend xauex; do
+for dir in xauex; do
     if [ -d "$dir" ] && [ ! -d "$dir/.venv" ]; then
         ln -sf "$SCRIPT_DIR/.venv" "$dir/.venv" 2>/dev/null || true
     fi
 done
-
-# ── Frontend build (optional here, required for nginx site) ─
-echo ""
-if command -v npm &>/dev/null && [ -f "frontend/package.json" ]; then
-    echo "Building frontend..."
-    (cd frontend && npm ci >/dev/null && npm run build >/dev/null) || true
-    echo "✓ Frontend build attempted"
-fi
 
 # ── Validate ─────────────────────────────────────────────────
 echo ""
@@ -106,7 +91,6 @@ echo "Validating installation..."
 $PYTHON -c "import rich; print('  ✓ rich')" 2>/dev/null || echo "  ✗ rich missing"
 $PYTHON -c "import httpx; print('  ✓ httpx')" 2>/dev/null || echo "  ✗ httpx missing"
 $PYTHON -c "import openai; print('  ✓ openai')" 2>/dev/null || echo "  ✗ openai missing"
-$PYTHON -c "import flask; print('  ✓ flask')" 2>/dev/null || echo "  ✗ flask missing"
 $PYTHON -c "import schedule; print('  ✓ schedule')" 2>/dev/null || echo "  ✗ schedule missing"
 
 echo ""
@@ -115,9 +99,8 @@ echo "✅ Setup complete!"
 echo ""
 echo "To run:"
 echo "  source .venv/bin/activate"
-echo "  source .venv/bin/activate"
 echo "  sudo bash ops/install_systemd.sh"
-echo "  systemctl status mirofish-backend.service mirofish-bridge.timer xauex-start.timer"
+echo "  systemctl status xauex-web.service xauex-signal.timer xauex-start.timer"
 echo ""
 echo "Docs:"
 echo "  README.md"

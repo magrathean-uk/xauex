@@ -20,17 +20,18 @@ assert _SPEC and _SPEC.loader
 _MODULE = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(_MODULE)
 
-count_oracle_open_positions = _MODULE.count_oracle_open_positions
+count_xauex_open_positions = _MODULE.count_oracle_open_positions
 count_tradeable_open_positions = _MODULE.count_tradeable_open_positions
 load_manual_trade_command = _MODULE.load_manual_trade_command
 manual_trade_global_block_reason = _MODULE.manual_trade_global_block_reason
 match_recovered_position_metadata = _MODULE.match_recovered_position_metadata
-should_manage_with_oracle_session_manager = _MODULE.should_manage_with_oracle_session_manager
+should_manage_with_xauex_session_manager = _MODULE.should_manage_with_oracle_session_manager
 validate_manual_trade_command = _MODULE.validate_manual_trade_command
 validate_manual_trade_prices = _MODULE.validate_manual_trade_prices
 
 from bot.execution.executor import TrackedPosition, Executor
 from bot.patterns.detector import PatternType
+from bot.risk.gates import RiskGates, RiskState
 
 
 def test_manual_trade_command_is_loaded_and_cleared(tmp_path):
@@ -68,20 +69,40 @@ def test_manual_trade_command_validation_rejects_bad_side():
     assert "action" in reason.lower()
 
 
-def test_manual_positions_do_not_count_toward_oracle_daily_limit():
+def test_manual_positions_do_not_count_toward_xauex_daily_limit():
     positions = [
         {"position_id": "1", "owner": "manual"},
-        {"position_id": "2", "owner": "oracle"},
+        {"position_id": "2", "owner": "xauex"},
     ]
-    assert count_oracle_open_positions(positions) == 1
+    assert count_xauex_open_positions(positions) == 1
     assert count_tradeable_open_positions(positions) == 1
 
 
-def test_oracle_manager_skips_manual_positions():
+def test_manual_positions_do_not_block_new_xauex_entries_at_account_level():
+    config = SimpleNamespace(
+        observe_only=False,
+        weekly_stop_pct=100.0,
+        daily_stop_pct=100.0,
+        max_consecutive_losses=99,
+        max_open_trades=1,
+    )
+    gates = RiskGates(config, RiskState())
+    positions = [
+        {"position_id": "1", "owner": "manual"},
+    ]
+
+    gates.set_open_position_count(count_tradeable_open_positions(positions))
+    allowed, reason = gates.can_trade(account_balance=1000.0)
+
+    assert allowed is True
+    assert reason == "OK"
+
+
+def test_xauex_manager_skips_manual_positions():
     manual = {"position_id": "1", "owner": "manual", "metadata": {}}
-    oracle = {"position_id": "2", "owner": "oracle", "metadata": {}}
-    assert should_manage_with_oracle_session_manager(manual) is False
-    assert should_manage_with_oracle_session_manager(oracle) is True
+    xauex = {"position_id": "2", "owner": "xauex", "metadata": {}}
+    assert should_manage_with_xauex_session_manager(manual) is False
+    assert should_manage_with_xauex_session_manager(xauex) is True
 
 
 def test_manual_trade_prices_must_be_on_correct_side_of_market():
@@ -126,12 +147,12 @@ def test_restart_recovery_can_match_position_from_pending_market_order():
                 "lot_size": 0.03,
                 "stop_loss": 4680.0,
                 "take_profit": 4720.0,
-                "owner": "oracle",
+                "owner": "xauex",
                 "metadata": {"session": {"phase": "OBSERVE"}},
             }
         },
     )
-    assert matched["owner"] == "oracle"
+    assert matched["owner"] == "xauex"
     assert matched["metadata"]["session"]["phase"] == "OBSERVE"
 
 
@@ -142,7 +163,7 @@ def test_manual_trade_open_honors_global_safety_blockers():
     assert manual_trade_global_block_reason(observe_only=False, kill_switch_active=False, auth_failure=False) is None
 
 
-def test_trailing_engine_skips_manual_and_oracle_positions():
+def test_trailing_engine_skips_manual_and_xauex_positions():
     executor = Executor(
         config=SimpleNamespace(observe_only=False),
         api_client=SimpleNamespace(get_current_quote=lambda: (4700.0, 4700.2)),
@@ -164,7 +185,7 @@ def test_trailing_engine_skips_manual_and_oracle_positions():
     )
     executor.position_manager.add(
         TrackedPosition(
-            position_id="oracle-1",
+            position_id="xauex-1",
             direction="LONG",
             entry_price=4690.0,
             stop_loss=4680.0,
@@ -173,12 +194,12 @@ def test_trailing_engine_skips_manual_and_oracle_positions():
             open_time_utc=None,
             pattern=PatternType.NONE,
             level=4690.0,
-            owner="oracle",
+            owner="xauex",
         )
     )
 
     assert executor.should_apply_generic_trailing(executor.position_manager.get_position("manual-1")) is False
-    assert executor.should_apply_generic_trailing(executor.position_manager.get_position("oracle-1")) is False
+    assert executor.should_apply_generic_trailing(executor.position_manager.get_position("xauex-1")) is False
 
 
 def test_manual_position_close_does_not_touch_risk_gates():

@@ -22,28 +22,29 @@ _SPEC.loader.exec_module(_MODULE)
 
 from config import load_config
 from config import ConfigError
-from bot.risk.sizing import calculate_mirofish_lot_size_from_cash_risk
+from bot.risk.sizing import calculate_xauex_lot_size_from_cash_risk
 from bot.levels.htf_levels import HTFLevels
 
-build_mirofish_initial_stop_distance = _MODULE.build_mirofish_initial_stop_distance
-advance_mirofish_session_phase = _MODULE.advance_mirofish_session_phase
+build_xauex_initial_stop_distance = _MODULE.build_xauex_initial_stop_distance
+advance_xauex_session_phase = _MODULE.advance_xauex_session_phase
+confirm_xauex_session_phase_transition = _MODULE.confirm_xauex_session_phase_transition
 
 
-def test_load_config_includes_mirofish_session_manager_settings(monkeypatch):
+def test_load_config_includes_xauex_session_manager_settings(monkeypatch):
     monkeypatch.chdir(XAUEX_ROOT)
-    monkeypatch.setenv("MIROFISH_SESSION_PROTECT_R", "0.85")
-    monkeypatch.setenv("MIROFISH_SESSION_TRAIL_R", "1.35")
-    monkeypatch.setenv("MIROFISH_SESSION_ATR_MULTIPLIER", "1.4")
-    monkeypatch.setenv("MIROFISH_SESSION_STRUCTURE_BUFFER_USD", "2.5")
-    monkeypatch.setenv("MIROFISH_MANUAL_COMMAND_PATH", "/tmp/manual_trade_cmd.json")
+    monkeypatch.setenv("XAUEX_SESSION_PROTECT_R", "0.85")
+    monkeypatch.setenv("XAUEX_SESSION_TRAIL_R", "1.35")
+    monkeypatch.setenv("XAUEX_SESSION_ATR_MULTIPLIER", "1.4")
+    monkeypatch.setenv("XAUEX_SESSION_STRUCTURE_BUFFER_USD", "2.5")
+    monkeypatch.setenv("XAUEX_MANUAL_COMMAND_PATH", "/tmp/manual_trade_cmd.json")
 
     cfg = load_config()
 
-    assert cfg.mirofish_session_protect_r == 0.85
-    assert cfg.mirofish_session_trail_r == 1.35
-    assert cfg.mirofish_session_atr_multiplier == 1.4
-    assert cfg.mirofish_session_structure_buffer_usd == 2.5
-    assert cfg.mirofish_manual_command_path == "/tmp/manual_trade_cmd.json"
+    assert cfg.xauex_session_protect_r == 0.85
+    assert cfg.xauex_session_trail_r == 1.35
+    assert cfg.xauex_session_atr_multiplier == 1.4
+    assert cfg.xauex_session_structure_buffer_usd == 2.5
+    assert cfg.xauex_manual_command_path == "/tmp/manual_trade_cmd.json"
 
 
 def test_load_config_defaults_health_check_host_to_loopback(monkeypatch):
@@ -57,16 +58,16 @@ def test_load_config_defaults_health_check_host_to_loopback(monkeypatch):
 
 def test_load_config_rejects_force_flat_before_second_window_finishes(monkeypatch):
     monkeypatch.chdir(XAUEX_ROOT)
-    monkeypatch.setenv("MIROFISH_ENTRY_SECOND_START_LONDON", "11:30")
-    monkeypatch.setenv("MIROFISH_ENTRY_SECOND_END_LONDON", "11:35")
-    monkeypatch.setenv("MIROFISH_FORCE_FLAT_LONDON", "11:30")
+    monkeypatch.setenv("XAUEX_ENTRY_SECOND_START_LONDON", "11:30")
+    monkeypatch.setenv("XAUEX_ENTRY_SECOND_END_LONDON", "11:35")
+    monkeypatch.setenv("XAUEX_FORCE_FLAT_LONDON", "11:30")
 
-    with pytest.raises(ConfigError, match="MIROFISH_FORCE_FLAT_LONDON must be later than MIROFISH_ENTRY_SECOND_END_LONDON"):
+    with pytest.raises(ConfigError, match="XAUEX_FORCE_FLAT_LONDON must be later than XAUEX_ENTRY_SECOND_END_LONDON"):
         load_config()
 
 
 def test_oracle_initial_stop_uses_widest_signal_structure_or_atr():
-    stop = build_mirofish_initial_stop_distance(
+    stop = build_xauex_initial_stop_distance(
         signal_stop=12.0,
         atr_stop=16.5,
         structure_stop=14.0,
@@ -77,7 +78,7 @@ def test_oracle_initial_stop_uses_widest_signal_structure_or_atr():
 
 
 def test_oracle_wider_stop_reduces_lot_but_respects_cash_cap():
-    lot = calculate_mirofish_lot_size_from_cash_risk(
+    lot = calculate_xauex_lot_size_from_cash_risk(
         cash_risk=50.0,
         stop_distance=20.0,
         lot_size=100.0,
@@ -98,13 +99,13 @@ def test_session_phase_moves_to_protect_then_trail():
         "confidence_bucket": "medium",
     }
 
-    protect = advance_mirofish_session_phase(
+    protect = advance_xauex_session_phase(
         state,
         current_price=109.0,
         protect_r=0.85,
         trail_r=1.35,
     )
-    trail = advance_mirofish_session_phase(
+    trail = advance_xauex_session_phase(
         protect,
         current_price=114.0,
         protect_r=0.85,
@@ -115,11 +116,69 @@ def test_session_phase_moves_to_protect_then_trail():
     assert trail["phase"] == "TRAIL"
 
 
+def test_session_phase_promotion_requires_matching_unrealised_pnl():
+    state = {
+        "phase": "OBSERVE",
+        "direction": "SHORT",
+        "entry_price": 4737.03,
+        "initial_risk_distance": 25.0,
+        "confidence_bucket": "high",
+        "protect_r": 1.0,
+        "trail_r": 1.5,
+    }
+
+    candidate = advance_xauex_session_phase(
+        state,
+        current_price=4710.0,
+        protect_r=1.0,
+        trail_r=1.5,
+    )
+    confirmed = confirm_xauex_session_phase_transition(
+        previous_state=state,
+        candidate_state=candidate,
+        unrealised_pnl=0.61,
+        lot_size=0.01,
+        contract_size=100.0,
+    )
+
+    assert candidate["phase"] == "PROTECT"
+    assert confirmed["phase"] == "OBSERVE"
+
+
+def test_session_phase_promotion_allows_confirmed_profit_threshold():
+    state = {
+        "phase": "OBSERVE",
+        "direction": "SHORT",
+        "entry_price": 4737.03,
+        "initial_risk_distance": 25.0,
+        "confidence_bucket": "high",
+        "protect_r": 1.0,
+        "trail_r": 1.5,
+    }
+
+    candidate = advance_xauex_session_phase(
+        state,
+        current_price=4699.0,
+        protect_r=1.0,
+        trail_r=1.5,
+    )
+    confirmed = confirm_xauex_session_phase_transition(
+        previous_state=state,
+        candidate_state=candidate,
+        unrealised_pnl=40.0,
+        lot_size=0.01,
+        contract_size=100.0,
+    )
+
+    assert candidate["phase"] == "TRAIL"
+    assert confirmed["phase"] == "TRAIL"
+
+
 def test_structure_stop_distance_accepts_htflevels_container():
     orchestrator = _MODULE.BotOrchestrator.__new__(_MODULE.BotOrchestrator)
     orchestrator.config = SimpleNamespace(
         sl_min_dollars=10.0,
-        mirofish_session_structure_buffer_usd=2.5,
+        xauex_session_structure_buffer_usd=2.5,
     )
     orchestrator._recent_h1_closes = [4700.0, 4710.0, 4720.0]
     orchestrator.level_manager = SimpleNamespace(
@@ -141,6 +200,6 @@ def test_structure_stop_distance_accepts_htflevels_container():
         )
     )
 
-    distance = orchestrator._mirofish_structure_stop_distance(direction=-1, current_price=4725.0)
+    distance = orchestrator._xauex_structure_stop_distance(direction=-1, current_price=4725.0)
 
     assert distance == 17.5

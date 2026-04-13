@@ -1,0 +1,17 @@
+{
+    auto_https disable_redirects
+
+    servers {
+        protocols h1 h2
+    }
+}
+
+# Optional public relay.
+# Keep any public site bound only to the public interface so it never serves the VPN-only dashboard.
+# Replace the hostname, bind IP, and upstream before using it on a real host.
+relay.example.com {
+    bind 203.0.113.10
+    reverse_proxy 127.0.0.1:8088
+}
+
+import /etc/caddy/Caddyfile.d/*.caddy

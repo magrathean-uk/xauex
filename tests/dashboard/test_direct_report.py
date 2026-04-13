@@ -17,7 +17,7 @@ def _load_dashboard_module(monkeypatch, tmp_path: Path):
             {
                 "meta": {"bot_status": "RUNNING", "last_updated_utc": "2026-04-07T01:02:03Z"},
                 "account": {"balance": 12345.67, "equity": 12400.1, "open_pnl": 54.43},
-                "risk": {"daily_pnl": 12.5, "weekly_pnl": 34.5, "mirofish_trades_taken_london": 0},
+                "risk": {"daily_pnl": 12.5, "weekly_pnl": 34.5, "xauex_trades_taken_london": 0},
                 "open_positions": [],
                 "closed_trades_today": [],
                 "signal_history": [{"action": "BUY", "confidence": 0.8}],
@@ -30,11 +30,15 @@ def _load_dashboard_module(monkeypatch, tmp_path: Path):
         json.dumps(
             {
                 "generated_at_utc": "2026-04-07T01:00:00Z",
-                "mirofish_signal": {
+                "xauex_signal": {
                     "action": "BUY",
                     "symbol": "XAUUSD",
                     "confidence": 0.81,
                     "reasoning": "Breakout confirmed from local momentum.",
+                    "validator_status": "reviewed",
+                    "validator_summary": "Structured drivers align with the long thesis.",
+                    "consensus_state": "aligned",
+                    "llm_usage": {"estimated_total_cost_usd": 0.00123},
                     "source": {"mode": "direct"},
                 },
             }
@@ -60,6 +64,9 @@ def _load_dashboard_module(monkeypatch, tmp_path: Path):
                 "weights": {"price_action": 0.45, "macro": 0.35},
                 "recent_runs": [{"action": "BUY"}],
                 "price_features": {"price_bias": "bullish", "range_position": "upper"},
+                "market_snapshot": {"series": {"us10y_yield": {"bias": "BUY"}}},
+                "validator": {"status": "reviewed", "consensus_state": "aligned"},
+                "estimated_total_cost_usd": 0.00123,
             }
         ),
         encoding="utf-8",
@@ -67,10 +74,10 @@ def _load_dashboard_module(monkeypatch, tmp_path: Path):
 
     monkeypatch.setenv("STATE_FILE_PATH", str(state_path))
     monkeypatch.setenv("CMD_FILE_PATH", str(cmd_path))
-    monkeypatch.setenv("BRIDGE_BRIEF_OUTPUT_PATH", str(brief_path))
-    monkeypatch.setenv("BRIDGE_EVIDENCE_OUTPUT_PATH", str(evidence_path))
+    monkeypatch.setenv("XAUEX_SIGNAL_BRIEF_OUTPUT_PATH", str(brief_path))
+    monkeypatch.setenv("XAUEX_SIGNAL_EVIDENCE_OUTPUT_PATH", str(evidence_path))
 
-    import dashboard_web.app as dashboard_app
+    import xauex.app.app as dashboard_app
 
     dashboard_app = importlib.reload(dashboard_app)
     dashboard_app.STATE_PATH = state_path
@@ -106,7 +113,7 @@ def test_direct_report_route_reuses_normalized_oracle_signal(monkeypatch, tmp_pa
             {
                 "meta": {"bot_status": "RUNNING", "last_updated_utc": "2026-04-07T01:02:03Z"},
                 "account": {"balance": 12345.67, "equity": 12400.1, "open_pnl": 54.43},
-                "risk": {"daily_pnl": 12.5, "weekly_pnl": 34.5, "mirofish_trades_taken_london": 0},
+                "risk": {"daily_pnl": 12.5, "weekly_pnl": 34.5, "xauex_trades_taken_london": 0},
                 "open_positions": [],
                 "closed_trades_today": [],
                 "signal_history": [{"action": "SELL", "confidence": 0.2}],
@@ -126,7 +133,7 @@ def test_direct_report_route_reuses_normalized_oracle_signal(monkeypatch, tmp_pa
         json.dumps(
             {
                 "generated_at_utc": "2026-04-07T01:00:00Z",
-                "mirofish_signal": {
+                "xauex_signal": {
                     "action": "BUY",
                     "symbol": "XAUUSD",
                     "confidence": 0.81,
@@ -169,3 +176,18 @@ def test_homepage_report_link_defaults_to_direct_report(monkeypatch, tmp_path):
     body = response.get_data(as_text=True)
     assert 'id="report-link"' in body
     assert 'href="/report/direct"' in body
+
+
+def test_dashboard_payload_exposes_validator_and_cost_metadata(monkeypatch, tmp_path):
+    dashboard_app = _load_dashboard_module(monkeypatch, tmp_path)
+    client = dashboard_app.app.test_client()
+
+    response = client.get("/api/dashboard")
+
+    assert response.status_code == 200
+    payload = response.get_json()["data"]
+    assert payload["signal"]["validator_status"] == "reviewed"
+    assert payload["signal"]["consensus_state"] == "aligned"
+    assert payload["signal"]["llm_usage"]["estimated_total_cost_usd"] == 0.00123
+    assert payload["evidence"]["validator"]["consensus_state"] == "aligned"
+    assert payload["evidence"]["estimated_total_cost_usd"] == 0.00123

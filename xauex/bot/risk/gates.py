@@ -1,7 +1,7 @@
 """Trading gates based on risk management rules."""
 
 import logging
-from dataclasses import dataclass, asdict, field
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Tuple
 
@@ -26,12 +26,26 @@ class RiskState:
     day_start_date_utc: str = ""         # "YYYY-MM-DD"
     weekly_halted: bool = False
     daily_halted: bool = False
-    mirofish_trade_date_london: str = ""
-    mirofish_trades_taken_london: int = 0
-    mirofish_signal_runs_london: list[dict] = field(default_factory=list)
+    xauex_trade_date_london: str = ""
+    xauex_trades_taken_london: int = 0
+    xauex_signal_runs_london: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        return {
+            "consecutive_losses_today": self.consecutive_losses_today,
+            "losses_date_utc": self.losses_date_utc,
+            "weekly_pnl": self.weekly_pnl,
+            "week_start_balance": self.week_start_balance,
+            "week_start_date_utc": self.week_start_date_utc,
+            "daily_pnl": self.daily_pnl,
+            "day_start_balance": self.day_start_balance,
+            "day_start_date_utc": self.day_start_date_utc,
+            "weekly_halted": self.weekly_halted,
+            "daily_halted": self.daily_halted,
+            "xauex_trade_date_london": self.xauex_trade_date_london,
+            "xauex_trades_taken_london": self.xauex_trades_taken_london,
+            "xauex_signal_runs_london": list(self.xauex_signal_runs_london),
+        }
 
     @classmethod
     def from_dict(cls, d: dict) -> "RiskState":
@@ -46,9 +60,9 @@ class RiskState:
             day_start_date_utc=d.get("day_start_date_utc", ""),
             weekly_halted=d.get("weekly_halted", False),
             daily_halted=d.get("daily_halted", False),
-            mirofish_trade_date_london=d.get("mirofish_trade_date_london", ""),
-            mirofish_trades_taken_london=d.get("mirofish_trades_taken_london", 0),
-            mirofish_signal_runs_london=list(d.get("mirofish_signal_runs_london", [])),
+            xauex_trade_date_london=d.get("xauex_trade_date_london", ""),
+            xauex_trades_taken_london=d.get("xauex_trades_taken_london", 0),
+            xauex_signal_runs_london=list(d.get("xauex_signal_runs_london", [])),
         )
 
 

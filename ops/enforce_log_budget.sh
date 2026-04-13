@@ -10,17 +10,13 @@ TODAY_UTC="$(date -u +%F)"
 declare -a LOG_DIRS=(
   "/var/log/xauex"
   "$REPO_ROOT/logs"
-  "$REPO_ROOT/backend/logs"
 )
 
 declare -A PROTECTED=(
   ["/var/log/xauex/xauex.log"]=1
   ["/var/log/xauex/analyst.log"]=1
-  ["$REPO_ROOT/logs/backend.log"]=1
-  ["$REPO_ROOT/logs/backend-error.log"]=1
-  ["$REPO_ROOT/logs/bridge-run.log"]=1
-  ["$REPO_ROOT/logs/bridge-run-error.log"]=1
-  ["$REPO_ROOT/backend/logs/$TODAY_UTC.log"]=1
+  ["$REPO_ROOT/logs/xauex-signal.log"]=1
+  ["$REPO_ROOT/logs/xauex-signal-error.log"]=1
 )
 
 for dir in "${LOG_DIRS[@]}"; do

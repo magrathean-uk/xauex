@@ -81,7 +81,7 @@ def calculate_lot_size(
     return round(lot_size, 5)
 
 
-def calculate_mirofish_lot_size_from_cash_risk(
+def calculate_xauex_lot_size_from_cash_risk(
     *,
     cash_risk: float,
     stop_distance: float,

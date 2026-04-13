@@ -73,31 +73,31 @@ class Config:
     macro_regime_confidence_threshold: float
     trade_policy_path: str
     trade_policy_max_age_minutes: int
-    mirofish_mode: bool
-    mirofish_signal_path: str
-    mirofish_signal_max_age_seconds: int
-    mirofish_entry_timezone: str
-    mirofish_entry_start_london: str
-    mirofish_entry_end_london: str
-    mirofish_entry_second_start_london: str
-    mirofish_entry_second_end_london: str
-    mirofish_force_flat_london: str
-    mirofish_max_trades_per_day: int
-    mirofish_cash_take_profit_gbp: float
-    mirofish_cash_stop_loss_gbp: float
-    mirofish_risk_cap_percent: float
-    mirofish_confidence_full_threshold: float
-    mirofish_confidence_medium_threshold: float
-    mirofish_medium_confidence_lot_multiplier: float
-    mirofish_low_confidence_lot_multiplier: float
-    mirofish_session_protect_r: float
-    mirofish_session_trail_r: float
-    mirofish_session_atr_multiplier: float
-    mirofish_session_structure_buffer_usd: float
-    mirofish_session_protect_buffer_usd: float
-    mirofish_session_low_confidence_protect_r: float
-    mirofish_session_high_confidence_protect_r: float
-    mirofish_manual_command_path: str
+    xauex_mode: bool
+    xauex_signal_path: str
+    xauex_signal_max_age_seconds: int
+    xauex_entry_timezone: str
+    xauex_entry_start_london: str
+    xauex_entry_end_london: str
+    xauex_entry_second_start_london: str
+    xauex_entry_second_end_london: str
+    xauex_force_flat_london: str
+    xauex_max_trades_per_day: int
+    xauex_cash_take_profit_gbp: float
+    xauex_cash_stop_loss_gbp: float
+    xauex_risk_cap_percent: float
+    xauex_confidence_full_threshold: float
+    xauex_confidence_medium_threshold: float
+    xauex_medium_confidence_lot_multiplier: float
+    xauex_low_confidence_lot_multiplier: float
+    xauex_session_protect_r: float
+    xauex_session_trail_r: float
+    xauex_session_atr_multiplier: float
+    xauex_session_structure_buffer_usd: float
+    xauex_session_protect_buffer_usd: float
+    xauex_session_low_confidence_protect_r: float
+    xauex_session_high_confidence_protect_r: float
+    xauex_manual_command_path: str
     scalp_fast_ema_period: int
     scalp_slow_ema_period: int
     scalp_atr_period: int
@@ -302,68 +302,141 @@ def load_config(env_file: str = ".env") -> Config:
     trade_policy_max_age_minutes = collect(
         _int_range, "TRADE_POLICY_MAX_AGE_MINUTES", 5, 1440, 60
     )
-    mirofish_mode = os.getenv("MIROFISH_MODE", "false").lower() in ("true", "1", "yes")
-    mirofish_signal_path = os.getenv(
-        "MIROFISH_SIGNAL_PATH",
-        os.getenv("CMD_FILE_PATH", "/var/lib/xauex/cmd.json"),
+    xauex_mode = os.getenv("XAUEX_MODE", os.getenv("MIROFISH_MODE", "false")).lower() in ("true", "1", "yes")
+    xauex_signal_path = os.getenv(
+        "XAUEX_SIGNAL_PATH",
+        os.getenv(
+            "MIROFISH_SIGNAL_PATH",
+            os.getenv("CMD_FILE_PATH", "/var/lib/xauex/cmd.json"),
+        ),
     )
-    mirofish_signal_max_age_seconds = collect(
-        _int_range, "MIROFISH_SIGNAL_MAX_AGE_SECONDS", 30, 3600, 300
+    xauex_signal_max_age_seconds = collect(
+        _int_range,
+        "XAUEX_SIGNAL_MAX_AGE_SECONDS",
+        30,
+        3600,
+        int(os.getenv("MIROFISH_SIGNAL_MAX_AGE_SECONDS", "300")),
     )
-    mirofish_entry_timezone = os.getenv("MIROFISH_ENTRY_TIMEZONE", "Europe/London")
-    mirofish_entry_start_london = os.getenv("MIROFISH_ENTRY_START_LONDON", "08:00")
-    mirofish_entry_end_london = os.getenv("MIROFISH_ENTRY_END_LONDON", "08:05")
-    mirofish_entry_second_start_london = os.getenv("MIROFISH_ENTRY_SECOND_START_LONDON", "11:30")
-    mirofish_entry_second_end_london = os.getenv("MIROFISH_ENTRY_SECOND_END_LONDON", "11:35")
-    mirofish_force_flat_london = os.getenv("MIROFISH_FORCE_FLAT_LONDON", "15:00")
-    mirofish_max_trades_per_day = collect(
-        _int_range, "MIROFISH_MAX_TRADES_PER_DAY", 1, 5, 2
+    xauex_entry_timezone = os.getenv("XAUEX_ENTRY_TIMEZONE", os.getenv("MIROFISH_ENTRY_TIMEZONE", "Europe/London"))
+    xauex_entry_start_london = os.getenv("XAUEX_ENTRY_START_LONDON", os.getenv("MIROFISH_ENTRY_START_LONDON", "08:00"))
+    xauex_entry_end_london = os.getenv("XAUEX_ENTRY_END_LONDON", os.getenv("MIROFISH_ENTRY_END_LONDON", "08:05"))
+    xauex_entry_second_start_london = os.getenv(
+        "XAUEX_ENTRY_SECOND_START_LONDON",
+        os.getenv("MIROFISH_ENTRY_SECOND_START_LONDON", "11:30"),
     )
-    mirofish_cash_take_profit_gbp = collect(
-        _float_range, "MIROFISH_CASH_TAKE_PROFIT_GBP", 1.0, 5000.0, 50.0
+    xauex_entry_second_end_london = os.getenv(
+        "XAUEX_ENTRY_SECOND_END_LONDON",
+        os.getenv("MIROFISH_ENTRY_SECOND_END_LONDON", "11:35"),
     )
-    mirofish_cash_stop_loss_gbp = collect(
-        _float_range, "MIROFISH_CASH_STOP_LOSS_GBP", 1.0, 5000.0, 50.0
+    xauex_force_flat_london = os.getenv("XAUEX_FORCE_FLAT_LONDON", os.getenv("MIROFISH_FORCE_FLAT_LONDON", "15:00"))
+    xauex_max_trades_per_day = collect(
+        _int_range,
+        "XAUEX_MAX_TRADES_PER_DAY",
+        1,
+        5,
+        int(os.getenv("MIROFISH_MAX_TRADES_PER_DAY", "2")),
     )
-    mirofish_risk_cap_percent = collect(
-        _float_range, "MIROFISH_RISK_CAP_PERCENT", 0.1, 10.0, 1.5
+    xauex_cash_take_profit_gbp = collect(
+        _float_range,
+        "XAUEX_CASH_TAKE_PROFIT_GBP",
+        1.0,
+        5000.0,
+        float(os.getenv("MIROFISH_CASH_TAKE_PROFIT_GBP", "50.0")),
     )
-    mirofish_confidence_full_threshold = collect(
-        _float_range, "MIROFISH_CONFIDENCE_FULL_THRESHOLD", 0.0, 1.0, 0.65
+    xauex_cash_stop_loss_gbp = collect(
+        _float_range,
+        "XAUEX_CASH_STOP_LOSS_GBP",
+        1.0,
+        5000.0,
+        float(os.getenv("MIROFISH_CASH_STOP_LOSS_GBP", "50.0")),
     )
-    mirofish_confidence_medium_threshold = collect(
-        _float_range, "MIROFISH_CONFIDENCE_MEDIUM_THRESHOLD", 0.0, 1.0, 0.55
+    xauex_risk_cap_percent = collect(
+        _float_range,
+        "XAUEX_RISK_CAP_PERCENT",
+        0.1,
+        10.0,
+        float(os.getenv("MIROFISH_RISK_CAP_PERCENT", "1.5")),
     )
-    mirofish_medium_confidence_lot_multiplier = collect(
-        _float_range, "MIROFISH_MEDIUM_CONFIDENCE_LOT_MULTIPLIER", 0.1, 1.0, 0.5
+    xauex_confidence_full_threshold = collect(
+        _float_range,
+        "XAUEX_CONFIDENCE_FULL_THRESHOLD",
+        0.0,
+        1.0,
+        float(os.getenv("MIROFISH_CONFIDENCE_FULL_THRESHOLD", "0.65")),
     )
-    mirofish_low_confidence_lot_multiplier = collect(
-        _float_range, "MIROFISH_LOW_CONFIDENCE_LOT_MULTIPLIER", 0.1, 1.0, 0.25
+    xauex_confidence_medium_threshold = collect(
+        _float_range,
+        "XAUEX_CONFIDENCE_MEDIUM_THRESHOLD",
+        0.0,
+        1.0,
+        float(os.getenv("MIROFISH_CONFIDENCE_MEDIUM_THRESHOLD", "0.55")),
     )
-    mirofish_session_protect_r = collect(
-        _float_range, "MIROFISH_SESSION_PROTECT_R", 0.1, 5.0, 0.85
+    xauex_medium_confidence_lot_multiplier = collect(
+        _float_range,
+        "XAUEX_MEDIUM_CONFIDENCE_LOT_MULTIPLIER",
+        0.1,
+        1.0,
+        float(os.getenv("MIROFISH_MEDIUM_CONFIDENCE_LOT_MULTIPLIER", "0.5")),
     )
-    mirofish_session_trail_r = collect(
-        _float_range, "MIROFISH_SESSION_TRAIL_R", 0.2, 8.0, 1.35
+    xauex_low_confidence_lot_multiplier = collect(
+        _float_range,
+        "XAUEX_LOW_CONFIDENCE_LOT_MULTIPLIER",
+        0.1,
+        1.0,
+        float(os.getenv("MIROFISH_LOW_CONFIDENCE_LOT_MULTIPLIER", "0.25")),
     )
-    mirofish_session_atr_multiplier = collect(
-        _float_range, "MIROFISH_SESSION_ATR_MULTIPLIER", 0.1, 10.0, 1.4
+    xauex_session_protect_r = collect(
+        _float_range,
+        "XAUEX_SESSION_PROTECT_R",
+        0.1,
+        5.0,
+        float(os.getenv("MIROFISH_SESSION_PROTECT_R", "0.85")),
     )
-    mirofish_session_structure_buffer_usd = collect(
-        _float_range, "MIROFISH_SESSION_STRUCTURE_BUFFER_USD", 0.1, 50.0, 2.5
+    xauex_session_trail_r = collect(
+        _float_range,
+        "XAUEX_SESSION_TRAIL_R",
+        0.2,
+        8.0,
+        float(os.getenv("MIROFISH_SESSION_TRAIL_R", "1.35")),
     )
-    mirofish_session_protect_buffer_usd = collect(
-        _float_range, "MIROFISH_SESSION_PROTECT_BUFFER_USD", 0.1, 20.0, 1.0
+    xauex_session_atr_multiplier = collect(
+        _float_range,
+        "XAUEX_SESSION_ATR_MULTIPLIER",
+        0.1,
+        10.0,
+        float(os.getenv("MIROFISH_SESSION_ATR_MULTIPLIER", "1.4")),
     )
-    mirofish_session_low_confidence_protect_r = collect(
-        _float_range, "MIROFISH_SESSION_LOW_CONFIDENCE_PROTECT_R", 0.1, 5.0, 0.7
+    xauex_session_structure_buffer_usd = collect(
+        _float_range,
+        "XAUEX_SESSION_STRUCTURE_BUFFER_USD",
+        0.1,
+        50.0,
+        float(os.getenv("MIROFISH_SESSION_STRUCTURE_BUFFER_USD", "2.5")),
     )
-    mirofish_session_high_confidence_protect_r = collect(
-        _float_range, "MIROFISH_SESSION_HIGH_CONFIDENCE_PROTECT_R", 0.1, 5.0, 1.0
+    xauex_session_protect_buffer_usd = collect(
+        _float_range,
+        "XAUEX_SESSION_PROTECT_BUFFER_USD",
+        0.1,
+        20.0,
+        float(os.getenv("MIROFISH_SESSION_PROTECT_BUFFER_USD", "1.0")),
     )
-    mirofish_manual_command_path = os.getenv(
-        "MIROFISH_MANUAL_COMMAND_PATH",
-        "/var/lib/xauex/manual_trade_cmd.json",
+    xauex_session_low_confidence_protect_r = collect(
+        _float_range,
+        "XAUEX_SESSION_LOW_CONFIDENCE_PROTECT_R",
+        0.1,
+        5.0,
+        float(os.getenv("MIROFISH_SESSION_LOW_CONFIDENCE_PROTECT_R", "0.7")),
+    )
+    xauex_session_high_confidence_protect_r = collect(
+        _float_range,
+        "XAUEX_SESSION_HIGH_CONFIDENCE_PROTECT_R",
+        0.1,
+        5.0,
+        float(os.getenv("MIROFISH_SESSION_HIGH_CONFIDENCE_PROTECT_R", "1.0")),
+    )
+    xauex_manual_command_path = os.getenv(
+        "XAUEX_MANUAL_COMMAND_PATH",
+        os.getenv("MIROFISH_MANUAL_COMMAND_PATH", "/var/lib/xauex/manual_trade_cmd.json"),
     )
     scalp_fast_ema_period = collect(_int_range, "SCALP_FAST_EMA_PERIOD", 3, 50, 9)
     scalp_slow_ema_period = collect(_int_range, "SCALP_SLOW_EMA_PERIOD", 5, 100, 20)
@@ -422,19 +495,19 @@ def load_config(env_file: str = ".env") -> Config:
         )
 
     morning_start_minutes = collect(
-        _hhmm_to_minutes, mirofish_entry_start_london, "MIROFISH_ENTRY_START_LONDON"
+        _hhmm_to_minutes, xauex_entry_start_london, "XAUEX_ENTRY_START_LONDON"
     )
     morning_end_minutes = collect(
-        _hhmm_to_minutes, mirofish_entry_end_london, "MIROFISH_ENTRY_END_LONDON"
+        _hhmm_to_minutes, xauex_entry_end_london, "XAUEX_ENTRY_END_LONDON"
     )
     second_start_minutes = collect(
-        _hhmm_to_minutes, mirofish_entry_second_start_london, "MIROFISH_ENTRY_SECOND_START_LONDON"
+        _hhmm_to_minutes, xauex_entry_second_start_london, "XAUEX_ENTRY_SECOND_START_LONDON"
     )
     second_end_minutes = collect(
-        _hhmm_to_minutes, mirofish_entry_second_end_london, "MIROFISH_ENTRY_SECOND_END_LONDON"
+        _hhmm_to_minutes, xauex_entry_second_end_london, "XAUEX_ENTRY_SECOND_END_LONDON"
     )
     force_flat_minutes = collect(
-        _hhmm_to_minutes, mirofish_force_flat_london, "MIROFISH_FORCE_FLAT_LONDON"
+        _hhmm_to_minutes, xauex_force_flat_london, "XAUEX_FORCE_FLAT_LONDON"
     )
 
     if (
@@ -443,7 +516,7 @@ def load_config(env_file: str = ".env") -> Config:
         and morning_end_minutes <= morning_start_minutes
     ):
         errors.append(
-            "MIROFISH_ENTRY_END_LONDON must be later than MIROFISH_ENTRY_START_LONDON"
+            "XAUEX_ENTRY_END_LONDON must be later than XAUEX_ENTRY_START_LONDON"
         )
 
     if (
@@ -452,7 +525,7 @@ def load_config(env_file: str = ".env") -> Config:
         and second_end_minutes <= second_start_minutes
     ):
         errors.append(
-            "MIROFISH_ENTRY_SECOND_END_LONDON must be later than MIROFISH_ENTRY_SECOND_START_LONDON"
+            "XAUEX_ENTRY_SECOND_END_LONDON must be later than XAUEX_ENTRY_SECOND_START_LONDON"
         )
 
     if (
@@ -461,7 +534,7 @@ def load_config(env_file: str = ".env") -> Config:
         and second_start_minutes < morning_end_minutes
     ):
         errors.append(
-            "MIROFISH_ENTRY_SECOND_START_LONDON must be at or after MIROFISH_ENTRY_END_LONDON"
+            "XAUEX_ENTRY_SECOND_START_LONDON must be at or after XAUEX_ENTRY_END_LONDON"
         )
 
     if (
@@ -470,26 +543,26 @@ def load_config(env_file: str = ".env") -> Config:
         and force_flat_minutes <= second_end_minutes
     ):
         errors.append(
-            "MIROFISH_FORCE_FLAT_LONDON must be later than MIROFISH_ENTRY_SECOND_END_LONDON"
+            "XAUEX_FORCE_FLAT_LONDON must be later than XAUEX_ENTRY_SECOND_END_LONDON"
         )
 
     if (
-        mirofish_confidence_medium_threshold is not None
-        and mirofish_confidence_full_threshold is not None
-        and mirofish_confidence_medium_threshold > mirofish_confidence_full_threshold
+        xauex_confidence_medium_threshold is not None
+        and xauex_confidence_full_threshold is not None
+        and xauex_confidence_medium_threshold > xauex_confidence_full_threshold
     ):
         errors.append(
-            "MIROFISH_CONFIDENCE_MEDIUM_THRESHOLD must be <= MIROFISH_CONFIDENCE_FULL_THRESHOLD"
+            "XAUEX_CONFIDENCE_MEDIUM_THRESHOLD must be <= XAUEX_CONFIDENCE_FULL_THRESHOLD"
         )
 
     if (
-        mirofish_low_confidence_lot_multiplier is not None
-        and mirofish_medium_confidence_lot_multiplier is not None
-        and mirofish_low_confidence_lot_multiplier > mirofish_medium_confidence_lot_multiplier
+        xauex_low_confidence_lot_multiplier is not None
+        and xauex_medium_confidence_lot_multiplier is not None
+        and xauex_low_confidence_lot_multiplier > xauex_medium_confidence_lot_multiplier
     ):
         errors.append(
-            "MIROFISH_LOW_CONFIDENCE_LOT_MULTIPLIER must be <= "
-            "MIROFISH_MEDIUM_CONFIDENCE_LOT_MULTIPLIER"
+            "XAUEX_LOW_CONFIDENCE_LOT_MULTIPLIER must be <= "
+            "XAUEX_MEDIUM_CONFIDENCE_LOT_MULTIPLIER"
         )
 
     observe_only = os.getenv("OBSERVE_ONLY", "true").lower() == "true"
@@ -554,31 +627,31 @@ def load_config(env_file: str = ".env") -> Config:
         macro_regime_confidence_threshold=macro_regime_confidence_threshold,
         trade_policy_path=trade_policy_path,
         trade_policy_max_age_minutes=trade_policy_max_age_minutes,
-        mirofish_mode=mirofish_mode,
-        mirofish_signal_path=mirofish_signal_path,
-        mirofish_signal_max_age_seconds=mirofish_signal_max_age_seconds,
-        mirofish_entry_timezone=mirofish_entry_timezone,
-        mirofish_entry_start_london=mirofish_entry_start_london,
-        mirofish_entry_end_london=mirofish_entry_end_london,
-        mirofish_entry_second_start_london=mirofish_entry_second_start_london,
-        mirofish_entry_second_end_london=mirofish_entry_second_end_london,
-        mirofish_force_flat_london=mirofish_force_flat_london,
-        mirofish_max_trades_per_day=mirofish_max_trades_per_day,
-        mirofish_cash_take_profit_gbp=mirofish_cash_take_profit_gbp,
-        mirofish_cash_stop_loss_gbp=mirofish_cash_stop_loss_gbp,
-        mirofish_risk_cap_percent=mirofish_risk_cap_percent,
-        mirofish_confidence_full_threshold=mirofish_confidence_full_threshold,
-        mirofish_confidence_medium_threshold=mirofish_confidence_medium_threshold,
-        mirofish_medium_confidence_lot_multiplier=mirofish_medium_confidence_lot_multiplier,
-        mirofish_low_confidence_lot_multiplier=mirofish_low_confidence_lot_multiplier,
-        mirofish_session_protect_r=mirofish_session_protect_r,
-        mirofish_session_trail_r=mirofish_session_trail_r,
-        mirofish_session_atr_multiplier=mirofish_session_atr_multiplier,
-        mirofish_session_structure_buffer_usd=mirofish_session_structure_buffer_usd,
-        mirofish_session_protect_buffer_usd=mirofish_session_protect_buffer_usd,
-        mirofish_session_low_confidence_protect_r=mirofish_session_low_confidence_protect_r,
-        mirofish_session_high_confidence_protect_r=mirofish_session_high_confidence_protect_r,
-        mirofish_manual_command_path=mirofish_manual_command_path,
+        xauex_mode=xauex_mode,
+        xauex_signal_path=xauex_signal_path,
+        xauex_signal_max_age_seconds=xauex_signal_max_age_seconds,
+        xauex_entry_timezone=xauex_entry_timezone,
+        xauex_entry_start_london=xauex_entry_start_london,
+        xauex_entry_end_london=xauex_entry_end_london,
+        xauex_entry_second_start_london=xauex_entry_second_start_london,
+        xauex_entry_second_end_london=xauex_entry_second_end_london,
+        xauex_force_flat_london=xauex_force_flat_london,
+        xauex_max_trades_per_day=xauex_max_trades_per_day,
+        xauex_cash_take_profit_gbp=xauex_cash_take_profit_gbp,
+        xauex_cash_stop_loss_gbp=xauex_cash_stop_loss_gbp,
+        xauex_risk_cap_percent=xauex_risk_cap_percent,
+        xauex_confidence_full_threshold=xauex_confidence_full_threshold,
+        xauex_confidence_medium_threshold=xauex_confidence_medium_threshold,
+        xauex_medium_confidence_lot_multiplier=xauex_medium_confidence_lot_multiplier,
+        xauex_low_confidence_lot_multiplier=xauex_low_confidence_lot_multiplier,
+        xauex_session_protect_r=xauex_session_protect_r,
+        xauex_session_trail_r=xauex_session_trail_r,
+        xauex_session_atr_multiplier=xauex_session_atr_multiplier,
+        xauex_session_structure_buffer_usd=xauex_session_structure_buffer_usd,
+        xauex_session_protect_buffer_usd=xauex_session_protect_buffer_usd,
+        xauex_session_low_confidence_protect_r=xauex_session_low_confidence_protect_r,
+        xauex_session_high_confidence_protect_r=xauex_session_high_confidence_protect_r,
+        xauex_manual_command_path=xauex_manual_command_path,
         scalp_fast_ema_period=scalp_fast_ema_period,
         scalp_slow_ema_period=scalp_slow_ema_period,
         scalp_atr_period=scalp_atr_period,

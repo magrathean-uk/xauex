@@ -6,7 +6,7 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 User=__RUN_USER__
-WorkingDirectory=__REPO_ROOT__/xauex
+WorkingDirectory=__REPO_ROOT__
 EnvironmentFile=__REPO_ROOT__/xauex/.env
 Environment=PYTHONUNBUFFERED=1
 ExecStart=__REPO_ROOT__/ops/run_weekly_review.sh

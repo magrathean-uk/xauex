@@ -1,0 +1,133 @@
+"""XAUEX signal configuration loaded from environment variables."""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+
+from xauex.signal.qdrant_memory import QdrantMemoryConfig, load_qdrant_memory_config
+
+
+@dataclass(frozen=True)
+class SignalConfig:
+    llm_api_key: str
+    llm_base_url: str
+    llm_model: str
+    parser_llm_api_key: str
+    parser_llm_base_url: str
+    parser_llm_model: str
+    validator_llm_api_key: str
+    validator_llm_base_url: str
+    validator_llm_model: str
+    brief_llm_api_key: str
+    brief_llm_base_url: str
+    brief_llm_model: str
+    signal_output_path: str
+    brief_output_path: str
+    evidence_output_path: str
+    state_file_path: str
+    trade_journal_path: str
+    request_timeout_seconds: float
+    source_timeout_seconds: float
+    source_user_agent: str
+    context_output_dir: str
+    project_prefix: str
+    daily_cost_cap_usd: float
+    cost_ledger_path: str
+    cme_fedwatch_api_url: str | None
+    cme_fedwatch_api_key: str | None
+    cme_fedwatch_api_key_header: str
+    qdrant_memory: QdrantMemoryConfig
+
+    @classmethod
+    def from_env(cls) -> 'SignalConfig':
+        llm_api_key = (
+            os.getenv('XAUEX_SIGNAL_LLM_API_KEY')
+            or os.getenv('LLM_API_KEY')
+            or os.getenv('DEEPSEEK_API_KEY')
+        )
+        if not llm_api_key:
+            raise KeyError('XAUEX_SIGNAL_LLM_API_KEY/LLM_API_KEY/DEEPSEEK_API_KEY')
+
+        llm_base_url = (
+            os.getenv('XAUEX_SIGNAL_LLM_BASE_URL')
+            or os.getenv('LLM_BASE_URL')
+            or os.getenv('DEEPSEEK_BASE_URL')
+            or 'https://api.deepseek.com/v1'
+        )
+        llm_model = (
+            os.getenv('XAUEX_SIGNAL_LLM_MODEL')
+            or os.getenv('LLM_MODEL_NAME')
+            or os.getenv('DEEPSEEK_MODEL')
+            or 'deepseek-chat'
+        )
+        parser_llm_api_key = (
+            os.getenv('XAUEX_SIGNAL_PARSER_LLM_API_KEY')
+            or llm_api_key
+        )
+        parser_llm_base_url = (
+            os.getenv('XAUEX_SIGNAL_PARSER_LLM_BASE_URL')
+            or llm_base_url
+        )
+        parser_llm_model = (
+            os.getenv('XAUEX_SIGNAL_PARSER_LLM_MODEL')
+            or 'openai/gpt-oss-120b'
+        )
+        validator_llm_api_key = (
+            os.getenv('XAUEX_SIGNAL_VALIDATOR_LLM_API_KEY')
+            or parser_llm_api_key
+        )
+        validator_llm_base_url = (
+            os.getenv('XAUEX_SIGNAL_VALIDATOR_LLM_BASE_URL')
+            or parser_llm_base_url
+        )
+        validator_llm_model = (
+            os.getenv('XAUEX_SIGNAL_VALIDATOR_LLM_MODEL')
+            or 'llama-3.3-70b-versatile'
+        )
+        brief_llm_api_key = (
+            os.getenv('XAUEX_SIGNAL_BRIEF_LLM_API_KEY')
+            or llm_api_key
+        )
+        brief_llm_base_url = (
+            os.getenv('XAUEX_SIGNAL_BRIEF_LLM_BASE_URL')
+            or llm_base_url
+        )
+        brief_llm_model = (
+            os.getenv('XAUEX_SIGNAL_BRIEF_LLM_MODEL')
+            or 'llama-3.1-8b-instant'
+        )
+
+        return cls(
+            llm_api_key=llm_api_key,
+            llm_base_url=llm_base_url,
+            llm_model=llm_model,
+            parser_llm_api_key=parser_llm_api_key,
+            parser_llm_base_url=parser_llm_base_url,
+            parser_llm_model=parser_llm_model,
+            validator_llm_api_key=validator_llm_api_key,
+            validator_llm_base_url=validator_llm_base_url,
+            validator_llm_model=validator_llm_model,
+            brief_llm_api_key=brief_llm_api_key,
+            brief_llm_base_url=brief_llm_base_url,
+            brief_llm_model=brief_llm_model,
+            signal_output_path=os.getenv('SIGNAL_OUTPUT_PATH', '/var/lib/xauex/cmd.json'),
+            brief_output_path=os.getenv('XAUEX_SIGNAL_BRIEF_OUTPUT_PATH', '/var/lib/xauex/latest_signal_brief.md'),
+            evidence_output_path=os.getenv('XAUEX_SIGNAL_EVIDENCE_OUTPUT_PATH', '/var/lib/xauex/latest_signal_evidence.json'),
+            state_file_path=os.getenv('STATE_FILE_PATH', '/var/lib/xauex/state.json'),
+            trade_journal_path=os.getenv('TRADE_JOURNAL_PATH', '/var/lib/xauex/trade_journal.json'),
+            request_timeout_seconds=float(os.getenv('XAUEX_SIGNAL_REQUEST_TIMEOUT_SECONDS', '120')),
+            source_timeout_seconds=float(os.getenv('XAUEX_SIGNAL_SOURCE_TIMEOUT_SECONDS', '20')),
+            source_user_agent=os.getenv(
+                'XAUEX_SIGNAL_SOURCE_USER_AGENT',
+                'XAUEX-Signal/2.0 (+https://localhost)'
+            ),
+            context_output_dir=os.getenv('XAUEX_SIGNAL_CONTEXT_OUTPUT_DIR', './xauex/signal/context_out'),
+            project_prefix=os.getenv('XAUEX_SIGNAL_PROJECT_PREFIX', 'XAUEX Macro Swarm'),
+            daily_cost_cap_usd=float(os.getenv('XAUEX_SIGNAL_DAILY_COST_CAP_USD', '0.20')),
+            cost_ledger_path=os.getenv('XAUEX_SIGNAL_COST_LEDGER_PATH', '/var/lib/xauex/signal_costs.jsonl'),
+            cme_fedwatch_api_url=os.getenv('XAUEX_SIGNAL_CME_FEDWATCH_API_URL') or None,
+            cme_fedwatch_api_key=os.getenv('XAUEX_SIGNAL_CME_FEDWATCH_API_KEY') or None,
+            cme_fedwatch_api_key_header=os.getenv('XAUEX_SIGNAL_CME_FEDWATCH_API_KEY_HEADER', 'Authorization'),
+            qdrant_memory=load_qdrant_memory_config(),
+        )

@@ -2,26 +2,25 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
-from bridge.config import BridgeConfig
-from bridge.qdrant_memory import QdrantMemoryConfig
-import bridge.run as bridge_run
-from bridge.run import build_direct_prediction_artifacts
+from xauex.signal.config import SignalConfig
+from xauex.signal.qdrant_memory import QdrantMemoryConfig
+import xauex.signal.run as signal_run
+from xauex.signal.run import build_direct_prediction_artifacts
 
 
-def test_bridge_config_supports_direct_prediction_mode(monkeypatch):
-    monkeypatch.setenv("BRIDGE_PREDICTION_MODE", "direct")
-    monkeypatch.setenv("LLM_API_KEY", "test-key")
-    cfg = BridgeConfig.from_env()
-    assert cfg.prediction_mode == "direct"
+def test_signal_config_loads_required_llm_settings(monkeypatch):
+    monkeypatch.setenv("XAUEX_SIGNAL_LLM_API_KEY", "test-key")
+    cfg = SignalConfig.from_env()
+    assert cfg.llm_api_key == "test-key"
 
 
-def test_bridge_config_exposes_qdrant_memory_settings(monkeypatch):
-    monkeypatch.setenv("LLM_API_KEY", "test-key")
-    monkeypatch.setenv("BRIDGE_QDRANT_ENABLED", "1")
-    monkeypatch.setenv("BRIDGE_QDRANT_COLLECTION", "oracle_memory")
-    monkeypatch.setenv("BRIDGE_QDRANT_URL", "https://qdrant.example.com:6333")
+def test_signal_config_exposes_qdrant_memory_settings(monkeypatch):
+    monkeypatch.setenv("XAUEX_SIGNAL_LLM_API_KEY", "test-key")
+    monkeypatch.setenv("XAUEX_SIGNAL_QDRANT_ENABLED", "1")
+    monkeypatch.setenv("XAUEX_SIGNAL_QDRANT_COLLECTION", "oracle_memory")
+    monkeypatch.setenv("XAUEX_SIGNAL_QDRANT_URL", "https://qdrant.example.com:6333")
 
-    cfg = BridgeConfig.from_env()
+    cfg = SignalConfig.from_env()
 
     assert cfg.qdrant_memory == QdrantMemoryConfig(
         enabled=True,
@@ -42,18 +41,45 @@ def test_bridge_config_exposes_qdrant_memory_settings(monkeypatch):
     )
 
 
-def test_bridge_config_disables_qdrant_memory_by_default(monkeypatch):
-    monkeypatch.setenv("LLM_API_KEY", "test-key")
+def test_signal_config_disables_qdrant_memory_by_default(monkeypatch):
+    monkeypatch.setenv("XAUEX_SIGNAL_LLM_API_KEY", "test-key")
 
-    cfg = BridgeConfig.from_env()
+    cfg = SignalConfig.from_env()
 
     assert cfg.qdrant_memory.enabled is False
-    assert cfg.qdrant_memory.collection_name == "mirofish_oracle_memory"
+    assert cfg.qdrant_memory.collection_name == "xauex_signal_memory"
+
+
+def test_signal_config_exposes_validator_and_budget_defaults(monkeypatch):
+    monkeypatch.setenv("XAUEX_SIGNAL_LLM_API_KEY", "test-key")
+    monkeypatch.delenv("XAUEX_SIGNAL_PARSER_LLM_MODEL", raising=False)
+    monkeypatch.delenv("XAUEX_SIGNAL_VALIDATOR_LLM_MODEL", raising=False)
+    monkeypatch.delenv("XAUEX_SIGNAL_BRIEF_LLM_MODEL", raising=False)
+
+    cfg = SignalConfig.from_env()
+
+    assert cfg.parser_llm_model == "openai/gpt-oss-120b"
+    assert cfg.validator_llm_model == "llama-3.3-70b-versatile"
+    assert cfg.brief_llm_model == "llama-3.1-8b-instant"
+    assert cfg.daily_cost_cap_usd > 0
+
+
+def test_signal_config_exposes_optional_fedwatch_api_settings(monkeypatch):
+    monkeypatch.setenv("XAUEX_SIGNAL_LLM_API_KEY", "test-key")
+    monkeypatch.setenv("XAUEX_SIGNAL_CME_FEDWATCH_API_URL", "https://api.example.com/fedwatch")
+    monkeypatch.setenv("XAUEX_SIGNAL_CME_FEDWATCH_API_KEY", "secret")
+    monkeypatch.setenv("XAUEX_SIGNAL_CME_FEDWATCH_API_KEY_HEADER", "X-API-Key")
+
+    cfg = SignalConfig.from_env()
+
+    assert cfg.cme_fedwatch_api_url == "https://api.example.com/fedwatch"
+    assert cfg.cme_fedwatch_api_key == "secret"
+    assert cfg.cme_fedwatch_api_key_header == "X-API-Key"
 
 
 def test_build_direct_prediction_artifacts_uses_qdrant_memory(monkeypatch):
-    monkeypatch.setenv("LLM_API_KEY", "test-key")
-    cfg = BridgeConfig.from_env()
+    monkeypatch.setenv("XAUEX_SIGNAL_LLM_API_KEY", "test-key")
+    cfg = SignalConfig.from_env()
     cfg = replace(
         cfg,
         qdrant_memory=QdrantMemoryConfig(
@@ -101,10 +127,10 @@ def test_build_direct_prediction_artifacts_uses_qdrant_memory(monkeypatch):
             "retrieved_memory_count": len(kwargs["retrieved_memory"]),
         }
 
-    monkeypatch.setattr("bridge.run.load_recent_trade_memory", fake_load_recent_trade_memory)
-    monkeypatch.setattr("bridge.run.load_state_snapshot", fake_load_state_snapshot)
-    monkeypatch.setattr("bridge.run.retrieve_qdrant_memory_snippets", fake_retrieve_qdrant_memory_snippets)
-    monkeypatch.setattr("bridge.run.build_prediction_payload", fake_build_prediction_payload)
+    monkeypatch.setattr("xauex.signal.run.load_recent_trade_memory", fake_load_recent_trade_memory)
+    monkeypatch.setattr("xauex.signal.run.load_state_snapshot", fake_load_state_snapshot)
+    monkeypatch.setattr("xauex.signal.run.retrieve_qdrant_memory_snippets", fake_retrieve_qdrant_memory_snippets)
+    monkeypatch.setattr("xauex.signal.run.build_prediction_payload", fake_build_prediction_payload)
 
     artifacts = build_direct_prediction_artifacts(
         config=cfg,
@@ -119,8 +145,8 @@ def test_build_direct_prediction_artifacts_uses_qdrant_memory(monkeypatch):
 
 
 def test_build_direct_prediction_artifacts_continues_when_qdrant_fails(monkeypatch):
-    monkeypatch.setenv("LLM_API_KEY", "test-key")
-    cfg = BridgeConfig.from_env()
+    monkeypatch.setenv("XAUEX_SIGNAL_LLM_API_KEY", "test-key")
+    cfg = SignalConfig.from_env()
     cfg = replace(
         cfg,
         qdrant_memory=QdrantMemoryConfig(
@@ -164,10 +190,10 @@ def test_build_direct_prediction_artifacts_continues_when_qdrant_fails(monkeypat
             "retrieved_memory_count": 0,
         }
 
-    monkeypatch.setattr("bridge.run.load_recent_trade_memory", fake_load_recent_trade_memory)
-    monkeypatch.setattr("bridge.run.load_state_snapshot", fake_load_state_snapshot)
-    monkeypatch.setattr("bridge.run.retrieve_qdrant_memory_snippets", fake_retrieve_qdrant_memory_snippets)
-    monkeypatch.setattr("bridge.run.build_prediction_payload", fake_build_prediction_payload)
+    monkeypatch.setattr("xauex.signal.run.load_recent_trade_memory", fake_load_recent_trade_memory)
+    monkeypatch.setattr("xauex.signal.run.load_state_snapshot", fake_load_state_snapshot)
+    monkeypatch.setattr("xauex.signal.run.retrieve_qdrant_memory_snippets", fake_retrieve_qdrant_memory_snippets)
+    monkeypatch.setattr("xauex.signal.run.build_prediction_payload", fake_build_prediction_payload)
 
     artifacts = build_direct_prediction_artifacts(
         config=cfg,
@@ -178,15 +204,72 @@ def test_build_direct_prediction_artifacts_continues_when_qdrant_fails(monkeypat
     assert artifacts["payload"]["retrieved_memory"] == []
 
 
+def test_build_direct_prediction_artifacts_preserves_policy_context_in_payload(monkeypatch):
+    monkeypatch.setenv("XAUEX_SIGNAL_LLM_API_KEY", "test-key")
+    cfg = SignalConfig.from_env()
+
+    captured = {}
+
+    def fake_load_recent_trade_memory(path):
+        return []
+
+    def fake_load_state_snapshot(path):
+        return {"recent_h1_closes": [10, 11, 12], "levels": {}}
+
+    def fake_build_market_snapshot(*, asset, config, context_items, window_label):
+        return {
+            "series": {},
+            "fedwatch": {"status": "ok"},
+            "event_flags": {},
+            "input_freshness": {"summary": "fresh"},
+            "overall_bias": "NEUTRAL",
+            "missing_series": [],
+            "policy_context": {
+                "status": "watch",
+                "next_fomc_date": "2026-04-29",
+                "days_to_fomc": 15,
+                "fomc_window_state": "pre",
+                "summary": "FOMC watch is active.",
+            },
+        }
+
+    def fake_build_prediction_payload(**kwargs):
+        captured["market_snapshot"] = kwargs["market_snapshot"]
+        return {
+            "asset": "XAUUSD",
+            "weights": {"price_action": 0.45, "macro_news": 0.35, "recent_memory": 0.20},
+            "price_features": {"h1_count": 3, "momentum_3": 0.0, "momentum_6": 0.0, "momentum_12": 0.0, "range_position": "MIDDLE_THIRD", "price_bias": "NEUTRAL"},
+            "memory_summary": {"trade_count": 0, "net_pnl": 0.0, "buy_count": 0, "sell_count": 0, "wins": 0, "losses": 0, "notes": []},
+            "context_excerpt": kwargs["context_markdown"],
+            "recent_runs": kwargs["recent_runs"],
+            "retrieved_memory": kwargs["retrieved_memory"],
+            "retrieved_memory_count": len(kwargs["retrieved_memory"]),
+            "market_snapshot": kwargs["market_snapshot"],
+        }
+
+    monkeypatch.setattr("xauex.signal.run.load_recent_trade_memory", fake_load_recent_trade_memory)
+    monkeypatch.setattr("xauex.signal.run.load_state_snapshot", fake_load_state_snapshot)
+    monkeypatch.setattr("xauex.signal.market_snapshot.build_market_snapshot", fake_build_market_snapshot)
+    monkeypatch.setattr("xauex.signal.run.build_prediction_payload", fake_build_prediction_payload)
+
+    artifacts = build_direct_prediction_artifacts(
+        config=cfg,
+        asset_symbol="XAUUSD",
+        context_markdown="# Context\nFed is dovish.",
+    )
+
+    assert captured["market_snapshot"]["policy_context"]["status"] == "watch"
+    assert artifacts["payload"]["market_snapshot"]["policy_context"]["summary"] == "FOMC watch is active."
+
+
 def test_dry_run_does_not_overwrite_live_brief_or_evidence(monkeypatch, tmp_path: Path):
-    monkeypatch.setenv("LLM_API_KEY", "test-key")
-    monkeypatch.setenv("BRIDGE_PREDICTION_MODE", "direct")
+    monkeypatch.setenv("XAUEX_SIGNAL_LLM_API_KEY", "test-key")
     monkeypatch.setenv("SIGNAL_OUTPUT_PATH", str(tmp_path / "cmd.json"))
-    monkeypatch.setenv("BRIDGE_BRIEF_OUTPUT_PATH", str(tmp_path / "latest_signal_brief.md"))
-    monkeypatch.setenv("BRIDGE_EVIDENCE_OUTPUT_PATH", str(tmp_path / "latest_signal_evidence.json"))
-    monkeypatch.setattr(bridge_run, "load_dotenv", lambda *args, **kwargs: None)
+    monkeypatch.setenv("XAUEX_SIGNAL_BRIEF_OUTPUT_PATH", str(tmp_path / "latest_signal_brief.md"))
+    monkeypatch.setenv("XAUEX_SIGNAL_EVIDENCE_OUTPUT_PATH", str(tmp_path / "latest_signal_evidence.json"))
+    monkeypatch.setattr(signal_run, "load_dotenv", lambda *args, **kwargs: None)
     monkeypatch.setattr(
-        bridge_run,
+        signal_run,
         "_parse_args",
         lambda: SimpleNamespace(
             asset="XAUUSD",
@@ -230,7 +313,7 @@ def test_dry_run_does_not_overwrite_live_brief_or_evidence(monkeypatch, tmp_path
             },
         }
 
-    def fake_parse_signal(*, asset, actions, report_markdown, config):
+    def fake_parse_signal(*, asset, actions, report_markdown, config, prediction_payload=None, window_label=None):
         return {
             "schema_version": 2,
             "symbol": asset.symbol,
@@ -255,13 +338,13 @@ def test_dry_run_does_not_overwrite_live_brief_or_evidence(monkeypatch, tmp_path
         calls["signal"] += 1
         Path(output_path).write_text("{\"after\": true}", encoding="utf-8")
 
-    monkeypatch.setattr(bridge_run, "build_direct_prediction_artifacts", fake_build_direct_prediction_artifacts)
-    monkeypatch.setattr("bridge.signal_parser.parse_signal", fake_parse_signal)
-    monkeypatch.setattr("bridge.brief_writer.write_brief", fake_write_brief)
-    monkeypatch.setattr("bridge.evidence_writer.write_evidence_pack", fake_write_evidence_pack)
-    monkeypatch.setattr("bridge.signal_writer.write_signal", fake_write_signal)
+    monkeypatch.setattr(signal_run, "build_direct_prediction_artifacts", fake_build_direct_prediction_artifacts)
+    monkeypatch.setattr("xauex.signal.signal_parser.parse_signal", fake_parse_signal)
+    monkeypatch.setattr("xauex.signal.brief_writer.write_brief", fake_write_brief)
+    monkeypatch.setattr("xauex.signal.evidence_writer.write_evidence_pack", fake_write_evidence_pack)
+    monkeypatch.setattr("xauex.signal.signal_writer.write_signal", fake_write_signal)
 
-    bridge_run.main()
+    signal_run.main()
 
     assert calls == {"brief": 0, "evidence": 0, "signal": 0}
     assert brief_path.read_text(encoding="utf-8") == "brief-before"

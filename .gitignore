@@ -15,20 +15,11 @@ __pycache__/
 
 # Virtualenvs
 .venv/
-backend/.venv
-bridge/.env
-backend/.env
 xauex/.venv
-
-# Node / frontend build artifacts
-frontend/node_modules/
-frontend/dist/
 
 # Runtime logs and generated outputs
 logs/
-backend/logs/
-backend/uploads/
-bridge/context_out/
+xauex/signal/context_out/
 
 # XAUEX runtime state and local secrets
 xauex/.env

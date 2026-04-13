@@ -24,24 +24,24 @@ from pathlib import Path
 from typing import Optional, List, Dict, Tuple
 from zoneinfo import ZoneInfo
 
-from config import Config, load_config
-from bot.api.client import ApiClient
-from bot.levels.htf_levels import LevelManager
-from bot.patterns.detector import PatternDetector, CandleWatcher, PatternType
-from bot.filters.macro_regime import MacroRegime, MacroRegimeLoader
-from bot.filters.trade_policy import TradePolicy, TradePolicyLoader
-from bot.filters.session import SessionFilter
-from bot.filters.news import NewsFilter
-from bot.filters.trend import TrendFilter
-from bot.risk.sizing import calculate_lot_size, calculate_mirofish_lot_size_from_cash_risk
-from bot.risk.gates import RiskGates, RiskState
-from bot.execution.executor import Executor, TrackedPosition
-from bot.strategies.ema_pullback_h1 import EMAPullbackH1Strategy
-from bot.strategies.scalp_v1 import M5ScalpStrategy
-from bot.state.writer import StateWriter
-from bot.state.risk_persistence import save_risk_state, load_risk_state
-from bot.watchdog import Watchdog
-from bot.health import HealthCheck
+from xauex.config import Config, load_config
+from xauex.bot.api.client import ApiClient
+from xauex.bot.levels.htf_levels import LevelManager
+from xauex.bot.patterns.detector import PatternDetector, CandleWatcher, PatternType
+from xauex.bot.filters.macro_regime import MacroRegime, MacroRegimeLoader
+from xauex.bot.filters.trade_policy import TradePolicy, TradePolicyLoader
+from xauex.bot.filters.session import SessionFilter
+from xauex.bot.filters.news import NewsFilter
+from xauex.bot.filters.trend import TrendFilter
+from xauex.bot.risk.sizing import calculate_lot_size, calculate_xauex_lot_size_from_cash_risk
+from xauex.bot.risk.gates import RiskGates, RiskState
+from xauex.bot.execution.executor import Executor, TrackedPosition
+from xauex.bot.strategies.ema_pullback_h1 import EMAPullbackH1Strategy
+from xauex.bot.strategies.scalp_v1 import M5ScalpStrategy
+from xauex.bot.state.writer import StateWriter
+from xauex.bot.state.risk_persistence import save_risk_state, load_risk_state
+from xauex.bot.watchdog import Watchdog
+from xauex.bot.health import HealthCheck
 
 logger = logging.getLogger(__name__)
 
@@ -49,11 +49,12 @@ _EXECUTION_BAR_LOOKBACK = 500
 _DAILY_BAR_LOOKBACK = 120
 _SCALP_BAR_LOOKBACK = 2500
 _EMA_PULLBACK_BAR_LOOKBACK = 260
-_MIROFISH_SLOT_RETRY_BACKOFF_SECONDS = 45
-_MIROFISH_CLOSE_REQUEST_TTL_SECONDS = 180
+_XAUEX_SLOT_RETRY_BACKOFF_SECONDS = 45
+_XAUEX_CLOSE_REQUEST_TTL_SECONDS = 180
+_XAUEX_REPEATED_LOG_INTERVAL_SECONDS = 300
 
 
-def build_mirofish_initial_stop_distance(
+def build_xauex_initial_stop_distance(
     *,
     signal_stop: float,
     atr_stop: float,
@@ -67,7 +68,7 @@ def build_mirofish_initial_stop_distance(
     return round(bounded, 2)
 
 
-def advance_mirofish_session_phase(
+def advance_xauex_session_phase(
     state: Dict[str, object],
     *,
     current_price: float,
@@ -98,13 +99,55 @@ def advance_mirofish_session_phase(
     return next_state
 
 
+def confirm_xauex_session_phase_transition(
+    previous_state: Dict[str, object],
+    candidate_state: Dict[str, object],
+    *,
+    unrealised_pnl: float,
+    lot_size: float,
+    contract_size: float,
+) -> Dict[str, object]:
+    """Require broker-side profit confirmation before tightening XAUEX stops."""
+    confirmed_state = dict(candidate_state)
+    previous_phase = str(previous_state.get("phase", "OBSERVE")).upper()
+    candidate_phase = str(candidate_state.get("phase", previous_phase)).upper()
+    if candidate_phase == previous_phase:
+        return confirmed_state
+
+    initial_risk_distance = float(
+        previous_state.get(
+            "initial_risk_distance",
+            candidate_state.get("initial_risk_distance", 0.0),
+        )
+        or 0.0
+    )
+    if initial_risk_distance <= 0 or lot_size <= 0 or contract_size <= 0:
+        confirmed_state["phase"] = previous_phase
+        return confirmed_state
+
+    protect_r = float(previous_state.get("protect_r", candidate_state.get("protect_r", 1.0)) or 1.0)
+    trail_r = float(previous_state.get("trail_r", candidate_state.get("trail_r", max(protect_r + 0.2, 1.2))) or max(protect_r + 0.2, 1.2))
+
+    if candidate_phase == "PROTECT":
+        required_r = protect_r
+    elif candidate_phase == "TRAIL":
+        required_r = trail_r
+    else:
+        return confirmed_state
+
+    required_pnl = initial_risk_distance * lot_size * contract_size * required_r
+    if float(unrealised_pnl or 0.0) < required_pnl:
+        confirmed_state["phase"] = previous_phase
+    return confirmed_state
+
+
 def should_manage_with_oracle_session_manager(position_payload: Dict[str, object]) -> bool:
-    """Only Oracle-owned positions should be managed by the Oracle session manager."""
-    return str(position_payload.get("owner", "") or "").lower() == "oracle"
+    """Only XAUEX-owned positions should be managed by the XAUEX session manager."""
+    return str(position_payload.get("owner", "") or "").lower() == "xauex"
 
 
 def count_oracle_open_positions(positions: List[Dict[str, object]]) -> int:
-    """Count only Oracle-owned positions."""
+    """Count only XAUEX-owned positions."""
     return sum(1 for position in positions if should_manage_with_oracle_session_manager(position))
 
 
@@ -115,8 +158,8 @@ def _position_owner(position: object) -> str:
 
 
 def count_tradeable_open_positions(positions: List[object]) -> int:
-    """Count open positions that should affect Oracle/strategy max-open-trade limits."""
-    return sum(1 for position in positions if _position_owner(position) != "manual")
+    """Count only XAUEX-managed positions for XAUEX auto-entry limits."""
+    return sum(1 for position in positions if _position_owner(position) == "xauex")
 
 
 def manual_trade_global_block_reason(*, observe_only: bool, kill_switch_active: bool, auth_failure: bool) -> Optional[str]:
@@ -316,9 +359,10 @@ class BotOrchestrator:
         self.bot_status = "INITIALIZING"
         self.last_error: Optional[str] = None
         self.kill_switch_active = False
-        self._last_mirofish_signal_id_by_slot: dict[str, Optional[str]] = {}
-        self._last_mirofish_signal_seen_utc: dict[str, float] = {}
-        self._mirofish_close_requested: dict[str, datetime] = {}
+        self._last_xauex_signal_id_by_slot: dict[str, Optional[str]] = {}
+        self._last_xauex_signal_seen_utc: dict[str, float] = {}
+        self._last_xauex_gate_log_at: dict[str, float] = {}
+        self._xauex_close_requested: dict[str, datetime] = {}
         self._manual_trade_status: Dict[str, object] = {}
         self._latest_quote: Dict[str, object] = {}
         self.last_tick_time = time.monotonic()
@@ -445,7 +489,7 @@ class BotOrchestrator:
         # Step 9: Restore risk gate state
         await self._restore_risk_state()
         self.risk_gates.ensure_period_baselines(self.account.get("balance", 0.0))
-        self._reset_mirofish_trade_count_if_new_london_day(datetime.now(timezone.utc))
+        self._reset_xauex_trade_count_if_new_london_day(datetime.now(timezone.utc))
 
         # Step 10: Fetch economic calendar
         try:
@@ -497,10 +541,10 @@ class BotOrchestrator:
         # Background: poll kill switch, watchdog, health check
         asyncio.create_task(self._poll_kill_switch())
 
-        if self.config.mirofish_mode:
-            asyncio.create_task(self._poll_mirofish_signal())
-            asyncio.create_task(self._monitor_mirofish_positions())
-            logger.info("[STARTUP] MiroFish mode: internal strategies DISABLED, polling for signals.")
+        if self.config.xauex_mode:
+            asyncio.create_task(self._poll_xauex_signal())
+            asyncio.create_task(self._monitor_xauex_positions())
+            logger.info("[STARTUP] XAUEX signal mode: internal strategies disabled, polling for signals.")
         asyncio.create_task(self._poll_manual_trade_commands())
 
         self.watchdog = Watchdog(self)
@@ -563,9 +607,9 @@ class BotOrchestrator:
 
     async def _process_candle_close(self, price: float, timestamp: datetime) -> None:
         """Handle all logic triggered by the active strategy candle closing."""
-        if self.config.mirofish_mode:
-            # In MiroFish mode, internal strategies are disabled.
-            # Trades are placed by _poll_mirofish_signal instead.
+        if self.config.xauex_mode:
+            # In XAUEX signal mode, internal strategies are disabled.
+            # Trades are placed by _poll_xauex_signal instead.
             await self._finalize_candle()
             return
         if self.active_strategy_mode == "EMA_PULLBACK_H1":
@@ -1621,13 +1665,13 @@ class BotOrchestrator:
     def _today_utc() -> str:
         return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-    def _mirofish_timezone(self) -> ZoneInfo:
+    def _xauex_timezone(self) -> ZoneInfo:
         try:
-            return ZoneInfo(self.config.mirofish_entry_timezone)
+            return ZoneInfo(self.config.xauex_entry_timezone)
         except Exception:
             logger.warning(
-                "[MIROFISH] Invalid timezone %s; using Europe/London instead.",
-                self.config.mirofish_entry_timezone,
+                "[XAUEX] Invalid timezone %s; using Europe/London instead.",
+                self.config.xauex_entry_timezone,
             )
             return ZoneInfo("Europe/London")
 
@@ -1636,15 +1680,15 @@ class BotOrchestrator:
         hour_text, minute_text = value.split(":", 1)
         return max(0, min(23, int(hour_text))), max(0, min(59, int(minute_text)))
 
-    def _mirofish_entry_slot(self, now_utc: datetime) -> Optional[str]:
-        london = now_utc.astimezone(self._mirofish_timezone())
+    def _xauex_entry_slot(self, now_utc: datetime) -> Optional[str]:
+        london = now_utc.astimezone(self._xauex_timezone())
         if london.weekday() >= 5:
             return None
 
-        morning_start = self._parse_hhmm(self.config.mirofish_entry_start_london)
-        morning_end = self._parse_hhmm(self.config.mirofish_entry_end_london)
-        second_start = self._parse_hhmm(self.config.mirofish_entry_second_start_london)
-        second_end = self._parse_hhmm(self.config.mirofish_entry_second_end_london)
+        morning_start = self._parse_hhmm(self.config.xauex_entry_start_london)
+        morning_end = self._parse_hhmm(self.config.xauex_entry_end_london)
+        second_start = self._parse_hhmm(self.config.xauex_entry_second_start_london)
+        second_end = self._parse_hhmm(self.config.xauex_entry_second_end_london)
 
         minute_of_day = london.hour * 60 + london.minute
         morning_start_minute = morning_start[0] * 60 + morning_start[1]
@@ -1660,63 +1704,63 @@ class BotOrchestrator:
 
     def _today_london(self, now_utc: Optional[datetime] = None) -> str:
         now_utc = now_utc or datetime.now(timezone.utc)
-        return now_utc.astimezone(self._mirofish_timezone()).strftime("%Y-%m-%d")
+        return now_utc.astimezone(self._xauex_timezone()).strftime("%Y-%m-%d")
 
-    def _clear_mirofish_runs_for_new_day(self, now_utc: Optional[datetime] = None) -> None:
+    def _clear_xauex_runs_for_new_day(self, now_utc: Optional[datetime] = None) -> None:
         london_date = self._today_london(now_utc)
-        if self.risk_state.mirofish_trade_date_london != london_date:
-            self.risk_state.mirofish_trade_date_london = london_date
-            self.risk_state.mirofish_trades_taken_london = 0
-            self.risk_state.mirofish_signal_runs_london = []
-            self._last_mirofish_signal_id_by_slot = {}
-            self._last_mirofish_signal_seen_utc = {}
-            self._mirofish_close_requested = {}
-        existing = self.risk_state.mirofish_signal_runs_london
+        if self.risk_state.xauex_trade_date_london != london_date:
+            self.risk_state.xauex_trade_date_london = london_date
+            self.risk_state.xauex_trades_taken_london = 0
+            self.risk_state.xauex_signal_runs_london = []
+            self._last_xauex_signal_id_by_slot = {}
+            self._last_xauex_signal_seen_utc = {}
+            self._xauex_close_requested = {}
+        existing = self.risk_state.xauex_signal_runs_london
         existing_runs = [item for item in existing if str(item.get("date_london", "")) == london_date]
         if len(existing_runs) != len(existing):
-            self.risk_state.mirofish_signal_runs_london = existing_runs
+            self.risk_state.xauex_signal_runs_london = existing_runs
 
-    def _reset_mirofish_trade_count_if_new_london_day(self, now_utc: Optional[datetime] = None) -> None:
+    def _reset_xauex_trade_count_if_new_london_day(self, now_utc: Optional[datetime] = None) -> None:
         now_utc = now_utc or datetime.now(timezone.utc)
-        self._clear_mirofish_runs_for_new_day(now_utc)
+        self._clear_xauex_runs_for_new_day(now_utc)
 
-    def _mirofish_trades_taken_today(self, now_utc: Optional[datetime] = None) -> int:
-        self._reset_mirofish_trade_count_if_new_london_day(now_utc)
-        return self.risk_state.mirofish_trades_taken_london
+    def _xauex_trades_taken_today(self, now_utc: Optional[datetime] = None) -> int:
+        self._reset_xauex_trade_count_if_new_london_day(now_utc)
+        return self.risk_state.xauex_trades_taken_london
 
-    def _mirofish_signal_runs_taken_today(self, now_utc: Optional[datetime] = None) -> int:
-        self._reset_mirofish_trade_count_if_new_london_day(now_utc)
+    def _xauex_signal_runs_taken_today(self, now_utc: Optional[datetime] = None) -> int:
+        self._reset_xauex_trade_count_if_new_london_day(now_utc)
         return sum(
             1
-            for item in self.risk_state.mirofish_signal_runs_london
+            for item in self.risk_state.xauex_signal_runs_london
             if str(item.get("date_london", "")) == self._today_london(now_utc)
             and bool(item.get("terminal", True))
         )
 
     def _slot_terminal_for_today(self, slot: str, *, now_utc: Optional[datetime] = None) -> bool:
-        self._reset_mirofish_trade_count_if_new_london_day(now_utc)
+        self._reset_xauex_trade_count_if_new_london_day(now_utc)
         now_utc = now_utc or datetime.now(timezone.utc)
         return any(
             str(item.get("slot", "")) == slot
             and str(item.get("date_london", "")) == self._today_london(now_utc)
             and bool(item.get("terminal", True))
-            for item in self.risk_state.mirofish_signal_runs_london
+            for item in self.risk_state.xauex_signal_runs_london
         )
 
     def _should_retry_signal_in_slot(self, slot: str, signal_id: str, now_utc: datetime) -> bool:
-        last_signal = self._last_mirofish_signal_id_by_slot.get(slot)
+        last_signal = self._last_xauex_signal_id_by_slot.get(slot)
         if signal_id == "" or signal_id != last_signal:
             return True
-        last_seen = self._last_mirofish_signal_seen_utc.get(slot)
+        last_seen = self._last_xauex_signal_seen_utc.get(slot)
         if last_seen is None:
             return True
         age = now_utc.timestamp() - float(last_seen)
-        return age >= _MIROFISH_SLOT_RETRY_BACKOFF_SECONDS
+        return age >= _XAUEX_SLOT_RETRY_BACKOFF_SECONDS
 
     def _has_run_slot_been_used_today(self, slot: str, *, now_utc: Optional[datetime] = None) -> bool:
         return self._slot_terminal_for_today(slot, now_utc=now_utc)
 
-    def _record_mirofish_signal_run(
+    def _record_xauex_signal_run(
         self,
         *,
         slot: str,
@@ -1727,8 +1771,8 @@ class BotOrchestrator:
         signal_confidence: Optional[float] = None,
         terminal: bool = True,
     ) -> None:
-        self._reset_mirofish_trade_count_if_new_london_day(signal_time)
-        self.risk_state.mirofish_signal_runs_london.append(
+        self._reset_xauex_trade_count_if_new_london_day(signal_time)
+        self.risk_state.xauex_signal_runs_london.append(
             {
                 "date_london": self._today_london(signal_time),
                 "slot": slot,
@@ -1750,7 +1794,7 @@ class BotOrchestrator:
         signal_time: datetime,
         terminal: bool = True,
     ) -> None:
-        self._record_mirofish_signal_run(
+        self._record_xauex_signal_run(
             slot=slot,
             signal_id=signal_id,
             action=reason,
@@ -1759,23 +1803,36 @@ class BotOrchestrator:
             signal_confidence=None,
             terminal=terminal,
         )
-        self._last_mirofish_signal_id_by_slot[slot] = signal_id
+        self._last_xauex_signal_id_by_slot[slot] = signal_id
 
     def _refresh_signal_window_tracking(self, *, slot: str, signal_id: str, signal_time: datetime) -> None:
-        self._last_mirofish_signal_id_by_slot[slot] = signal_id
-        self._last_mirofish_signal_seen_utc[slot] = signal_time.timestamp()
+        self._last_xauex_signal_id_by_slot[slot] = signal_id
+        self._last_xauex_signal_seen_utc[slot] = signal_time.timestamp()
 
     def _clear_stale_close_requests(self, *, open_position_ids: set[str], now_utc: datetime) -> None:
-        stale_cutoff = now_utc - timedelta(seconds=_MIROFISH_CLOSE_REQUEST_TTL_SECONDS)
-        self._mirofish_close_requested = {
+        stale_cutoff = now_utc - timedelta(seconds=_XAUEX_CLOSE_REQUEST_TTL_SECONDS)
+        self._xauex_close_requested = {
             position_id: requested_at
-            for position_id, requested_at in self._mirofish_close_requested.items()
+            for position_id, requested_at in self._xauex_close_requested.items()
             if position_id in open_position_ids and requested_at >= stale_cutoff
         }
 
-    def _record_mirofish_trade(self, now_utc: Optional[datetime] = None) -> None:
-        self._reset_mirofish_trade_count_if_new_london_day(now_utc)
-        self.risk_state.mirofish_trades_taken_london += 1
+    def _should_emit_repeated_xauex_log(
+        self,
+        key: str,
+        *,
+        min_interval_seconds: int = _XAUEX_REPEATED_LOG_INTERVAL_SECONDS,
+    ) -> bool:
+        now = time.monotonic()
+        last_emitted = self._last_xauex_gate_log_at.get(key)
+        if last_emitted is None or (now - last_emitted) >= min_interval_seconds:
+            self._last_xauex_gate_log_at[key] = now
+            return True
+        return False
+
+    def _record_xauex_trade(self, now_utc: Optional[datetime] = None) -> None:
+        self._reset_xauex_trade_count_if_new_london_day(now_utc)
+        self.risk_state.xauex_trades_taken_london += 1
 
     def _append_trade_entry_on_chart(self, entry_id: Optional[str], direction: str, price: float, owner: str) -> None:
         if len(self._recent_h1_closes) <= 0:
@@ -1798,17 +1855,17 @@ class BotOrchestrator:
         if len(self._trade_entries_on_chart) > max_entries:
             self._trade_entries_on_chart = self._trade_entries_on_chart[-max_entries:]
 
-    def _mirofish_entry_window_gate(self, now_utc: datetime) -> Optional[str]:
-        london = now_utc.astimezone(self._mirofish_timezone())
+    def _xauex_entry_window_gate(self, now_utc: datetime) -> Optional[str]:
+        london = now_utc.astimezone(self._xauex_timezone())
         if london.weekday() >= 5:
             return "WEEKEND"
 
-        slot = self._mirofish_entry_slot(now_utc)
+        slot = self._xauex_entry_slot(now_utc)
         if slot is not None:
             return None
 
-        morning_start_hour, morning_start_minute = self._parse_hhmm(self.config.mirofish_entry_start_london)
-        second_start_hour, second_start_minute = self._parse_hhmm(self.config.mirofish_entry_second_start_london)
+        morning_start_hour, morning_start_minute = self._parse_hhmm(self.config.xauex_entry_start_london)
+        second_start_hour, second_start_minute = self._parse_hhmm(self.config.xauex_entry_second_start_london)
         minute_of_day = london.hour * 60 + london.minute
         morning_start_minute_of_day = morning_start_hour * 60 + morning_start_minute
         second_start_minute_of_day = second_start_hour * 60 + second_start_minute
@@ -1820,21 +1877,21 @@ class BotOrchestrator:
             return "ENTRY_WINDOW_CLOSED"
         return "ENTRY_WINDOW_CLOSED"
 
-    def _mirofish_force_flat_due(self, now_utc: datetime) -> bool:
-        london = now_utc.astimezone(self._mirofish_timezone())
+    def _xauex_force_flat_due(self, now_utc: datetime) -> bool:
+        london = now_utc.astimezone(self._xauex_timezone())
         if london.weekday() >= 5:
             return False
-        flat_hour, flat_minute = self._parse_hhmm(self.config.mirofish_force_flat_london)
+        flat_hour, flat_minute = self._parse_hhmm(self.config.xauex_force_flat_london)
         minute_of_day = london.hour * 60 + london.minute
         flat_minute_of_day = flat_hour * 60 + flat_minute
         return minute_of_day >= flat_minute_of_day
 
-    def _mirofish_slot_start_utc(self, slot: str, *, now_utc: datetime) -> datetime:
-        london = now_utc.astimezone(self._mirofish_timezone())
+    def _xauex_slot_start_utc(self, slot: str, *, now_utc: datetime) -> datetime:
+        london = now_utc.astimezone(self._xauex_timezone())
         if slot == "MIDDAY":
-            hour, minute = self._parse_hhmm(self.config.mirofish_entry_second_start_london)
+            hour, minute = self._parse_hhmm(self.config.xauex_entry_second_start_london)
         else:
-            hour, minute = self._parse_hhmm(self.config.mirofish_entry_start_london)
+            hour, minute = self._parse_hhmm(self.config.xauex_entry_start_london)
         return london.replace(hour=hour, minute=minute, second=0, microsecond=0).astimezone(timezone.utc)
 
     def _stale_signal_should_consume_slot(
@@ -1844,20 +1901,20 @@ class BotOrchestrator:
         signal_time: datetime,
         now_utc: datetime,
     ) -> bool:
-        slot_start_utc = self._mirofish_slot_start_utc(slot, now_utc=now_utc)
+        slot_start_utc = self._xauex_slot_start_utc(slot, now_utc=now_utc)
         return signal_time >= slot_start_utc
 
-    def _mirofish_lot_multiplier(self, confidence: float) -> float:
-        if confidence >= self.config.mirofish_confidence_full_threshold:
+    def _xauex_lot_multiplier(self, confidence: float) -> float:
+        if confidence >= self.config.xauex_confidence_full_threshold:
             return 1.0
-        if confidence >= self.config.mirofish_confidence_medium_threshold:
-            return self.config.mirofish_medium_confidence_lot_multiplier
-        return self.config.mirofish_low_confidence_lot_multiplier
+        if confidence >= self.config.xauex_confidence_medium_threshold:
+            return self.config.xauex_medium_confidence_lot_multiplier
+        return self.config.xauex_low_confidence_lot_multiplier
 
     def _scale_lot_to_confidence(self, lot: float, confidence: float) -> float | None:
         if self.symbol_spec is None:
             return lot
-        multiplier = self._mirofish_lot_multiplier(confidence)
+        multiplier = self._xauex_lot_multiplier(confidence)
         step = float(self.symbol_spec.volume_step)
         minimum = float(self.symbol_spec.volume_min)
         scaled = math.floor((lot * multiplier) / step) * step
@@ -1870,19 +1927,19 @@ class BotOrchestrator:
         scaled = min(scaled, float(getattr(self.config, "max_lot_size", scaled)))
         return round(scaled, 5)
 
-    def _mirofish_confidence_bucket(self, confidence: float) -> str:
-        if confidence >= self.config.mirofish_confidence_full_threshold:
+    def _xauex_confidence_bucket(self, confidence: float) -> str:
+        if confidence >= self.config.xauex_confidence_full_threshold:
             return "high"
-        if confidence >= self.config.mirofish_confidence_medium_threshold:
+        if confidence >= self.config.xauex_confidence_medium_threshold:
             return "medium"
         return "low"
 
-    def _mirofish_cash_risk_budget(self) -> float:
+    def _xauex_cash_risk_budget(self) -> float:
         balance = float(self.account.get("balance", 0.0) or 0.0)
-        percent_cap = balance * (self.config.mirofish_risk_cap_percent / 100.0)
-        return round(min(self.config.mirofish_cash_stop_loss_gbp, percent_cap), 2)
+        percent_cap = balance * (self.config.xauex_risk_cap_percent / 100.0)
+        return round(min(self.config.xauex_cash_stop_loss_gbp, percent_cap), 2)
 
-    def _mirofish_recent_atr_distance(self) -> float:
+    def _xauex_recent_atr_distance(self) -> float:
         closes = [float(value) for value in self._recent_h1_closes if value is not None]
         if len(closes) < 2:
             return float(self.config.sl_min_dollars)
@@ -1892,10 +1949,10 @@ class BotOrchestrator:
         avg_range = sum(ranges) / len(ranges)
         return max(
             float(self.config.sl_min_dollars),
-            round(avg_range * self.config.mirofish_session_atr_multiplier, 2),
+            round(avg_range * self.config.xauex_session_atr_multiplier, 2),
         )
 
-    def _mirofish_structure_stop_distance(self, direction: int, current_price: float) -> float:
+    def _xauex_structure_stop_distance(self, direction: int, current_price: float) -> float:
         daily_levels = None
         if self.level_manager:
             raw_levels = getattr(self.level_manager, "_raw", None)
@@ -1904,7 +1961,7 @@ class BotOrchestrator:
             else:
                 daily_levels = raw_levels
         closes = [float(value) for value in self._recent_h1_closes if value is not None]
-        buffer_usd = float(self.config.mirofish_session_structure_buffer_usd)
+        buffer_usd = float(self.config.xauex_session_structure_buffer_usd)
         if direction > 0:
             floor = None
             if isinstance(daily_levels, dict):
@@ -1927,26 +1984,26 @@ class BotOrchestrator:
             return float(self.config.sl_min_dollars)
         return max(float(self.config.sl_min_dollars), round(float(ceiling) - current_price + buffer_usd, 2))
 
-    def _mirofish_session_thresholds(self, confidence: float) -> tuple[str, float, float]:
-        bucket = self._mirofish_confidence_bucket(confidence)
+    def _xauex_session_thresholds(self, confidence: float) -> tuple[str, float, float]:
+        bucket = self._xauex_confidence_bucket(confidence)
         if bucket == "low":
-            protect_r = float(self.config.mirofish_session_low_confidence_protect_r)
-            trail_r = max(protect_r + 0.3, float(self.config.mirofish_session_trail_r) - 0.15)
+            protect_r = float(self.config.xauex_session_low_confidence_protect_r)
+            trail_r = max(protect_r + 0.3, float(self.config.xauex_session_trail_r) - 0.15)
         elif bucket == "high":
-            protect_r = float(self.config.mirofish_session_high_confidence_protect_r)
-            trail_r = float(self.config.mirofish_session_trail_r) + 0.15
+            protect_r = float(self.config.xauex_session_high_confidence_protect_r)
+            trail_r = float(self.config.xauex_session_trail_r) + 0.15
         else:
-            protect_r = float(self.config.mirofish_session_protect_r)
-            trail_r = float(self.config.mirofish_session_trail_r)
+            protect_r = float(self.config.xauex_session_protect_r)
+            trail_r = float(self.config.xauex_session_trail_r)
         return bucket, round(protect_r, 2), round(max(trail_r, protect_r + 0.2), 2)
 
-    def _mirofish_protect_stop_price(self, *, direction: str, entry_price: float) -> float:
-        buffer_usd = max(float(self.config.mirofish_session_protect_buffer_usd), self._safe_current_spread() * 1.5)
+    def _xauex_protect_stop_price(self, *, direction: str, entry_price: float) -> float:
+        buffer_usd = max(float(self.config.xauex_session_protect_buffer_usd), self._safe_current_spread() * 1.5)
         if direction == "SHORT":
             return round(entry_price - buffer_usd, 2)
         return round(entry_price + buffer_usd, 2)
 
-    def _mirofish_trailing_stop_price(
+    def _xauex_trailing_stop_price(
         self,
         *,
         direction: str,
@@ -1956,12 +2013,12 @@ class BotOrchestrator:
         closes = [float(value) for value in self._recent_h1_closes if value is not None]
         if not closes:
             closes = [current_price]
-        atr_distance = self._mirofish_recent_atr_distance()
+        atr_distance = self._xauex_recent_atr_distance()
         if confidence_bucket == "low":
             atr_distance *= 0.9
         elif confidence_bucket == "high":
             atr_distance *= 1.1
-        buffer_usd = float(self.config.mirofish_session_structure_buffer_usd)
+        buffer_usd = float(self.config.xauex_session_structure_buffer_usd)
         window = closes[-5:] or closes
         if direction == "SHORT":
             structure = max(window) + buffer_usd
@@ -2088,10 +2145,10 @@ class BotOrchestrator:
                     if self.executor else {}
                 ),
                 "latest_quote": dict(self._latest_quote),
-                "mirofish_trade_date_london": self.risk_state.mirofish_trade_date_london,
-                "mirofish_trades_taken_london": self.risk_state.mirofish_trades_taken_london,
-                "mirofish_signal_runs_taken_london": len(self.risk_state.mirofish_signal_runs_london),
-                "mirofish_max_trades_per_day": self.config.mirofish_max_trades_per_day,
+                "xauex_trade_date_london": self.risk_state.xauex_trade_date_london,
+                "xauex_trades_taken_london": self.risk_state.xauex_trades_taken_london,
+                "xauex_signal_runs_taken_london": len(self.risk_state.xauex_signal_runs_london),
+                "xauex_max_trades_per_day": self.config.xauex_max_trades_per_day,
                 "strategy_data_status": self._strategy_data_status.get(self.active_strategy_mode),
                 "shadow_strategy_data_status": (
                     self._strategy_data_status.get(self.shadow_strategy_mode)
@@ -2128,41 +2185,44 @@ class BotOrchestrator:
             except Exception as exc:
                 logger.warning("[KILL SWITCH] cmd.json read error: %s", exc)
 
-    async def _poll_mirofish_signal(self) -> None:
-        """Poll cmd.json for MiroFish trading signals (runs only in MIROFISH_MODE)."""
+    async def _poll_xauex_signal(self) -> None:
+        """Poll cmd.json for XAUEX trading signals (runs only in XAUEX_MODE)."""
         _DIRECTION_MAP = {"BUY": 1, "SELL": -1}
         while self.running:
             await asyncio.sleep(10)
             if self.kill_switch_active:
                 continue
             try:
-                with open(self.config.mirofish_signal_path, "r") as f:
+                with open(self.config.xauex_signal_path, "r") as f:
                     cmd = json.load(f)
             except FileNotFoundError:
                 continue
             except Exception as exc:
-                logger.warning("[MIROFISH] Signal file read error: %s", exc)
+                logger.warning("[XAUEX] Signal file read error: %s", exc)
                 continue
 
-            sig = cmd.get("mirofish_signal")
-            if sig is None:
+            sig = cmd.get("xauex_signal") or {}
+            if not sig:
                 continue
 
             signal_id = str(sig.get("timestamp_utc", "") or "").strip()
             now_utc = datetime.now(timezone.utc)
-            slot = self._mirofish_entry_slot(now_utc)
+            slot = self._xauex_entry_slot(now_utc)
             if slot is None:
-                entry_gate = self._mirofish_entry_window_gate(now_utc)
+                entry_gate = self._xauex_entry_window_gate(now_utc)
                 if entry_gate == "TOO_EARLY":
-                    logger.info(
-                        "[MIROFISH] Signal ready but the London entry window has not opened yet."
-                    )
+                    if self._should_emit_repeated_xauex_log("entry_gate:TOO_EARLY"):
+                        logger.info(
+                            "[XAUEX] Signal ready but the London entry window has not opened yet."
+                        )
                 elif entry_gate is not None:
-                    logger.info("[MIROFISH] Blocked by entry window: %s", entry_gate)
+                    if self._should_emit_repeated_xauex_log(f"entry_gate:{entry_gate}"):
+                        logger.info("[XAUEX] Blocked by entry window: %s", entry_gate)
                 continue
 
             if self._has_run_slot_been_used_today(slot, now_utc=now_utc):
-                logger.info("[MIROFISH] Slot %s already used today. Ignoring signal %s.", slot, signal_id)
+                if self._should_emit_repeated_xauex_log(f"slot_used:{slot}:{signal_id}", min_interval_seconds=900):
+                    logger.info("[XAUEX] Slot %s already used today. Ignoring signal %s.", slot, signal_id)
                 continue
 
             if not self._should_retry_signal_in_slot(slot, signal_id, now_utc):
@@ -2173,7 +2233,7 @@ class BotOrchestrator:
             action = str(sig.get("action", "HOLD")).upper()
             direction = _DIRECTION_MAP.get(action)
             if direction is None:
-                logger.info("[MIROFISH] Signal action=%s - treated as HOLD / no trade", action)
+                logger.info("[XAUEX] Signal action=%s - treated as HOLD / no trade", action)
                 self._mark_slot_used(slot=slot, signal_id=signal_id, reason="HOLD", signal_time=now_utc, terminal=True)
                 await self.write_state()
                 continue
@@ -2186,16 +2246,16 @@ class BotOrchestrator:
             try:
                 ts = datetime.fromisoformat(signal_id.replace("Z", "+00:00"))
                 age = (now_utc - ts).total_seconds()
-                if age > self.config.mirofish_signal_max_age_seconds:
+                if age > self.config.xauex_signal_max_age_seconds:
                     terminal_stale = self._stale_signal_should_consume_slot(
                         slot=slot,
                         signal_time=ts.astimezone(timezone.utc),
                         now_utc=now_utc,
                     )
                     logger.info(
-                        "[MIROFISH] Signal is %.0fs old (max %ds) - stale, skipping",
+                        "[XAUEX] Signal is %.0fs old (max %ds) - stale, skipping",
                         age,
-                        self.config.mirofish_signal_max_age_seconds,
+                        self.config.xauex_signal_max_age_seconds,
                     )
                     self._mark_slot_used(
                         slot=slot,
@@ -2207,26 +2267,26 @@ class BotOrchestrator:
                     await self.write_state()
                     continue
             except (ValueError, TypeError):
-                logger.warning("[MIROFISH] Cannot parse signal timestamp '%s' - skipping", signal_id)
+                logger.warning("[XAUEX] Cannot parse signal timestamp '%s' - skipping", signal_id)
                 self._mark_slot_used(slot=slot, signal_id=signal_id, reason="INVALID_SIGNAL_TIMESTAMP", signal_time=now_utc, terminal=True)
                 await self.write_state()
                 continue
 
             try:
-                self._reset_mirofish_trade_count_if_new_london_day(now_utc)
+                self._reset_xauex_trade_count_if_new_london_day(now_utc)
 
-                if self._mirofish_trades_taken_today(now_utc) >= self.config.mirofish_max_trades_per_day:
+                if self._xauex_trades_taken_today(now_utc) >= self.config.xauex_max_trades_per_day:
                     logger.info(
-                        "[MIROFISH] Daily London trade cap reached (%d/%d).",
-                        self.risk_state.mirofish_trades_taken_london,
-                        self.config.mirofish_max_trades_per_day,
+                        "[XAUEX] Daily London trade cap reached (%d/%d).",
+                        self.risk_state.xauex_trades_taken_london,
+                        self.config.xauex_max_trades_per_day,
                     )
                     self._mark_slot_used(slot=slot, signal_id=signal_id, reason="CAP_REACHED", signal_time=now_utc, terminal=True)
                     await self.write_state()
                     continue
 
                 if self.symbol_spec is None:
-                    logger.warning("[MIROFISH] Symbol spec not loaded yet - skipping")
+                    logger.warning("[XAUEX] Symbol spec not loaded yet - skipping")
                     self._mark_slot_used(
                         slot=slot,
                         signal_id=signal_id,
@@ -2241,7 +2301,7 @@ class BotOrchestrator:
                 live_symbol = str(getattr(self.symbol_spec, "symbol", "") or "").upper()
                 if signal_symbol and live_symbol and signal_symbol != live_symbol:
                     logger.info(
-                        "[MIROFISH] Signal symbol %s does not match configured symbol %s - skipping",
+                        "[XAUEX] Signal symbol %s does not match configured symbol %s - skipping",
                         signal_symbol,
                         live_symbol,
                     )
@@ -2252,7 +2312,7 @@ class BotOrchestrator:
                 distance_unit = str(sig.get("distance_unit", "usd") or "usd").lower()
                 if distance_unit not in ("usd", "dollars", "price"):
                     logger.info(
-                        "[MIROFISH] Signal distance_unit=%s is not executable by the current XAUEX runtime - skipping",
+                        "[XAUEX] Signal distance_unit=%s is not executable by the current XAUEX runtime - skipping",
                         distance_unit,
                     )
                     self._mark_slot_used(slot=slot, signal_id=signal_id, reason="INVALID_DISTANCE_UNIT", signal_time=now_utc, terminal=True)
@@ -2261,7 +2321,8 @@ class BotOrchestrator:
 
                 gate_result = await self._environment_gate(apply_risk_gates=True)
                 if gate_result is not None:
-                    logger.info("[MIROFISH] Blocked by gate: %s", gate_result)
+                    if self._should_emit_repeated_xauex_log(f"environment_gate:{gate_result}"):
+                        logger.info("[XAUEX] Blocked by gate: %s", gate_result)
                     self._mark_slot_used(slot=slot, signal_id=signal_id, reason=gate_result, signal_time=now_utc, terminal=False)
                     await self.write_state()
                     continue
@@ -2269,7 +2330,7 @@ class BotOrchestrator:
                 bid = self.api_client._last_bid
                 ask = self.api_client._last_ask
                 if bid is None or ask is None:
-                    logger.warning("[MIROFISH] No bid/ask available yet - skipping")
+                    logger.warning("[XAUEX] No bid/ask available yet - skipping")
                     self._mark_slot_used(slot=slot, signal_id=signal_id, reason="NO_QUOTE", signal_time=now_utc, terminal=False)
                     await self.write_state()
                     continue
@@ -2278,22 +2339,22 @@ class BotOrchestrator:
                     signal_stop_distance = float(sig.get("stop_loss_usd", sig.get("stop_loss_distance", 12.0)))
                     signal_tp_distance = float(sig.get("take_profit_usd", sig.get("take_profit_distance", 24.0)))
                 except (TypeError, ValueError):
-                    logger.warning("[MIROFISH] Invalid stop or take-profit values in signal - skipping")
+                    logger.warning("[XAUEX] Invalid stop or take-profit values in signal - skipping")
                     self._mark_slot_used(slot=slot, signal_id=signal_id, reason="INVALID_DISTANCE_VALUES", signal_time=now_utc, terminal=True)
                     await self.write_state()
                     continue
 
                 if signal_stop_distance <= 0 or signal_tp_distance <= 0:
-                    logger.info("[MIROFISH] Non-positive stop or take-profit distance - skipping")
+                    logger.info("[XAUEX] Non-positive stop or take-profit distance - skipping")
                     self._mark_slot_used(slot=slot, signal_id=signal_id, reason="NONPOSITIVE_DISTANCE", signal_time=now_utc, terminal=True)
                     await self.write_state()
                     continue
 
-                atr_stop_distance = self._mirofish_recent_atr_distance()
+                atr_stop_distance = self._xauex_recent_atr_distance()
                 current_price = ask if direction == 1 else bid
-                structure_stop_distance = self._mirofish_structure_stop_distance(direction, current_price)
+                structure_stop_distance = self._xauex_structure_stop_distance(direction, current_price)
                 max_stop_distance = max(signal_stop_distance * 2.0, float(self.config.sl_max_dollars), 25.0)
-                sl_distance = build_mirofish_initial_stop_distance(
+                sl_distance = build_xauex_initial_stop_distance(
                     signal_stop=signal_stop_distance,
                     atr_stop=atr_stop_distance,
                     structure_stop=structure_stop_distance,
@@ -2309,14 +2370,14 @@ class BotOrchestrator:
                     stop_loss_price = current_price + sl_distance
                     take_profit_price = current_price - tp_distance
 
-                cash_risk_budget = self._mirofish_cash_risk_budget()
+                cash_risk_budget = self._xauex_cash_risk_budget()
                 if cash_risk_budget <= 0:
-                    logger.info("[MIROFISH] Cash risk budget is non-positive - skipping")
+                    logger.info("[XAUEX] Cash risk budget is non-positive - skipping")
                     self._mark_slot_used(slot=slot, signal_id=signal_id, reason="NO_RISK_BUDGET", signal_time=now_utc, terminal=False)
                     await self.write_state()
                     continue
 
-                lot = calculate_mirofish_lot_size_from_cash_risk(
+                lot = calculate_xauex_lot_size_from_cash_risk(
                     cash_risk=cash_risk_budget,
                     stop_distance=sl_distance,
                     lot_size=float(self.symbol_spec.lot_size),
@@ -2326,7 +2387,7 @@ class BotOrchestrator:
                     max_lot_size=float(getattr(self.config, "max_lot_size", self.symbol_spec.volume_max)),
                 )
                 if lot is None:
-                    logger.info("[MIROFISH] Lot size calculation returned None - skipping")
+                    logger.info("[XAUEX] Lot size calculation returned None - skipping")
                     self._mark_slot_used(slot=slot, signal_id=signal_id, reason="LOT_CALCULATION", signal_time=now_utc, terminal=True)
                     await self.write_state()
                     continue
@@ -2334,7 +2395,7 @@ class BotOrchestrator:
                 scaled_lot = self._scale_lot_to_confidence(lot, confidence)
                 if scaled_lot is None:
                     logger.info(
-                        "[MIROFISH] Confidence-scaled lot fell below broker minimum | base_lot=%.5f confidence=%.2f",
+                        "[XAUEX] Confidence-scaled lot fell below broker minimum | base_lot=%.5f confidence=%.2f",
                         lot,
                         confidence,
                     )
@@ -2342,9 +2403,9 @@ class BotOrchestrator:
                     await self.write_state()
                     continue
 
-                reasoning = sig.get("reasoning", "MiroFish signal")
+                reasoning = sig.get("reasoning", "XAUEX signal")
                 dir_label = "LONG" if direction == 1 else "SHORT"
-                confidence_bucket, protect_r, trail_r = self._mirofish_session_thresholds(confidence)
+                confidence_bucket, protect_r, trail_r = self._xauex_session_thresholds(confidence)
                 session_metadata = {
                     "session": {
                         "phase": "OBSERVE",
@@ -2360,12 +2421,12 @@ class BotOrchestrator:
                     }
                 }
                 logger.info(
-                    "[MIROFISH] Executing %s %s | Lot:%.2f base_lot:%.2f multiplier:%.2f SL:%.2f TP:%.2f signal_sl:%.2f atr_sl:%.2f structure_sl:%.2f cash_risk:%.2f | Confidence:%.2f | %s",
+                    "[XAUEX] Executing %s %s | Lot:%.2f base_lot:%.2f multiplier:%.2f SL:%.2f TP:%.2f signal_sl:%.2f atr_sl:%.2f structure_sl:%.2f cash_risk:%.2f | Confidence:%.2f | %s",
                     signal_symbol or live_symbol or "XAUUSD",
                     dir_label,
                     scaled_lot,
                     lot,
-                    self._mirofish_lot_multiplier(confidence),
+                    self._xauex_lot_multiplier(confidence),
                     stop_loss_price,
                     take_profit_price,
                     signal_stop_distance,
@@ -2383,21 +2444,21 @@ class BotOrchestrator:
                     take_profit_price=take_profit_price,
                     pattern=PatternType.NONE,
                     level=current_price,
-                    owner="oracle",
+                    owner="xauex",
                     metadata=session_metadata,
                 )
 
                 if pos_id:
-                    logger.info("[MIROFISH] Order placed: position_id=%s", pos_id)
-                    self._record_mirofish_trade(now_utc)
+                    logger.info("[XAUEX] Order placed: position_id=%s", pos_id)
+                    self._record_xauex_trade(now_utc)
                     await self.write_state()
                     if not str(pos_id).startswith("order:"):
-                        self._append_trade_entry_on_chart(str(pos_id), dir_label, current_price, "oracle")
+                        self._append_trade_entry_on_chart(str(pos_id), dir_label, current_price, "xauex")
                 else:
                     if self.config.observe_only:
-                        logger.info("[MIROFISH] OBSERVE_ONLY - order logged but not placed")
+                        logger.info("[XAUEX] OBSERVE_ONLY - order logged but not placed")
                     else:
-                        logger.warning("[MIROFISH] Order placement returned None")
+                        logger.warning("[XAUEX] Order placement returned None")
 
                 self._mark_slot_used(
                     slot=slot,
@@ -2409,7 +2470,7 @@ class BotOrchestrator:
                 await self.write_state()
             except Exception:
                 logger.exception(
-                    "[MIROFISH] Signal poll iteration crashed for slot=%s signal_id=%s; keeping poller alive.",
+                    "[XAUEX] Signal poll iteration crashed for slot=%s signal_id=%s; keeping poller alive.",
                     slot,
                     signal_id,
                 )
@@ -2423,8 +2484,8 @@ class BotOrchestrator:
                 await self.write_state()
                 continue
 
-    async def _monitor_mirofish_positions(self) -> None:
-        """Close MiroFish positions on cash TP/SL or at the London force-flat time."""
+    async def _monitor_xauex_positions(self) -> None:
+        """Close XAUEX positions on cash TP/SL or at the London force-flat time."""
         while self.running:
             await asyncio.sleep(10)
             if self.api_client is None or self.executor is None:
@@ -2433,7 +2494,7 @@ class BotOrchestrator:
             try:
                 positions = await self.api_client.get_open_positions()
             except Exception as exc:
-                logger.warning("[MIROFISH] Position monitor refresh failed: %s", exc)
+                logger.warning("[XAUEX] Position monitor refresh failed: %s", exc)
                 continue
 
             open_ids = {position.position_id for position in positions}
@@ -2444,16 +2505,16 @@ class BotOrchestrator:
                 continue
 
             now_utc = datetime.now(timezone.utc)
-            force_flat_due = self._mirofish_force_flat_due(now_utc)
+            force_flat_due = self._xauex_force_flat_due(now_utc)
 
             for position in positions:
-                if position.position_id in self._mirofish_close_requested:
+                if position.position_id in self._xauex_close_requested:
                     continue
 
                 tracked = self.executor.position_manager.get_position(position.position_id)
                 if tracked is not None:
                     tracked.unrealised_pnl = position.unrealised_pnl
-                if tracked is None or tracked.owner != "oracle":
+                if tracked is None or tracked.owner != "xauex":
                     continue
 
                 session = tracked.metadata.setdefault("session", {})
@@ -2462,14 +2523,21 @@ class BotOrchestrator:
                 session.setdefault("entry_price", tracked.entry_price)
                 session.setdefault("initial_risk_distance", abs(tracked.entry_price - tracked.stop_loss))
                 session.setdefault("confidence_bucket", "medium")
-                session.setdefault("protect_r", float(self.config.mirofish_session_protect_r))
-                session.setdefault("trail_r", float(self.config.mirofish_session_trail_r))
+                session.setdefault("protect_r", float(self.config.xauex_session_protect_r))
+                session.setdefault("trail_r", float(self.config.xauex_session_trail_r))
 
-                updated_session = advance_mirofish_session_phase(
+                candidate_session = advance_xauex_session_phase(
                     session,
                     current_price=position.current_price,
-                    protect_r=float(session.get("protect_r", self.config.mirofish_session_protect_r)),
-                    trail_r=float(session.get("trail_r", self.config.mirofish_session_trail_r)),
+                    protect_r=float(session.get("protect_r", self.config.xauex_session_protect_r)),
+                    trail_r=float(session.get("trail_r", self.config.xauex_session_trail_r)),
+                )
+                updated_session = confirm_xauex_session_phase_transition(
+                    session,
+                    candidate_session,
+                    unrealised_pnl=position.unrealised_pnl,
+                    lot_size=float(getattr(tracked, "lot_size", 0.0) or 0.0),
+                    contract_size=float(getattr(self.symbol_spec, "lot_size", 0.0) or 0.0),
                 )
                 tracked.metadata["session"] = updated_session
 
@@ -2477,12 +2545,12 @@ class BotOrchestrator:
                 previous_phase = str(session.get("phase", "OBSERVE")).upper()
                 current_phase = str(updated_session.get("phase", previous_phase)).upper()
                 if current_phase == "PROTECT" and previous_phase == "OBSERVE":
-                    new_stop_loss = self._mirofish_protect_stop_price(
+                    new_stop_loss = self._xauex_protect_stop_price(
                         direction=tracked.direction,
                         entry_price=tracked.entry_price,
                     )
                 elif current_phase == "TRAIL":
-                    new_stop_loss = self._mirofish_trailing_stop_price(
+                    new_stop_loss = self._xauex_trailing_stop_price(
                         direction=tracked.direction,
                         current_price=position.current_price,
                         confidence_bucket=str(updated_session.get("confidence_bucket", "medium")),
@@ -2500,16 +2568,16 @@ class BotOrchestrator:
                 close_reason: Optional[str] = None
                 if force_flat_due:
                     close_reason = "FORCE_FLAT_LONDON"
-                elif position.unrealised_pnl >= self.config.mirofish_cash_take_profit_gbp:
-                    close_reason = f"CASH_TP_GBP_{self.config.mirofish_cash_take_profit_gbp:.2f}"
-                elif position.unrealised_pnl <= -self.config.mirofish_cash_stop_loss_gbp:
-                    close_reason = f"CASH_SL_GBP_{self.config.mirofish_cash_stop_loss_gbp:.2f}"
+                elif position.unrealised_pnl >= self.config.xauex_cash_take_profit_gbp:
+                    close_reason = f"CASH_TP_GBP_{self.config.xauex_cash_take_profit_gbp:.2f}"
+                elif position.unrealised_pnl <= -self.config.xauex_cash_stop_loss_gbp:
+                    close_reason = f"CASH_SL_GBP_{self.config.xauex_cash_stop_loss_gbp:.2f}"
 
                 if close_reason is None:
                     continue
 
                 logger.info(
-                    "[MIROFISH] Closing position %s reason=%s pnl=%.2f volume=%.2f",
+                    "[XAUEX] Closing position %s reason=%s pnl=%.2f volume=%.2f",
                     position.position_id,
                     close_reason,
                     position.unrealised_pnl,
@@ -2517,7 +2585,7 @@ class BotOrchestrator:
                 )
 
                 if self.config.observe_only:
-                    self._mirofish_close_requested[position.position_id] = now_utc
+                    self._xauex_close_requested[position.position_id] = now_utc
                     continue
 
                 closed = await self.api_client.close_position(
@@ -2525,11 +2593,11 @@ class BotOrchestrator:
                     volume_lots=position.volume,
                 )
                 if closed:
-                    self._mirofish_close_requested[position.position_id] = now_utc
+                    self._xauex_close_requested[position.position_id] = now_utc
 
     async def _poll_manual_trade_commands(self) -> None:
         """Poll the separate manual trade command file and execute manual-only actions."""
-        command_path = Path(self.config.mirofish_manual_command_path)
+        command_path = Path(self.config.xauex_manual_command_path)
         while self.running:
             await asyncio.sleep(2)
             if self.api_client is None or self.executor is None:

@@ -1,0 +1,14 @@
+# VPN-only dashboard ingress.
+# HTTP on the VPN addresses always upgrades to HTTPS.
+http://10.8.0.1, http://10.9.0.1 {
+    bind 10.8.0.1 10.9.0.1
+    redir https://{host}{uri} 308
+}
+
+# HTTPS terminates on the VPN interfaces and proxies to the local dashboard app.
+# No public listener is defined here; the public relay stays separate.
+https://10.8.0.1, https://10.9.0.1 {
+    bind 10.8.0.1 10.9.0.1
+    tls internal
+    reverse_proxy 127.0.0.1:8089
+}
