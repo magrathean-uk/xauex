@@ -2368,6 +2368,27 @@ class BotOrchestrator:
         percent_cap = balance * (self.config.xauex_risk_cap_percent / 100.0)
         return round(min(self.config.xauex_cash_stop_loss_gbp, percent_cap), 2)
 
+    def _xauex_loss_cooldown_multiplier(self) -> float:
+        """Size-down after consecutive losses.
+
+        RiskGates already hard-halts the day at `max_consecutive_losses` (3 by
+        default). Before that halt triggers we still take trades 2 and 3 at
+        full size, which is exactly how a losing streak compounds. After 2
+        losses, cut the next trade to 50% risk so a 3rd loss hurts half as
+        much, and a 4th loss (if the gate ever raised the limit) hurts even
+        less. A winning trade resets the counter via record_trade_closed, so
+        the multiplier returns to 1.0 automatically.
+        """
+        gates = getattr(self, "risk_gates", None)
+        if gates is None:
+            return 1.0
+        losses = int(getattr(gates.state, "consecutive_losses_today", 0) or 0)
+        if losses >= 3:
+            return 0.3
+        if losses >= 2:
+            return 0.5
+        return 1.0
+
     def _xauex_recent_atr_distance(self) -> float:
         closes = [float(value) for value in self._recent_h1_closes if value is not None]
         if len(closes) < 2:
@@ -3083,7 +3104,14 @@ class BotOrchestrator:
                     await self.write_state()
                     continue
 
-                assurance_cash_risk = round(cash_risk_budget * assurance.risk_multiplier, 2)
+                cooldown = self._xauex_loss_cooldown_multiplier()
+                if cooldown < 1.0:
+                    logger.info(
+                        "[XAUEX] Post-loss cooldown active: risk scaled by %.2fx (consecutive losses=%d)",
+                        cooldown,
+                        int(getattr(self.risk_gates.state, "consecutive_losses_today", 0) or 0),
+                    )
+                assurance_cash_risk = round(cash_risk_budget * assurance.risk_multiplier * cooldown, 2)
                 lot = calculate_xauex_lot_size_from_cash_risk(
                     cash_risk=assurance_cash_risk,
                     stop_distance=sl_distance,

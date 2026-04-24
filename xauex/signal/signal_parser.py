@@ -98,6 +98,23 @@ def parse_signal(
         return _hold_signal(asset, 'LLM returned invalid JSON')
 
     fallback = _fallback_direction(actions, report_markdown, parsed.get('reasoning'))
+    # Hard-blocker freshness is handled above (line 58) and returns HOLD before
+    # we reach this point. A 'warning' or 'stale' state is milder but still
+    # means our macro context is questionable - so refuse to rescue HOLD with
+    # keyword bias in that case. The parser's HOLD stays HOLD.
+    freshness_state = str(
+        (decision_packet.get('input_freshness') or {}).get('market_snapshot_state', '')
+    ).lower()
+    if freshness_state in ('warning', 'stale', 'blocked'):
+        fallback = {
+            **fallback,
+            'action': 'HOLD',
+            'confidence': 0.0,
+            'summary': (
+                f"{fallback.get('summary', '')} Fallback suppressed: "
+                f"market snapshot state={freshness_state}."
+            ).strip(),
+        }
     signal = _normalize_signal(asset, parsed, fallback=fallback)
     signal['decision_mode'] = decision_mode
     if debate is not None:

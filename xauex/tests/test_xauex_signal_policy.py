@@ -128,6 +128,28 @@ def test_parser_fallback_breaks_score_tie_into_hold():
     assert balanced_fallback["confidence"] == 0.0
 
 
+def test_loss_cooldown_multiplier_scales_with_recent_losses():
+    """After 2 losses the next trade must be half-size; 3+ would be 0.3x
+    (though the risk gate halts at 3 by default). Zero/one loss = full size."""
+    dummy = SimpleNamespace()
+    method = BotOrchestrator._xauex_loss_cooldown_multiplier
+
+    dummy.risk_gates = None
+    assert method(dummy) == 1.0
+
+    dummy.risk_gates = SimpleNamespace(state=SimpleNamespace(consecutive_losses_today=0))
+    assert method(dummy) == 1.0
+
+    dummy.risk_gates = SimpleNamespace(state=SimpleNamespace(consecutive_losses_today=1))
+    assert method(dummy) == 1.0
+
+    dummy.risk_gates = SimpleNamespace(state=SimpleNamespace(consecutive_losses_today=2))
+    assert method(dummy) == 0.5
+
+    dummy.risk_gates = SimpleNamespace(state=SimpleNamespace(consecutive_losses_today=3))
+    assert method(dummy) == 0.3
+
+
 def test_confidence_scales_lot_size_without_skipping_trade():
     dummy = SimpleNamespace(
         config=SimpleNamespace(

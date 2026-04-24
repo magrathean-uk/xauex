@@ -154,6 +154,27 @@ def build_market_snapshot(
     freshness['fedwatch_summary'] = str(fedwatch.get('summary', '') or '')
     freshness['policy_context_state'] = str(policy_context.get('status', 'unknown') or 'unknown')
     freshness['policy_context_summary'] = str(policy_context.get('summary', '') or '')
+
+    # FOMC decision-day blackout. Gold reacts violently to Fed statements, dots,
+    # and press conferences. Even when the London morning is hours before the
+    # 18:00-19:00 UTC release, positioning ahead of the event produces large
+    # whipsaws that our signal cannot meaningfully forecast. Likewise the
+    # morning after a decision is still digesting the statement. Treat both as
+    # hard blockers so the parser returns HOLD and the bot declines the slot.
+    fomc_window = str(policy_context.get('fomc_window_state', '') or '').lower()
+    freshness['fomc_window_state'] = fomc_window
+    if fomc_window in ('today', 'recent'):
+        freshness['state'] = 'blocked'
+        freshness['market_snapshot_state'] = 'blocked'
+        freshness['hard_blocker'] = True
+        fomc_note = (
+            'FOMC decision window (today) - blocking entries.'
+            if fomc_window == 'today'
+            else 'Day after FOMC decision - blocking entries while market digests.'
+        )
+        existing_summary = str(freshness.get('summary', '') or '').strip()
+        freshness['summary'] = f'{fomc_note} {existing_summary}'.strip()
+
     return {
         'series': series_payload,
         'fedwatch': fedwatch,

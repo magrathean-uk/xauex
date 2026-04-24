@@ -4,7 +4,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import aiohttp
 import pytest
 
-from bot.filters.news import NewsFilter, _FF_NEXT_WEEK, _FF_THIS_WEEK
+from datetime import datetime, timedelta, timezone
+
+from bot.filters.news import (
+    DEFAULT_BLOCK_CURRENCIES,
+    NewsEvent,
+    NewsFilter,
+    _FF_NEXT_WEEK,
+    _FF_THIS_WEEK,
+    is_news_clear,
+)
 
 
 class FakeResponse:
@@ -83,3 +92,48 @@ async def test_optional_next_week_404_does_not_poison_refresh(tmp_path):
     assert filt.last_refresh_date == "2026-04-05"
     assert len(filt.events) == 1
     assert filt.events[0].title == "NFP"
+
+
+def _ev(currency: str, impact: str, minutes_ahead: int, title: str = "Event") -> NewsEvent:
+    now = datetime(2026, 4, 10, 12, 0, tzinfo=timezone.utc)
+    return NewsEvent(
+        title=title,
+        currency=currency,
+        impact=impact,
+        time_utc=now + timedelta(minutes=minutes_ahead),
+    )
+
+
+def test_is_news_clear_blocks_high_usd_event():
+    now = datetime(2026, 4, 10, 12, 0, tzinfo=timezone.utc)
+    events = [_ev("USD", "HIGH", 10, "NFP")]
+    assert is_news_clear(now, events, block_minutes=30) is False
+
+
+def test_is_news_clear_now_blocks_high_eur_event():
+    """Previously only USD events blocked; ECB/EU data moved gold without notice.
+
+    Gold tracks DXY and safe-haven flows, so EUR, GBP, CHF, and JPY HIGH
+    releases must also produce a blackout window.
+    """
+    now = datetime(2026, 4, 10, 12, 0, tzinfo=timezone.utc)
+    events = [_ev("EUR", "HIGH", 5, "ECB Decision")]
+    assert is_news_clear(now, events, block_minutes=30) is False
+
+
+def test_is_news_clear_allows_low_impact_events():
+    now = datetime(2026, 4, 10, 12, 0, tzinfo=timezone.utc)
+    events = [_ev("USD", "LOW", 5), _ev("EUR", "MEDIUM", 5)]
+    assert is_news_clear(now, events, block_minutes=30) is True
+
+
+def test_is_news_clear_respects_custom_block_currencies():
+    """Config may narrow the list to USD-only to avoid over-blocking."""
+    now = datetime(2026, 4, 10, 12, 0, tzinfo=timezone.utc)
+    events = [_ev("EUR", "HIGH", 5, "ECB")]
+    usd_only = frozenset({"USD"})
+    assert is_news_clear(now, events, block_minutes=30, block_currencies=usd_only) is True
+
+
+def test_default_block_currencies_covers_gold_drivers():
+    assert {"USD", "EUR", "GBP", "CHF", "JPY"}.issubset(DEFAULT_BLOCK_CURRENCIES)

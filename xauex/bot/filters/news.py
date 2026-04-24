@@ -54,14 +54,26 @@ def parse_ff_datetime(date_str: str, time_str: str = "") -> datetime:
     return parse_ff_time(date_str, time_str)
 
 
-def is_news_clear(now_utc: datetime, events: List[NewsEvent], block_minutes: int) -> bool:
+# Currencies whose HIGH-impact releases move XAUUSD materially. USD dominates,
+# but EUR/GBP shape DXY and European-session liquidity; CHF/JPY matter for
+# safe-haven flows (SNB decisions, BoJ interventions).
+DEFAULT_BLOCK_CURRENCIES = frozenset({"USD", "EUR", "GBP", "CHF", "JPY"})
+
+
+def is_news_clear(
+    now_utc: datetime,
+    events: List[NewsEvent],
+    block_minutes: int,
+    block_currencies: Optional[frozenset] = None,
+) -> bool:
     """
-    Pure function. Returns True if clear of all HIGH USD events.
+    Pure function. Returns True if clear of HIGH events for the blocked currencies.
     Block window is symmetric: [event_time - block_minutes, event_time + block_minutes].
     """
+    allowed = block_currencies or DEFAULT_BLOCK_CURRENCIES
     window = timedelta(minutes=block_minutes)
     for event in events:
-        if event.currency != "USD" or event.impact.upper() != "HIGH":
+        if event.currency.upper() not in allowed or event.impact.upper() != "HIGH":
             continue
         if abs(now_utc - event.time_utc) <= window:
             return False
@@ -184,7 +196,7 @@ class NewsFilter:
 
     def is_clear(self, now_utc: datetime) -> Tuple[bool, Optional[str]]:
         """
-        Returns (True, None) if clear of all HIGH USD events.
+        Returns (True, None) if clear of HIGH events for all blocked currencies.
         Returns (False, event_title) if within the block window.
         """
         if not self.feed_available:
@@ -193,12 +205,18 @@ class NewsFilter:
         block = getattr(self.config, 'news_block_minutes', 30)
         window = timedelta(minutes=block)
 
+        configured = getattr(self.config, 'news_block_currencies', None)
+        if configured:
+            allowed = frozenset(str(c).upper() for c in configured)
+        else:
+            allowed = DEFAULT_BLOCK_CURRENCIES
+
         for event in self.events:
-            if event.currency != "USD" or event.impact.upper() != "HIGH":
+            if event.currency.upper() not in allowed or event.impact.upper() != "HIGH":
                 continue
             if abs(now_utc - event.time_utc) <= window:
                 logger.info(
-                    f'[NEWS] Trade blocked. Event: "{event.title}" at '
+                    f'[NEWS] Trade blocked. Event: "{event.title}" ({event.currency}) at '
                     f'{event.time_utc.isoformat()}. Window: ±{block}min.'
                 )
                 return False, event.title
