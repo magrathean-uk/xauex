@@ -19,9 +19,10 @@ from xauex.signal.policy_context import fetch_policy_context
 
 logger = logging.getLogger(__name__)
 
-_ACTIVE_WINDOWS = {'morning', 'midday'}
+_ACTIVE_WINDOWS = {'morning', 'midday', 'us_open'}
 _MARKET_SNAPSHOT_WARNING_AGE_SECONDS = 3 * 24 * 3600
 _MARKET_SNAPSHOT_BLOCK_AGE_SECONDS = 7 * 24 * 3600
+_MARKET_SNAPSHOT_BLOCK_STALE_SERIES_COUNT = 2
 _MARKET_SNAPSHOT_WARNING_MISSING_COUNT = 1
 _MARKET_SNAPSHOT_BLOCK_MISSING_COUNT = 2
 
@@ -116,6 +117,7 @@ def build_market_snapshot(
         series_payload: dict[str, Any] = {}
         missing_series: list[str] = []
         ages: list[float] = []
+        block_stale_series_count = 0
         for key, meta in _FRED_SERIES.items():
             result = series_results.get(key)
             if result is None:
@@ -127,6 +129,8 @@ def build_market_snapshot(
                 missing_series.append(key)
                 continue
             ages.append(latest['age_seconds'])
+            if latest['age_seconds'] >= _MARKET_SNAPSHOT_BLOCK_AGE_SECONDS:
+                block_stale_series_count += 1
             series_payload[key] = {
                 'label': result_meta['label'],
                 'series_id': result_meta['series_id'],
@@ -143,6 +147,7 @@ def build_market_snapshot(
     freshness = _assess_market_snapshot_freshness(
         market_snapshot_age_seconds=int(max(ages)) if ages else None,
         missing_series_count=len(missing_series),
+        stale_block_series_count=block_stale_series_count,
         window_label=window_label,
     )
     freshness['fedwatch_state'] = str(fedwatch.get('status', 'unknown') or 'unknown')
@@ -183,6 +188,7 @@ def _assess_market_snapshot_freshness(
     *,
     market_snapshot_age_seconds: int | None,
     missing_series_count: int,
+    stale_block_series_count: int = 1,
     window_label: str,
 ) -> dict[str, Any]:
     active_window = window_label in _ACTIVE_WINDOWS
@@ -194,12 +200,18 @@ def _assess_market_snapshot_freshness(
         state = 'blocked' if active_window else 'warning'
         hard_blocker = active_window
         notes.append('Structured market snapshot is unavailable.')
-    elif market_snapshot_age_seconds >= _MARKET_SNAPSHOT_BLOCK_AGE_SECONDS and active_window:
-        state = 'blocked'
-        hard_blocker = True
-        notes.append(
-            f'Structured market snapshot is stale at {market_snapshot_age_seconds}s old during the {window_label} window.'
-        )
+    elif market_snapshot_age_seconds >= _MARKET_SNAPSHOT_BLOCK_AGE_SECONDS:
+        if active_window and stale_block_series_count >= _MARKET_SNAPSHOT_BLOCK_STALE_SERIES_COUNT:
+            state = 'blocked'
+            hard_blocker = True
+            notes.append(
+                f'Structured market snapshot is stale at {market_snapshot_age_seconds}s old during the {window_label} window.'
+            )
+        else:
+            state = 'warning'
+            notes.append(
+                f'Structured market snapshot is stale at {market_snapshot_age_seconds}s old, but only {stale_block_series_count} series exceed the hard block threshold.'
+            )
     elif market_snapshot_age_seconds >= _MARKET_SNAPSHOT_WARNING_AGE_SECONDS:
         state = 'warning'
         notes.append(f'Structured market snapshot is stale at {market_snapshot_age_seconds}s old.')
@@ -220,6 +232,7 @@ def _assess_market_snapshot_freshness(
         'window_label': window_label,
         'market_snapshot_age_seconds': market_snapshot_age_seconds,
         'missing_series_count': missing_series_count,
+        'stale_block_series_count': stale_block_series_count,
         'market_snapshot_state': state,
         'hard_blocker': hard_blocker,
         'summary': ' '.join(notes),

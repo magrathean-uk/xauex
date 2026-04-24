@@ -411,6 +411,22 @@
       line-height: 1.5;
       font-size: 14px;
     }
+    .window-list {
+      display: grid;
+      gap: 10px;
+      margin-top: 10px;
+    }
+    .window-item {
+      padding: 12px;
+      border-radius: 14px;
+      border: 1px solid var(--line);
+      background: rgba(24, 36, 58, 0.8);
+    }
+    .window-item strong {
+      display: block;
+      font-size: 13px;
+      margin-bottom: 4px;
+    }
     .status-dot {
       width: 10px;
       height: 10px;
@@ -500,6 +516,23 @@
         <div id="diagnostics-pills" class="diag-pills"></div>
         <div id="diagnostics-issues" class="diag-issues"></div>
         <div id="diagnostics-updated" class="subtle">-</div>
+      </div>
+
+      <div class="card span-6">
+        <div class="label">Live Windows</div>
+        <div id="live-windows" class="window-list">
+          <div class="muted-empty">Waiting for window status.</div>
+        </div>
+      </div>
+
+      <div class="card span-6">
+        <div class="label">Candidate Lane</div>
+        <div class="kv">
+          <div><strong>Total</strong><span id="candidate-total">-</span></div>
+          <div><strong>Completed</strong><span id="candidate-completed">-</span></div>
+          <div><strong>False-Negative Wins</strong><span id="candidate-wins">-</span></div>
+          <div><strong>Expectancy</strong><span id="candidate-expectancy">-</span></div>
+        </div>
       </div>
 
       <div class="card span-6 manual-locked" id="manual-trade-card">
@@ -669,6 +702,21 @@
       }).join("");
     };
 
+    const renderWindowStatuses = (windows) => {
+      if (!Array.isArray(windows) || windows.length === 0) {
+        return `<div class="muted-empty">No window status yet.</div>`;
+      }
+      return windows.map((window) => `
+        <div class="window-item">
+          <strong>${window.slot || "-"}</strong>
+          <div class="subtle">${window.description || ""}</div>
+          <div class="subtle">Signal ${window.signal_time_local || "-"} | Confirm ${window.confirm_time_local || "-"} | Entry ${window.entry_window_local || "-"}</div>
+          <div class="subtle">Confirm: ${window.confirm_status || "-"}${window.confirm_reason ? ` (${window.confirm_reason})` : ""}</div>
+          <div class="subtle">Outcome: ${window.outcome || "-"}</div>
+        </div>
+      `).join("");
+    };
+
     const renderChart = (chart, quote) => {
       const values = Array.isArray(chart?.recent_h1_closes) ? chart.recent_h1_closes.map(Number).filter((v) => Number.isFinite(v)) : [];
       const entries = Array.isArray(chart?.trade_entries) ? chart.trade_entries : [];
@@ -820,9 +868,9 @@
       document.getElementById("daily-pnl").textContent = fmtMoney(data.account.daily_pnl, ccy);
       document.getElementById("weekly-pnl").textContent = fmtMoney(data.account.weekly_pnl, ccy);
       const signalRuns = data.account.signal_runs_taken_today ?? 0;
-      const signalRunCap = data.account.signal_runs_cap ?? 2;
+      const signalRunCap = data.account.signal_runs_cap ?? 3;
       const tradesTaken = data.account.trades_taken_today ?? 0;
-      const tradeCap = data.account.trade_cap ?? 2;
+      const tradeCap = data.account.trade_cap ?? 3;
       document.getElementById("signal-runs-today").textContent = `${signalRuns}/${signalRunCap}`;
       document.getElementById("trades-taken-today").textContent = `${tradesTaken}/${tradeCap}`;
       document.getElementById("positions-count").textContent = data.health.positions_open ?? 0;
@@ -835,6 +883,12 @@
       document.getElementById("diagnostics-pills").innerHTML = renderDiagnosticsPills(diagnostics.components || {});
       document.getElementById("diagnostics-issues").innerHTML = renderDiagnosticsIssues(diagnostics.current_issues || []);
       document.getElementById("diagnostics-updated").textContent = `Diagnostics updated: ${diagnostics.generated_at_utc || "-"}`;
+      document.getElementById("live-windows").innerHTML = renderWindowStatuses(data.windows || []);
+      const candidate = data.candidate_metrics || {};
+      document.getElementById("candidate-total").textContent = candidate.total ?? 0;
+      document.getElementById("candidate-completed").textContent = candidate.completed ?? 0;
+      document.getElementById("candidate-wins").textContent = candidate.false_negative_wins ?? 0;
+      document.getElementById("candidate-expectancy").textContent = candidate.expectancy_usd != null ? `$${fmtNum(candidate.expectancy_usd)}` : "-";
       document.getElementById("brief-link").href = data.links.brief || "/brief";
       document.getElementById("brief-download-link").href = data.links.brief_download || "/brief/latest.md";
       document.getElementById("report-link").href = data.links.report || data.links.report_direct || "/report/direct";

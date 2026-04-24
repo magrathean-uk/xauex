@@ -222,3 +222,68 @@ def test_daily_report_includes_daily_cost_summary_and_budget_warning(monkeypatch
     assert result.subject == "XAUEX daily status OK"
     assert "- daily LLM cost: 0.1700 USD across 2 run(s)" in result.body
     assert "- budget warning: daily cost is at 85% of cap" in result.body
+
+
+def test_daily_report_downgrades_stale_signal_after_daily_signal_cap(monkeypatch):
+    report = _load_report_module()
+
+    dashboard = {
+        "data": {
+            "signal": {
+                "action": "SELL",
+                "confidence": 0.42,
+                "generated_at_utc": "2026-04-15T10:30:07Z",
+            },
+            "diagnostics": {
+                "overall_status": "blocked",
+                "summary": "Signal is stale after both scheduled signal windows have completed.",
+                "current_issues": [
+                    {
+                        "code": "SIGNAL_STALE",
+                        "component": "signal",
+                        "severity": "critical",
+                        "summary": "Signal is stale at 8715s old.",
+                        "next_action": "Run the signal pipeline to refresh the signal before the next trade window.",
+                    }
+                ],
+                "components": {
+                    "positions": {"xauex_open": 1, "manual_open": 0, "total_open": 1},
+                    "signal": {"state": "live", "action": "SELL"},
+                    "manual": {"state": "idle"},
+                    "quote": {"state": "live"},
+                },
+            },
+            "account": {
+                "signal_runs_taken_today": 2,
+                "signal_runs_cap": 2,
+                "trades_taken_today": 2,
+                "trade_cap": 2,
+            },
+        }
+    }
+    health = {"status": "ok", "bot_status": "RUNNING"}
+
+    monkeypatch.setattr(report, "_service_status", lambda unit: "active")
+    monkeypatch.setattr(report, "_fetch_json", lambda url: dashboard if "dashboard" in url else health)
+    monkeypatch.setattr(report, "_daily_cost_summary", lambda: {"total_cost_usd": 0.02, "daily_cap_usd": 0.20, "run_count": 2})
+
+    result = report._render_report()
+
+    assert result.ok is True
+    assert result.subject == "XAUEX daily status OK"
+    assert "- signal: Signal is stale at 8715s old." in result.body
+    assert "Checks:\n- none" in result.body
+
+
+def test_daily_report_monitors_shadow_trial_timers():
+    report = _load_report_module()
+
+    assert "xauex-window-signal@morning.timer" in report.SERVICES
+    assert "xauex-window-signal@midday.timer" in report.SERVICES
+    assert "xauex-window-signal@us_open.timer" in report.SERVICES
+    assert "xauex-window-confirm@morning.timer" in report.SERVICES
+    assert "xauex-window-confirm@midday.timer" in report.SERVICES
+    assert "xauex-window-confirm@us_open.timer" in report.SERVICES
+    assert "xauex-shadow-compare.timer" in report.SERVICES
+    assert "xauex-shadow-evaluate.timer" in report.SERVICES
+    assert "xauex-shadow-report.timer" in report.SERVICES

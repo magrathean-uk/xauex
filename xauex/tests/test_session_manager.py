@@ -26,8 +26,14 @@ from bot.risk.sizing import calculate_xauex_lot_size_from_cash_risk
 from bot.levels.htf_levels import HTFLevels
 
 build_xauex_initial_stop_distance = _MODULE.build_xauex_initial_stop_distance
+build_xauex_protect_stop_price = _MODULE.build_xauex_protect_stop_price
+build_xauex_assurance_profile = _MODULE.build_xauex_assurance_profile
+build_xauex_take_profit_distance = _MODULE.build_xauex_take_profit_distance
 advance_xauex_session_phase = _MODULE.advance_xauex_session_phase
 confirm_xauex_session_phase_transition = _MODULE.confirm_xauex_session_phase_transition
+build_xauex_confirm_decision = _MODULE.build_xauex_confirm_decision
+calculate_xauex_remaining_daily_loss_budget = _MODULE.calculate_xauex_remaining_daily_loss_budget
+BotOrchestrator = _MODULE.BotOrchestrator
 
 
 def test_load_config_includes_xauex_session_manager_settings(monkeypatch):
@@ -36,6 +42,9 @@ def test_load_config_includes_xauex_session_manager_settings(monkeypatch):
     monkeypatch.setenv("XAUEX_SESSION_TRAIL_R", "1.35")
     monkeypatch.setenv("XAUEX_SESSION_ATR_MULTIPLIER", "1.4")
     monkeypatch.setenv("XAUEX_SESSION_STRUCTURE_BUFFER_USD", "2.5")
+    monkeypatch.setenv("XAUEX_SESSION_PROTECT_LOCK_R", "0.30")
+    monkeypatch.setenv("XAUEX_SESSION_LOW_CONFIDENCE_PROTECT_LOCK_R", "0.35")
+    monkeypatch.setenv("XAUEX_SESSION_HIGH_CONFIDENCE_PROTECT_LOCK_R", "0.25")
     monkeypatch.setenv("XAUEX_MANUAL_COMMAND_PATH", "/tmp/manual_trade_cmd.json")
 
     cfg = load_config()
@@ -44,6 +53,9 @@ def test_load_config_includes_xauex_session_manager_settings(monkeypatch):
     assert cfg.xauex_session_trail_r == 1.35
     assert cfg.xauex_session_atr_multiplier == 1.4
     assert cfg.xauex_session_structure_buffer_usd == 2.5
+    assert cfg.xauex_session_protect_lock_r == 0.30
+    assert cfg.xauex_session_low_confidence_protect_lock_r == 0.35
+    assert cfg.xauex_session_high_confidence_protect_lock_r == 0.25
     assert cfg.xauex_manual_command_path == "/tmp/manual_trade_cmd.json"
 
 
@@ -174,6 +186,172 @@ def test_session_phase_promotion_allows_confirmed_profit_threshold():
     assert confirmed["phase"] == "TRAIL"
 
 
+def test_assurance_profile_blocks_low_confidence_validator_disagreement():
+    cfg = SimpleNamespace(
+        xauex_session_low_confidence_protect_r=0.7,
+        xauex_session_protect_r=0.85,
+        xauex_session_high_confidence_protect_r=1.0,
+        xauex_session_trail_r=1.35,
+        xauex_session_low_confidence_protect_lock_r=0.35,
+        xauex_session_protect_lock_r=0.30,
+        xauex_session_high_confidence_protect_lock_r=0.25,
+    )
+    signal = {
+        "action": "SELL",
+        "confidence": 0.42,
+        "consensus_state": "disagreed",
+        "validator_status": "reviewed",
+        "validator_summary": "The proposed SELL signal contradicts the overall BUY bias.",
+        "decision_packet": {
+            "input_freshness": {
+                "market_snapshot_state": "warning",
+                "hard_blocker": False,
+            }
+        },
+    }
+
+    profile = build_xauex_assurance_profile(signal, cfg)
+
+    assert profile.allow_trade is False
+    assert profile.risk_multiplier == 0.0
+    assert profile.reason == "LOW_ASSURANCE_VALIDATOR_DISAGREEMENT"
+
+
+def test_assurance_profile_allows_aligned_high_confidence_with_larger_target():
+    cfg = SimpleNamespace(
+        xauex_session_low_confidence_protect_r=0.7,
+        xauex_session_protect_r=0.85,
+        xauex_session_high_confidence_protect_r=1.0,
+        xauex_session_trail_r=1.35,
+        xauex_session_low_confidence_protect_lock_r=0.35,
+        xauex_session_protect_lock_r=0.30,
+        xauex_session_high_confidence_protect_lock_r=0.25,
+    )
+    signal = {
+        "action": "BUY",
+        "confidence": 0.74,
+        "consensus_state": "aligned",
+        "validator_status": "reviewed",
+        "validator_summary": "The proposed signal is well-supported.",
+        "decision_packet": {"input_freshness": {"market_snapshot_state": "fresh"}},
+    }
+
+    profile = build_xauex_assurance_profile(signal, cfg)
+
+    assert profile.allow_trade is True
+    assert profile.bucket == "high"
+    assert profile.risk_multiplier == 1.0
+    assert profile.target_rr == 2.5
+    assert profile.protect_lock_r == 0.25
+
+
+def test_take_profit_distance_expands_with_assurance_target():
+    profile = SimpleNamespace(target_rr=2.5)
+
+    distance = build_xauex_take_profit_distance(
+        signal_take_profit=30.0,
+        stop_distance=25.0,
+        assurance=profile,
+    )
+
+    assert distance == 62.5
+
+
+def test_protect_stop_locks_profit_in_r_not_fixed_one_dollar():
+    short_stop = build_xauex_protect_stop_price(
+        direction="SHORT",
+        entry_price=4812.84,
+        initial_risk_distance=25.0,
+        lock_r=0.25,
+        min_buffer_usd=1.0,
+    )
+    long_stop = build_xauex_protect_stop_price(
+        direction="LONG",
+        entry_price=4812.84,
+        initial_risk_distance=25.0,
+        lock_r=0.25,
+        min_buffer_usd=1.0,
+    )
+
+    assert short_stop == 4806.59
+    assert long_stop == 4819.09
+
+
+def test_confirm_decision_confirms_tradeable_directional_signal():
+    cfg = SimpleNamespace(
+        xauex_signal_max_age_seconds=300,
+        xauex_confirm_spread_max_dollars=1.0,
+    )
+    decision = build_xauex_confirm_decision(
+        signal={
+            "action": "BUY",
+            "timestamp_utc": "2026-04-15T07:55:10Z",
+            "decision_packet": {
+                "input_freshness": {
+                    "hard_blocker": False,
+                    "market_snapshot_state": "fresh",
+                }
+            },
+        },
+        now_utc=datetime(2026, 4, 15, 7, 59, 0, tzinfo=timezone.utc),
+        latest_quote={
+            "bid": 4782.2,
+            "ask": 4782.7,
+            "updated_at_utc": "2026-04-15T07:58:58Z",
+        },
+        news_gate={"clear": True, "reason": ""},
+        trend_snapshot={"alignment": "BULLISH"},
+        shadow_signal={"action": "BUY"},
+        config=cfg,
+    )
+
+    assert decision["status"] == "CONFIRMED"
+    assert decision["reason"] == "CONFIRMED"
+
+
+def test_confirm_decision_skips_when_microstructure_conflicts_with_signal():
+    cfg = SimpleNamespace(
+        xauex_signal_max_age_seconds=300,
+        xauex_confirm_spread_max_dollars=1.0,
+    )
+    decision = build_xauex_confirm_decision(
+        signal={
+            "action": "BUY",
+            "timestamp_utc": "2026-04-15T07:55:10Z",
+            "decision_packet": {
+                "input_freshness": {
+                    "hard_blocker": False,
+                    "market_snapshot_state": "fresh",
+                }
+            },
+        },
+        now_utc=datetime(2026, 4, 15, 7, 59, 0, tzinfo=timezone.utc),
+        latest_quote={
+            "bid": 4782.2,
+            "ask": 4782.7,
+            "updated_at_utc": "2026-04-15T07:58:58Z",
+        },
+        news_gate={"clear": True, "reason": ""},
+        trend_snapshot={"alignment": "BEARISH"},
+        shadow_signal={"action": "SELL"},
+        config=cfg,
+    )
+
+    assert decision["status"] == "SKIP"
+    assert decision["reason"] == "MICROSTRUCTURE_CONFLICT"
+
+
+def test_remaining_daily_loss_budget_accounts_for_realized_and_reserved_risk():
+    remaining = calculate_xauex_remaining_daily_loss_budget(
+        day_start_balance=10_000.0,
+        daily_stop_pct=2.0,
+        realized_daily_pnl=-70.0,
+        open_reserved_risk=50.0,
+    )
+
+    assert remaining == 80.0
+
+
 def test_structure_stop_distance_accepts_htflevels_container():
     orchestrator = _MODULE.BotOrchestrator.__new__(_MODULE.BotOrchestrator)
     orchestrator.config = SimpleNamespace(
@@ -203,3 +381,70 @@ def test_structure_stop_distance_accepts_htflevels_container():
     distance = orchestrator._xauex_structure_stop_distance(direction=-1, current_price=4725.0)
 
     assert distance == 17.5
+
+
+@pytest.mark.asyncio
+async def test_xauex_mode_refreshes_active_scalp_trend_context_on_candle_close():
+    orchestrator = BotOrchestrator.__new__(BotOrchestrator)
+    orchestrator.config = SimpleNamespace(
+        xauex_mode=True,
+        execution_timeframe="M5",
+        scalp_slow_ema_period=3,
+        scalp_atr_period=2,
+        scalp_pullback_lookback_bars=3,
+    )
+    orchestrator.active_strategy_mode = "SCALP_V1"
+    orchestrator.execution_timeframe = "M5"
+    orchestrator._strategy_data_status = {}
+    orchestrator._trend_snapshot = {"alignment": "BULLISH", "reason": "STARTUP_SNAPSHOT"}
+    orchestrator._recent_h1_closes = []
+    orchestrator._macro_regime = None
+    orchestrator._trade_policy = None
+    orchestrator.scalp_strategy = SimpleNamespace(
+        state_trend=lambda **_: {
+            "alignment": "BEARISH",
+            "reason": "REFRESHED",
+            "execution_timeframe": "M5",
+        }
+    )
+
+    async def fake_fetch_execution_bars(timeframe, count):
+        assert timeframe == "M5"
+        assert count > 0
+        return (
+            [
+                {"close": 4710.0},
+                {"close": 4705.0},
+                {"close": 4700.0},
+                {"close": 4695.0},
+                {"close": 4690.0},
+            ],
+            3,
+        )
+
+    async def fake_fetch_daily_closes():
+        return [4800.0 - idx for idx in range(30)]
+
+    orchestrator._fetch_execution_bars = fake_fetch_execution_bars
+    orchestrator._fetch_daily_closes = fake_fetch_daily_closes
+    orchestrator._aggregate_h1_closes_from_m5 = lambda bars: [4750.0 - idx for idx in range(210)]
+    orchestrator._load_macro_regime = lambda: {"state": "test"}
+    orchestrator._load_trade_policy = lambda: None
+
+    finalized = {"called": False}
+
+    async def fake_finalize():
+        finalized["called"] = True
+
+    orchestrator._finalize_candle = fake_finalize
+
+    await orchestrator._process_candle_close(
+        price=4690.0,
+        timestamp=datetime(2026, 4, 23, 12, 30, tzinfo=timezone.utc),
+    )
+
+    assert finalized["called"] is True
+    assert orchestrator._trend_snapshot["alignment"] == "BEARISH"
+    assert orchestrator._trend_snapshot["reason"] == "REFRESHED"
+    assert orchestrator._strategy_data_status["SCALP_V1"]["data_ready"] is True
+    assert orchestrator._strategy_data_status["SCALP_V1"]["reason"] == "OK"

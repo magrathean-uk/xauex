@@ -11,11 +11,12 @@ from typing import Any
 
 from xauex.signal.assets import AssetProfile
 from xauex.signal.config import SignalConfig
+from xauex.live_windows import get_live_window
+from xauex.shared.llm_client import create_chat_client
 
 logger = logging.getLogger(__name__)
 
 _TOKEN_PRICES_USD_PER_MILLION: dict[str, tuple[float, float]] = {
-    'deepseek-chat': (0.28, 0.42),
     'llama-3.1-8b-instant': (0.05, 0.08),
     'llama-3.3-70b-versatile': (0.59, 0.79),
     'openai/gpt-oss-20b': (0.075, 0.30),
@@ -31,9 +32,9 @@ def parse_signal(
     config: SignalConfig,
     prediction_payload: dict[str, Any] | None = None,
     window_label: str = 'current',
+    decision_mode: str | None = None,
 ) -> dict:
-    from openai import OpenAI
-
+    decision_mode = decision_mode or getattr(config, 'decision_mode', 'baseline') or 'baseline'
     decision_packet = _build_decision_packet(
         asset=asset,
         prediction_payload=prediction_payload or {},
@@ -41,7 +42,10 @@ def parse_signal(
         report_markdown=report_markdown,
         window_label=window_label,
     )
-    parser_client = OpenAI(api_key=config.parser_llm_api_key, base_url=config.parser_llm_base_url)
+    parser_client = create_chat_client(
+        api_key=config.parser_llm_api_key,
+        base_url=config.parser_llm_base_url,
+    )
 
     logger.info(
         '[PARSER] Calling %s for %s (%d chars report, %d actions)',
@@ -54,17 +58,29 @@ def parse_signal(
     if bool((decision_packet.get('input_freshness') or {}).get('hard_blocker')):
         reason = str((decision_packet.get('input_freshness') or {}).get('summary') or 'Structured inputs are not tradeable right now.')
         signal = _hold_signal(asset, reason)
+        signal['decision_mode'] = decision_mode
         signal['validator_status'] = 'skipped'
         signal['validator_summary'] = reason
         signal['consensus_state'] = 'blocked'
         signal['llm_usage'] = _combine_usage(provider=config.parser_llm_base_url, stages=[])
         signal['decision_packet'] = {
+            'decision_mode': decision_mode,
             'window_label': decision_packet['window_label'],
             'input_freshness': decision_packet['input_freshness'],
             'market_snapshot': decision_packet['market_snapshot'],
             'event_flags': decision_packet['event_flags'],
         }
         return signal
+
+    debate_usage: list[dict[str, Any]] = []
+    debate: dict[str, Any] | None = None
+    if decision_mode == 'analyst_debate':
+        debate, debate_usage = _build_analyst_debate(
+            asset=asset,
+            decision_packet=decision_packet,
+            config=config,
+        )
+        decision_packet = _enrich_decision_packet_with_debate(decision_packet, debate)
 
     response, parsed, parser_mode = _request_json_completion(
         client=parser_client,
@@ -83,6 +99,9 @@ def parse_signal(
 
     fallback = _fallback_direction(actions, report_markdown, parsed.get('reasoning'))
     signal = _normalize_signal(asset, parsed, fallback=fallback)
+    signal['decision_mode'] = decision_mode
+    if debate is not None:
+        signal['debate'] = debate
     parser_usage = _extract_usage(
         response,
         provider=config.parser_llm_base_url,
@@ -94,7 +113,10 @@ def parse_signal(
     validator_usage: dict[str, Any] | None = None
     validator_result: dict[str, Any] | None = None
     try:
-        validator_client = OpenAI(api_key=config.validator_llm_api_key, base_url=config.validator_llm_base_url)
+        validator_client = create_chat_client(
+            api_key=config.validator_llm_api_key,
+            base_url=config.validator_llm_base_url,
+        )
         validator_response, validator_result, validator_mode = _request_json_completion(
             client=validator_client,
             model=config.validator_llm_model,
@@ -126,14 +148,17 @@ def parse_signal(
 
     signal['llm_usage'] = _combine_usage(
         provider=config.parser_llm_base_url,
-        stages=[stage for stage in [parser_usage, validator_usage] if stage],
+        stages=[stage for stage in [*debate_usage, parser_usage, validator_usage] if stage],
     )
     signal['decision_packet'] = {
+        'decision_mode': decision_mode,
         'window_label': decision_packet['window_label'],
         'input_freshness': decision_packet['input_freshness'],
         'market_snapshot': decision_packet['market_snapshot'],
         'event_flags': decision_packet['event_flags'],
     }
+    if debate is not None:
+        signal['decision_packet']['debate'] = debate
     return signal
 
 
@@ -366,7 +391,7 @@ def _request_json_completion(
 
 
 def _system_prompt(asset: AssetProfile) -> str:
-    return f"""You are a London-session trading signal analyst.
+    return f"""You are a window-aware intraday trading signal analyst for XAUEX.
 
 {asset.parser_brief}
 
@@ -387,7 +412,7 @@ Rules:
 - Distances must be expressed in {asset.distance_unit}.
 - stop_loss_distance must stay inside [{asset.min_stop_loss_distance}, {asset.max_stop_loss_distance}].
 - take_profit_distance should be between {asset.min_take_profit_rr}x and {asset.max_take_profit_rr}x the stop loss.
-- Decide only for the current London decision window. Do not assume this is the only trade window of the day.
+- Decide only for the current decision window. Do not assume this is the only trade window of the day.
 - Focus on the expected net move for the current decision window, not a multi-day swing.
 - Make the answer decisive and tradeable."""
 
@@ -416,6 +441,7 @@ def _parser_user_prompt(asset: AssetProfile, packet: dict[str, Any]) -> str:
         f'Asset: {asset.symbol}\n'
         f'Asset class: {asset.asset_class}\n'
         f'Current decision window: {packet["window_label"]}\n\n'
+        f'Session profile:\n{json.dumps(packet.get("session_profile") or {}, indent=2, sort_keys=True)}\n\n'
         'Decision packet:\n'
         f'{json.dumps(packet, indent=2, sort_keys=True)}\n\n'
         f'Based on the current decision window, what is the best directional signal for {asset.symbol}?'
@@ -512,6 +538,146 @@ def _validator_response_schema() -> dict[str, Any]:
     }
 
 
+def _analyst_case_response_schema() -> dict[str, Any]:
+    return {
+        'name': 'xauex_analyst_case',
+        'strict': True,
+        'schema': {
+            'type': 'object',
+            'properties': {
+                'stance': {
+                    'type': 'string',
+                    'enum': ['BULL', 'BEAR'],
+                },
+                'summary': {
+                    'type': 'string',
+                    'minLength': 1,
+                    'maxLength': 280,
+                },
+                'key_points': {
+                    'type': 'array',
+                    'items': {'type': 'string', 'minLength': 1, 'maxLength': 180},
+                    'minItems': 1,
+                    'maxItems': 3,
+                },
+                'risk_flags': {
+                    'type': 'array',
+                    'items': {'type': 'string', 'minLength': 1, 'maxLength': 180},
+                    'maxItems': 4,
+                },
+            },
+            'required': ['stance', 'summary', 'key_points', 'risk_flags'],
+            'additionalProperties': False,
+        },
+    }
+
+
+def _build_analyst_debate(
+    *,
+    asset: AssetProfile,
+    decision_packet: dict[str, Any],
+    config: SignalConfig,
+    client_factory: Any | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    if client_factory is None:
+        factory = create_chat_client
+    else:
+        factory = client_factory
+    client = factory(
+        api_key=config.parser_llm_api_key,
+        base_url=config.parser_llm_base_url,
+    )
+    debate = {
+        'mode': 'analyst_debate',
+        'degraded': False,
+        'summary': 'Bull and bear analyst cases were generated from the same XAUEX packet.',
+        'bull_case': {'status': 'pending'},
+        'bear_case': {'status': 'pending'},
+    }
+    usage_stages: list[dict[str, Any]] = []
+    failures = 0
+    for stance, stage_name in (('BULL', 'bull_case'), ('BEAR', 'bear_case')):
+        response, parsed, response_mode = _request_json_completion(
+            client=client,
+            model=config.debate_analyst_model,
+            messages=[
+                {'role': 'system', 'content': _analyst_case_system_prompt(asset=asset, stance=stance)},
+                {'role': 'user', 'content': _analyst_case_user_prompt(asset=asset, decision_packet=decision_packet, stance=stance)},
+            ],
+            temperature=0.1,
+            max_tokens=220,
+            response_schema=_analyst_case_response_schema(),
+        )
+        if parsed is None or response is None:
+            debate[stage_name] = {
+                'status': 'unavailable',
+                'stance': stance,
+            }
+            failures += 1
+            continue
+        case = {
+            'status': 'available',
+            'stance': stance,
+            'summary': str(parsed.get('summary') or '').strip()[:280],
+            'key_points': [str(item).strip()[:180] for item in parsed.get('key_points') or [] if str(item).strip()][:3],
+            'risk_flags': [str(item).strip()[:180] for item in parsed.get('risk_flags') or [] if str(item).strip()][:4],
+        }
+        debate[stage_name] = case
+        stage_usage = _extract_usage(
+            response,
+            provider=config.parser_llm_base_url,
+            model=config.debate_analyst_model,
+            stage=stage_name,
+        )
+        stage_usage['response_mode'] = response_mode
+        usage_stages.append(stage_usage)
+    if failures:
+        debate['degraded'] = True
+        debate['summary'] = 'Analyst debate degraded; baseline decision packet remains authoritative.'
+    return debate, usage_stages
+
+
+def _enrich_decision_packet_with_debate(
+    packet: dict[str, Any],
+    debate: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if not debate or bool(debate.get('degraded')):
+        return dict(packet)
+    enriched = dict(packet)
+    enriched['debate'] = debate
+    return enriched
+
+
+def _analyst_case_system_prompt(*, asset: AssetProfile, stance: str) -> str:
+    stance_line = 'bullish' if stance == 'BULL' else 'bearish'
+    return f"""You are the {stance_line} analyst for an XAUEX {asset.symbol} decision window.
+
+Respond ONLY with valid JSON and no markdown fencing.
+Use this schema:
+{{
+  "stance": "{stance}",
+  "summary": "one concise thesis sentence",
+  "key_points": ["point 1", "point 2"],
+  "risk_flags": ["risk 1"]
+}}
+
+Rules:
+- Argue only the {stance_line} case from the provided decision packet.
+- Be concise and operational.
+- Do not mention being an AI or provide balanced conclusions.
+- Keep key_points to at most 3 and risk_flags to at most 4."""
+
+
+def _analyst_case_user_prompt(*, asset: AssetProfile, decision_packet: dict[str, Any], stance: str) -> str:
+    return (
+        f'Asset: {asset.symbol}\n'
+        f'Required stance: {stance}\n\n'
+        'Decision packet:\n'
+        f'{json.dumps(decision_packet, indent=2, sort_keys=True)}\n\n'
+        f'Build the strongest {stance} thesis from this packet only.'
+    )
+
+
 def _build_feature_snapshot(actions: list, report_markdown: str) -> str:
     fallback = _fallback_direction(actions, report_markdown, None)
     action_count = len(actions)
@@ -541,7 +707,9 @@ def _build_decision_packet(
     actions: list,
     report_markdown: str,
     window_label: str,
+    debate: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    window = get_live_window(window_label=window_label)
     fallback = _fallback_direction(actions, report_markdown, None)
     top_context_items = []
     for item in prediction_payload.get('context_items', [])[:6]:
@@ -552,10 +720,22 @@ def _build_decision_packet(
             'title': str(item.get('title', '') or '')[:180],
             'summary': str(item.get('summary', '') or '')[:280],
         })
-    return {
+    packet = {
         'asset': asset.symbol,
         'asset_class': asset.asset_class,
         'window_label': window_label,
+        'session_profile': (
+            window.session_profile()
+            if window is not None
+            else {
+                'slot': 'CURRENT',
+                'window_label': window_label,
+                'timezone': 'Europe/London',
+                'description': 'General XAUEX context outside the named live windows.',
+                'holding_horizon': 'Immediate decision support only.',
+                'dominant_drivers': ['price action', 'macro context'],
+            }
+        ),
         'fallback_bias': fallback,
         'price_features': prediction_payload.get('price_features', {}),
         'memory_summary': prediction_payload.get('memory_summary', {}),
@@ -566,6 +746,7 @@ def _build_decision_packet(
         'recent_actions': _summarize_actions(actions)[:2200],
         'report_excerpt': report_markdown[:6000],
     }
+    return _enrich_decision_packet_with_debate(packet, debate)
 
 
 def _apply_validator_result(

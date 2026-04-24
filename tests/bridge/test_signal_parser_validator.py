@@ -1,7 +1,10 @@
 from xauex.signal.assets import resolve_asset
+from xauex.signal.config import SignalConfig
 from xauex.signal.signal_parser import (
     _apply_validator_result,
+    _build_analyst_debate,
     _build_decision_packet,
+    _enrich_decision_packet_with_debate,
     _model_completion_options,
     _request_json_completion,
 )
@@ -43,6 +46,30 @@ def test_build_decision_packet_prefers_structured_inputs():
     assert packet["market_snapshot"]["series"]["us10y_yield"]["bias"] == "SELL"
     assert packet["top_context_items"][0]["tier"] == 1
     assert "Rates up, USD firm, gold pressured." in packet["report_excerpt"]
+
+
+def test_build_decision_packet_includes_us_open_session_profile():
+    asset = resolve_asset("XAUUSD")
+
+    packet = _build_decision_packet(
+        asset=asset,
+        prediction_payload={
+            "price_features": {"price_bias": "BUY"},
+            "memory_summary": {"trade_count": 1},
+            "market_snapshot": {"series": {}},
+            "event_flags": {"fed_event_recent": False},
+            "input_freshness": {"market_snapshot_state": "fresh"},
+            "context_items": [],
+        },
+        actions=[{"agent_name": "price_structure", "action_type": "BUY", "content": "breakout"}],
+        report_markdown="# Report\nGold often reacts sharply into the US cash open.",
+        window_label="us_open",
+    )
+
+    assert packet["window_label"] == "us_open"
+    assert packet["session_profile"]["timezone"] == "America/New_York"
+    assert "US open" in packet["session_profile"]["description"]
+    assert "US rates" in " ".join(packet["session_profile"]["dominant_drivers"])
 
 
 def test_validator_disagreement_downgrades_confidence_without_forcing_hold():
@@ -208,3 +235,148 @@ def test_request_json_completion_retries_with_json_object_mode_after_invalid_str
     assert client.chat.completions.calls[1]["response_format"]["type"] == "json_object"
     assert client.chat.completions.calls[0]["max_completion_tokens"] == 700
     assert client.chat.completions.calls[0]["extra_body"]["include_reasoning"] is False
+
+
+def test_build_analyst_debate_returns_bull_and_bear_cases(monkeypatch):
+    monkeypatch.setenv("XAUEX_SIGNAL_LLM_API_KEY", "test-key")
+    cfg = SignalConfig.from_env()
+    asset = resolve_asset("XAUUSD")
+    packet = _build_decision_packet(
+        asset=asset,
+        prediction_payload={
+            "price_features": {"price_bias": "SELL", "momentum_3": -2.4},
+            "memory_summary": {"trade_count": 3, "net_pnl": 55.0, "notes": ["Recent shorts worked."]},
+            "market_snapshot": {"series": {"usd_broad_index": {"value": 121.0, "bias": "SELL"}}},
+            "event_flags": {"fed_event_recent": False},
+            "input_freshness": {"market_snapshot_state": "fresh"},
+            "context_items": [],
+        },
+        actions=[{"agent_name": "price_structure", "action_type": "SELL", "content": "momentum negative"}],
+        report_markdown="# Report\nRates firm, gold pressured.",
+        window_label="morning",
+    )
+
+    class _Usage:
+        prompt_tokens = 200
+        completion_tokens = 40
+        total_tokens = 240
+
+    class _Message:
+        def __init__(self, content):
+            self.content = content
+
+    class _Choice:
+        def __init__(self, content):
+            self.message = _Message(content)
+
+    class _Response:
+        def __init__(self, content):
+            self.choices = [_Choice(content)]
+            self.usage = _Usage()
+
+    class _Completions:
+        def __init__(self):
+            self.calls = []
+
+        def create(self, **kwargs):
+            self.calls.append(kwargs)
+            if len(self.calls) == 1:
+                return _Response('{"stance":"BULL","summary":"Gold could bounce if yields fade.","key_points":["Yields may soften","Gold held support"],"risk_flags":["USD strength persists"]}')
+            return _Response('{"stance":"BEAR","summary":"USD strength and yields still pressure gold.","key_points":["Dollar is firm","Momentum remains negative"],"risk_flags":["Short squeeze risk"]}')
+
+    class _Client:
+        def __init__(self):
+            self.chat = type("Chat", (), {"completions": _Completions()})()
+
+    debate, usage = _build_analyst_debate(
+        asset=asset,
+        decision_packet=packet,
+        config=cfg,
+        client_factory=lambda **_: _Client(),
+    )
+
+    assert debate["mode"] == "analyst_debate"
+    assert debate["degraded"] is False
+    assert debate["bull_case"]["summary"] == "Gold could bounce if yields fade."
+    assert debate["bear_case"]["summary"] == "USD strength and yields still pressure gold."
+    assert [stage["stage"] for stage in usage] == ["bull_case", "bear_case"]
+
+
+def test_build_analyst_debate_degrades_when_a_side_fails(monkeypatch):
+    monkeypatch.setenv("XAUEX_SIGNAL_LLM_API_KEY", "test-key")
+    cfg = SignalConfig.from_env()
+    asset = resolve_asset("XAUUSD")
+    packet = _build_decision_packet(
+        asset=asset,
+        prediction_payload={"price_features": {}, "memory_summary": {}, "market_snapshot": {}, "event_flags": {}, "input_freshness": {}, "context_items": []},
+        actions=[],
+        report_markdown="# Report\nMixed.",
+        window_label="midday",
+    )
+
+    class _Usage:
+        prompt_tokens = 150
+        completion_tokens = 20
+        total_tokens = 170
+
+    class _Message:
+        def __init__(self, content):
+            self.content = content
+
+    class _Choice:
+        def __init__(self, content):
+            self.message = _Message(content)
+
+    class _Response:
+        def __init__(self, content):
+            self.choices = [_Choice(content)]
+            self.usage = _Usage()
+
+    class _Completions:
+        def __init__(self):
+            self.calls = []
+
+        def create(self, **kwargs):
+            self.calls.append(kwargs)
+            if len(self.calls) == 1:
+                return _Response('{"stance":"BULL","summary":"Gold may rebound on softer yields.","key_points":["Yield pullback possible"],"risk_flags":["USD still firm"]}')
+            return _Response("not valid json")
+
+    class _Client:
+        def __init__(self):
+            self.chat = type("Chat", (), {"completions": _Completions()})()
+
+    debate, usage = _build_analyst_debate(
+        asset=asset,
+        decision_packet=packet,
+        config=cfg,
+        client_factory=lambda **_: _Client(),
+    )
+
+    assert debate["degraded"] is True
+    assert debate["bull_case"]["summary"] == "Gold may rebound on softer yields."
+    assert debate["bear_case"]["status"] == "unavailable"
+    assert debate["summary"] == "Analyst debate degraded; baseline decision packet remains authoritative."
+    assert [stage["stage"] for stage in usage] == ["bull_case"]
+
+
+def test_degraded_analyst_debate_does_not_modify_parser_packet():
+    asset = resolve_asset("XAUUSD")
+    packet = _build_decision_packet(
+        asset=asset,
+        prediction_payload={"price_features": {}, "memory_summary": {}, "market_snapshot": {}, "event_flags": {}, "input_freshness": {}, "context_items": []},
+        actions=[],
+        report_markdown="# Report\nMixed.",
+        window_label="current",
+    )
+
+    enriched = _enrich_decision_packet_with_debate(
+        packet,
+        {
+            "mode": "analyst_debate",
+            "degraded": True,
+            "summary": "Analyst debate degraded; baseline decision packet remains authoritative.",
+        },
+    )
+
+    assert "debate" not in enriched

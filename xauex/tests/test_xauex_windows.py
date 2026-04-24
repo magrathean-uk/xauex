@@ -32,7 +32,7 @@ def _build_orchestrator() -> object:
         xauex_entry_end_london="08:05",
         xauex_entry_second_start_london="11:30",
         xauex_entry_second_end_london="11:35",
-        xauex_max_trades_per_day=2,
+        xauex_max_trades_per_day=3,
     )
     orchestrator.risk_state = RiskState()
     orchestrator.risk_state.xauex_signal_runs_london = []
@@ -52,7 +52,7 @@ def _read_ops_file(name: str) -> str:
     return (REPO_ROOT / "ops" / name).read_text(encoding="utf-8")
 
 
-def test_entry_slot_selection_includes_morning_and_midday_windows():
+def test_entry_slot_selection_includes_morning_midday_and_us_open_windows():
     orch = _build_orchestrator()
 
     assert orch._xauex_entry_slot(_dt("2026-04-07T07:59")) is None
@@ -62,6 +62,18 @@ def test_entry_slot_selection_includes_morning_and_midday_windows():
     assert orch._xauex_entry_slot(_dt("2026-04-07T11:27")) is None
     assert orch._xauex_entry_slot(_dt("2026-04-07T11:32")) == "MIDDAY"
     assert orch._xauex_entry_slot(_dt("2026-04-07T11:40")) is None
+
+    assert orch._xauex_entry_slot(datetime(2026, 4, 7, 12, 27, tzinfo=timezone.utc)) is None
+    assert orch._xauex_entry_slot(datetime(2026, 4, 7, 12, 32, tzinfo=timezone.utc)) == "US_OPEN"
+    assert orch._xauex_entry_slot(datetime(2026, 4, 7, 12, 40, tzinfo=timezone.utc)) is None
+
+
+def test_us_open_slot_handles_new_york_dst_without_breaking_london_day_count():
+    orch = _build_orchestrator()
+    now = datetime(2026, 11, 3, 13, 32, tzinfo=timezone.utc)
+
+    assert orch._xauex_entry_slot(now) == "US_OPEN"
+    assert orch._today_london(now) == "2026-11-03"
 
 
 def test_weekends_are_not_tradable():
@@ -104,6 +116,28 @@ def test_second_slot_is_still_available_if_morning_slot_was_used():
     )
     assert orch._has_run_slot_been_used_today("MIDDAY", now_utc=now) is True
     assert len(orch.risk_state.xauex_signal_runs_london) == 2
+
+
+def test_third_slot_is_still_available_if_morning_and_midday_were_used():
+    orch = _build_orchestrator()
+    now = _dt("2026-04-07T11:32")
+
+    orch._record_xauex_signal_run(
+        slot="MORNING",
+        signal_id="run-1",
+        action="HOLD",
+        signal_time=_dt("2026-04-07T08:02"),
+    )
+    orch._record_xauex_signal_run(
+        slot="MIDDAY",
+        signal_id="run-2",
+        action="HOLD",
+        signal_time=now,
+    )
+
+    assert orch._has_run_slot_been_used_today("MORNING", now_utc=now) is True
+    assert orch._has_run_slot_been_used_today("MIDDAY", now_utc=now) is True
+    assert orch._has_run_slot_been_used_today("US_OPEN", now_utc=now) is False
 
 
 def test_non_terminal_reasons_do_not_block_slot():
@@ -211,17 +245,31 @@ def test_trade_entries_on_chart_are_capped_to_recent_window():
 
 def test_live_timers_catch_up_after_restarts_and_run_after_force_flat():
     start_timer = _read_ops_file("xauex-start.timer")
-    signal_timer = _read_ops_file("xauex-signal.timer")
+    signal_template = _read_ops_file("xauex-window-signal@.timer")
+    confirm_template = _read_ops_file("xauex-window-confirm@.timer")
     stop_timer = _read_ops_file("xauex-stop.timer")
     journal_timer = _read_ops_file("xauex-trade-journal.timer")
     review_timer = _read_ops_file("xauex-weekly-review.timer")
+    install_script = _read_ops_file("install_systemd.sh")
 
     assert "Persistent=true" in start_timer
     assert "OnCalendar=Mon-Fri *-*-* 07:25:00 Europe/London" in start_timer
 
-    assert "Persistent=true" in signal_timer
-    assert "OnCalendar=Mon-Fri *-*-* 08:00:00 Europe/London" in signal_timer
-    assert "OnCalendar=Mon-Fri *-*-* 11:30:00 Europe/London" in signal_timer
+    assert signal_template.count("OnCalendar=") == 1
+    assert "OnCalendar=__ON_CALENDAR__" in signal_template
+    assert "Unit=xauex-window-signal@__WINDOW_LABEL__.service" in signal_template
+
+    assert confirm_template.count("OnCalendar=") == 1
+    assert "OnCalendar=__ON_CALENDAR__" in confirm_template
+    assert "Unit=xauex-window-confirm@__WINDOW_LABEL__.service" in confirm_template
+
+    assert "xauex-window-signal@morning.timer" in install_script
+    assert "xauex-window-signal@midday.timer" in install_script
+    assert "xauex-window-signal@us_open.timer" in install_script
+    assert "xauex-window-confirm@morning.timer" in install_script
+    assert "xauex-window-confirm@midday.timer" in install_script
+    assert "xauex-window-confirm@us_open.timer" in install_script
+    assert "xauex.live_windows" in install_script
 
     assert "Persistent=true" in stop_timer
     assert "OnCalendar=Fri *-*-* 15:06:00 Europe/London" in stop_timer
@@ -242,7 +290,7 @@ def test_xauex_web_service_uses_repo_placeholders_instead_of_local_user():
     assert "EnvironmentFile=__REPO_ROOT__/xauex/.env" in service
     assert "User=bolyki" not in service
 
-    assert 'ORACLE_DASHBOARD_HOST="${ORACLE_DASHBOARD_HOST:-0.0.0.0}"' in script
+    assert 'ORACLE_DASHBOARD_HOST="${ORACLE_DASHBOARD_HOST:-127.0.0.1}"' in script
     assert 'ORACLE_DASHBOARD_PORT="${ORACLE_DASHBOARD_PORT:-8089}"' in script
 
 
@@ -251,3 +299,22 @@ def test_signal_service_runs_without_legacy_backend_requirement():
 
     assert "After=network-online.target xauex.service" in service
     assert "Requires=xauex.service" in service
+
+
+def test_logrotate_policy_stays_root_for_systemd_append_logs():
+    policy = _read_ops_file("logrotate-xauex.conf")
+
+    assert "/var/log/xauex/*.log {" in policy
+    assert "__REPO_ROOT__/logs/*.log {" in policy
+    assert "copytruncate" in policy
+    assert policy.count("su __RUN_USER__ __RUN_USER__") == 1
+    assert policy.index("/var/log/xauex/*.log {") < policy.index("su __RUN_USER__ __RUN_USER__")
+    assert policy.index("__REPO_ROOT__/logs/*.log {") > policy.index("su __RUN_USER__ __RUN_USER__")
+
+
+def test_install_systemd_only_restarts_xauex_when_runtime_changed():
+    script = _read_ops_file("install_systemd.sh")
+
+    assert "XAUEX_RUNTIME_CHANGED=0" in script
+    assert 'if [[ "$XAUEX_RUNTIME_CHANGED" -eq 1 ]]; then' in script
+    assert "systemctl restart xauex.service" in script

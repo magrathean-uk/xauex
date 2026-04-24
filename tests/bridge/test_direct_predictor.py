@@ -115,6 +115,32 @@ def test_build_prediction_payload_includes_market_snapshot_and_input_freshness()
     assert "FedWatch Snapshot" in report
 
 
+def test_build_prediction_payload_includes_latest_quote_snapshot():
+    asset = resolve_asset("XAUUSD")
+    payload = build_prediction_payload(
+        asset=asset,
+        context_markdown="# Context\nFresh quote matters.",
+        recent_runs=[],
+        state_snapshot={
+            "recent_h1_closes": [10, 11, 12, 13],
+            "levels": {"daily": {"low": 9, "high": 15}},
+            "runtime": {
+                "latest_quote": {
+                    "bid": 4781.12,
+                    "ask": 4781.48,
+                    "mid": 4781.30,
+                    "updated_at_utc": "2026-04-15T07:00:05Z",
+                }
+            },
+        },
+    )
+
+    assert payload["price_features"]["current_bid"] == 4781.12
+    assert payload["price_features"]["current_ask"] == 4781.48
+    assert payload["price_features"]["current_mid"] == 4781.30
+    assert payload["price_features"]["quote_updated_at_utc"] == "2026-04-15T07:00:05Z"
+
+
 def test_render_direct_report_preserves_fresh_context_structure():
     asset = resolve_asset("XAUUSD")
     payload = build_prediction_payload(

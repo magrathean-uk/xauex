@@ -2,8 +2,9 @@
 Description=XAUEX Signal Refresh Timer
 
 [Timer]
-OnCalendar=Mon-Fri *-*-* 08:00:00 Europe/London
-OnCalendar=Mon-Fri *-*-* 11:30:00 Europe/London
+OnCalendar=Mon-Fri *-*-* 07:55:00 Europe/London
+OnCalendar=Mon-Fri *-*-* 11:25:00 Europe/London
+OnCalendar=Mon-Fri *-*-* 08:25:00 America/New_York
 Persistent=true
 Unit=xauex-signal.service
 

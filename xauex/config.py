@@ -86,6 +86,7 @@ class Config:
     xauex_cash_take_profit_gbp: float
     xauex_cash_stop_loss_gbp: float
     xauex_risk_cap_percent: float
+    xauex_confirm_spread_max_dollars: float
     xauex_confidence_full_threshold: float
     xauex_confidence_medium_threshold: float
     xauex_medium_confidence_lot_multiplier: float
@@ -95,6 +96,9 @@ class Config:
     xauex_session_atr_multiplier: float
     xauex_session_structure_buffer_usd: float
     xauex_session_protect_buffer_usd: float
+    xauex_session_protect_lock_r: float
+    xauex_session_low_confidence_protect_lock_r: float
+    xauex_session_high_confidence_protect_lock_r: float
     xauex_session_low_confidence_protect_r: float
     xauex_session_high_confidence_protect_r: float
     xauex_manual_command_path: str
@@ -334,7 +338,7 @@ def load_config(env_file: str = ".env") -> Config:
         "XAUEX_MAX_TRADES_PER_DAY",
         1,
         5,
-        int(os.getenv("MIROFISH_MAX_TRADES_PER_DAY", "2")),
+        int(os.getenv("MIROFISH_MAX_TRADES_PER_DAY", "3")),
     )
     xauex_cash_take_profit_gbp = collect(
         _float_range,
@@ -355,7 +359,14 @@ def load_config(env_file: str = ".env") -> Config:
         "XAUEX_RISK_CAP_PERCENT",
         0.1,
         10.0,
-        float(os.getenv("MIROFISH_RISK_CAP_PERCENT", "1.5")),
+        float(os.getenv("MIROFISH_RISK_CAP_PERCENT", "1.0")),
+    )
+    xauex_confirm_spread_max_dollars = collect(
+        _float_range,
+        "XAUEX_CONFIRM_SPREAD_MAX_DOLLARS",
+        0.05,
+        10.0,
+        float(os.getenv("MIROFISH_CONFIRM_SPREAD_MAX_DOLLARS", os.getenv("SCALP_SPREAD_MAX_DOLLARS", "1.0"))),
     )
     xauex_confidence_full_threshold = collect(
         _float_range,
@@ -419,6 +430,27 @@ def load_config(env_file: str = ".env") -> Config:
         0.1,
         20.0,
         float(os.getenv("MIROFISH_SESSION_PROTECT_BUFFER_USD", "1.0")),
+    )
+    xauex_session_protect_lock_r = collect(
+        _float_range,
+        "XAUEX_SESSION_PROTECT_LOCK_R",
+        0.0,
+        2.0,
+        float(os.getenv("MIROFISH_SESSION_PROTECT_LOCK_R", "0.30")),
+    )
+    xauex_session_low_confidence_protect_lock_r = collect(
+        _float_range,
+        "XAUEX_SESSION_LOW_CONFIDENCE_PROTECT_LOCK_R",
+        0.0,
+        2.0,
+        float(os.getenv("MIROFISH_SESSION_LOW_CONFIDENCE_PROTECT_LOCK_R", "0.35")),
+    )
+    xauex_session_high_confidence_protect_lock_r = collect(
+        _float_range,
+        "XAUEX_SESSION_HIGH_CONFIDENCE_PROTECT_LOCK_R",
+        0.0,
+        2.0,
+        float(os.getenv("MIROFISH_SESSION_HIGH_CONFIDENCE_PROTECT_LOCK_R", "0.25")),
     )
     xauex_session_low_confidence_protect_r = collect(
         _float_range,
@@ -640,6 +672,7 @@ def load_config(env_file: str = ".env") -> Config:
         xauex_cash_take_profit_gbp=xauex_cash_take_profit_gbp,
         xauex_cash_stop_loss_gbp=xauex_cash_stop_loss_gbp,
         xauex_risk_cap_percent=xauex_risk_cap_percent,
+        xauex_confirm_spread_max_dollars=xauex_confirm_spread_max_dollars,
         xauex_confidence_full_threshold=xauex_confidence_full_threshold,
         xauex_confidence_medium_threshold=xauex_confidence_medium_threshold,
         xauex_medium_confidence_lot_multiplier=xauex_medium_confidence_lot_multiplier,
@@ -649,6 +682,9 @@ def load_config(env_file: str = ".env") -> Config:
         xauex_session_atr_multiplier=xauex_session_atr_multiplier,
         xauex_session_structure_buffer_usd=xauex_session_structure_buffer_usd,
         xauex_session_protect_buffer_usd=xauex_session_protect_buffer_usd,
+        xauex_session_protect_lock_r=xauex_session_protect_lock_r,
+        xauex_session_low_confidence_protect_lock_r=xauex_session_low_confidence_protect_lock_r,
+        xauex_session_high_confidence_protect_lock_r=xauex_session_high_confidence_protect_lock_r,
         xauex_session_low_confidence_protect_r=xauex_session_low_confidence_protect_r,
         xauex_session_high_confidence_protect_r=xauex_session_high_confidence_protect_r,
         xauex_manual_command_path=xauex_manual_command_path,

@@ -42,3 +42,15 @@ def test_call_llm_uses_openai_compatible_client(monkeypatch):
     assert captured["base_url"] == "https://api.example.test/v1"
     assert captured["create_kwargs"]["model"] == "test-model"
     assert captured["create_kwargs"]["messages"][1]["content"] == "hello analyst"
+
+
+def test_resolve_llm_settings_defaults_to_groq_base_url(monkeypatch):
+    monkeypatch.setenv("XAUEX_ANALYST_API_KEY", "test-key")
+    monkeypatch.delenv("XAUEX_ANALYST_BASE_URL", raising=False)
+    monkeypatch.delenv("XAUEX_SIGNAL_LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("XAUEX_SIGNAL_PARSER_LLM_BASE_URL", raising=False)
+
+    _, base_url, _ = _utils._resolve_llm_settings()
+
+    assert base_url == "https://api.groq.com/openai/v1"

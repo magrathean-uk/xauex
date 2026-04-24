@@ -52,15 +52,27 @@ def test_signal_config_disables_qdrant_memory_by_default(monkeypatch):
 
 def test_signal_config_exposes_validator_and_budget_defaults(monkeypatch):
     monkeypatch.setenv("XAUEX_SIGNAL_LLM_API_KEY", "test-key")
+    monkeypatch.delenv("XAUEX_SIGNAL_LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("XAUEX_SIGNAL_LLM_MODEL", raising=False)
+    monkeypatch.delenv("LLM_MODEL_NAME", raising=False)
     monkeypatch.delenv("XAUEX_SIGNAL_PARSER_LLM_MODEL", raising=False)
     monkeypatch.delenv("XAUEX_SIGNAL_VALIDATOR_LLM_MODEL", raising=False)
     monkeypatch.delenv("XAUEX_SIGNAL_BRIEF_LLM_MODEL", raising=False)
+    monkeypatch.delenv("XAUEX_SIGNAL_DECISION_MODE", raising=False)
+    monkeypatch.delenv("XAUEX_SIGNAL_DEBATE_ANALYST_MODEL", raising=False)
+    monkeypatch.delenv("XAUEX_SIGNAL_ARCHIVE_DIR", raising=False)
 
     cfg = SignalConfig.from_env()
 
+    assert cfg.llm_base_url == "https://api.groq.com/openai/v1"
+    assert cfg.llm_model == "llama-3.1-8b-instant"
     assert cfg.parser_llm_model == "openai/gpt-oss-120b"
     assert cfg.validator_llm_model == "llama-3.3-70b-versatile"
     assert cfg.brief_llm_model == "llama-3.1-8b-instant"
+    assert cfg.decision_mode == "baseline"
+    assert cfg.debate_analyst_model == "llama-3.1-8b-instant"
+    assert cfg.archive_dir == "/var/lib/xauex/signal_runs"
     assert cfg.daily_cost_cap_usd > 0
 
 

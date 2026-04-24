@@ -1,0 +1,12 @@
+[Unit]
+Description=XAUEX Shadow Evaluate Timer
+
+[Timer]
+OnCalendar=Mon-Fri *-*-* 10:15:00 Europe/London
+OnCalendar=Mon-Fri *-*-* 13:45:00 Europe/London
+OnCalendar=Mon-Fri *-*-* 10:45:00 America/New_York
+Persistent=true
+Unit=xauex-shadow-evaluate.service
+
+[Install]
+WantedBy=timers.target

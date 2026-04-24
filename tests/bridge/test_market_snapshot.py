@@ -61,7 +61,20 @@ def test_market_snapshot_blocks_stale_inputs_during_live_window():
     freshness = _assess_market_snapshot_freshness(
         market_snapshot_age_seconds=9 * 24 * 3600,
         missing_series_count=0,
+        stale_block_series_count=2,
         window_label="morning",
+    )
+
+    assert freshness["market_snapshot_state"] == "blocked"
+    assert freshness["hard_blocker"] is True
+
+
+def test_market_snapshot_blocks_stale_inputs_during_us_open_window():
+    freshness = _assess_market_snapshot_freshness(
+        market_snapshot_age_seconds=9 * 24 * 3600,
+        missing_series_count=0,
+        stale_block_series_count=2,
+        window_label="us_open",
     )
 
     assert freshness["market_snapshot_state"] == "blocked"
@@ -77,6 +90,32 @@ def test_market_snapshot_warns_about_same_staleness_outside_live_window():
 
     assert freshness["market_snapshot_state"] == "warning"
     assert freshness["hard_blocker"] is False
+
+
+def test_market_snapshot_warns_when_only_one_series_is_block_stale():
+    freshness = _assess_market_snapshot_freshness(
+        market_snapshot_age_seconds=9 * 24 * 3600,
+        missing_series_count=0,
+        window_label="morning",
+        stale_block_series_count=1,
+    )
+
+    assert freshness["market_snapshot_state"] == "warning"
+    assert freshness["hard_blocker"] is False
+    assert freshness["stale_block_series_count"] == 1
+
+
+def test_market_snapshot_blocks_when_multiple_series_are_block_stale():
+    freshness = _assess_market_snapshot_freshness(
+        market_snapshot_age_seconds=9 * 24 * 3600,
+        missing_series_count=0,
+        window_label="morning",
+        stale_block_series_count=2,
+    )
+
+    assert freshness["market_snapshot_state"] == "blocked"
+    assert freshness["hard_blocker"] is True
+    assert freshness["stale_block_series_count"] == 2
 
 
 def test_build_market_snapshot_includes_fedwatch_snapshot(monkeypatch):
@@ -335,3 +374,81 @@ def test_build_market_snapshot_blocks_live_window_when_series_fail(monkeypatch):
     assert snapshot["input_freshness"]["market_snapshot_state"] == "blocked"
     assert snapshot["input_freshness"]["hard_blocker"] is True
     assert snapshot["input_freshness"]["missing_series_count"] == 2
+
+
+def test_build_market_snapshot_warns_when_only_one_series_is_long_stale(monkeypatch):
+    monkeypatch.setenv("XAUEX_SIGNAL_LLM_API_KEY", "test-key")
+    cfg = SignalConfig.from_env()
+
+    fake_rows = {
+        "DTWEXBGS": {
+            "value": 121.0,
+            "previous_value": 121.3,
+            "change_1d": -0.3,
+            "date_utc": "2026-04-10T00:00:00Z",
+            "age_seconds": float(9 * 24 * 3600),
+        },
+        "DGS2": {
+            "value": 3.8,
+            "previous_value": 3.85,
+            "change_1d": -0.05,
+            "date_utc": "2026-04-16T00:00:00Z",
+            "age_seconds": float(2 * 24 * 3600),
+        },
+        "DGS10": {
+            "value": 4.2,
+            "previous_value": 4.28,
+            "change_1d": -0.08,
+            "date_utc": "2026-04-16T00:00:00Z",
+            "age_seconds": float(2 * 24 * 3600),
+        },
+        "DFII10": {
+            "value": 1.9,
+            "previous_value": 1.95,
+            "change_1d": -0.05,
+            "date_utc": "2026-04-16T00:00:00Z",
+            "age_seconds": float(2 * 24 * 3600),
+        },
+        "VIXCLS": {
+            "value": 18.2,
+            "previous_value": 17.5,
+            "change_1d": 0.7,
+            "date_utc": "2026-04-17T00:00:00Z",
+            "age_seconds": float(24 * 3600),
+        },
+    }
+
+    monkeypatch.setattr(
+        "xauex.signal.market_snapshot._fetch_fred_series",
+        lambda client, series_id: fake_rows[series_id],
+    )
+    monkeypatch.setattr(
+        "xauex.signal.market_snapshot.fetch_policy_context",
+        lambda config: {
+            "status": "available",
+            "available": True,
+            "summary": "Official Fed policy context available for 2026-05-05.",
+            "source": "fed_fomc_calendar+fred",
+            "next_fomc_date": "2026-05-05",
+        },
+    )
+    monkeypatch.setattr(
+        "xauex.signal.market_snapshot.fetch_fedwatch_snapshot",
+        lambda config: {
+            "status": "available",
+            "available": True,
+            "summary": "FedWatch available.",
+            "bias": "NEUTRAL",
+        },
+    )
+
+    snapshot = build_market_snapshot(
+        asset=resolve_asset("XAUUSD"),
+        config=replace(cfg, source_timeout_seconds=1.0),
+        context_items=[],
+        window_label="morning",
+    )
+
+    assert snapshot["input_freshness"]["market_snapshot_state"] == "warning"
+    assert snapshot["input_freshness"]["hard_blocker"] is False
+    assert snapshot["input_freshness"]["stale_block_series_count"] == 1

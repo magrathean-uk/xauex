@@ -19,12 +19,14 @@ import queue
 import signal
 import sys
 from collections import deque
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional, List, Dict, Tuple
 from zoneinfo import ZoneInfo
 
 from xauex.config import Config, load_config
+from xauex.live_windows import active_entry_slot, all_live_windows, get_live_window, london_trade_day
 from xauex.bot.api.client import ApiClient
 from xauex.bot.levels.htf_levels import LevelManager
 from xauex.bot.patterns.detector import PatternDetector, CandleWatcher, PatternType
@@ -54,6 +56,116 @@ _XAUEX_CLOSE_REQUEST_TTL_SECONDS = 180
 _XAUEX_REPEATED_LOG_INTERVAL_SECONDS = 300
 
 
+@dataclass(frozen=True)
+class XauexAssuranceProfile:
+    bucket: str
+    score: float
+    allow_trade: bool
+    reason: str
+    risk_multiplier: float
+    target_rr: float
+    protect_r: float
+    trail_r: float
+    protect_lock_r: float
+
+
+def calculate_xauex_remaining_daily_loss_budget(
+    *,
+    day_start_balance: float,
+    daily_stop_pct: float,
+    realized_daily_pnl: float,
+    open_reserved_risk: float,
+) -> float:
+    daily_limit = max(0.0, float(day_start_balance or 0.0)) * (max(0.0, float(daily_stop_pct or 0.0)) / 100.0)
+    realized_loss = max(0.0, -float(realized_daily_pnl or 0.0))
+    reserved_risk = max(0.0, float(open_reserved_risk or 0.0))
+    return round(max(0.0, daily_limit - realized_loss - reserved_risk), 2)
+
+
+def build_xauex_confirm_decision(
+    *,
+    signal: Dict[str, object],
+    now_utc: datetime,
+    latest_quote: Dict[str, object],
+    news_gate: Dict[str, object],
+    trend_snapshot: Optional[Dict[str, object]],
+    shadow_signal: Optional[Dict[str, object]],
+    config: Config,
+) -> Dict[str, object]:
+    action = str(signal.get("action", "HOLD") or "HOLD").upper()
+    confirm_timestamp_utc = now_utc.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    result = {
+        "status": "SKIP",
+        "reason": "NO_DIRECTIONAL_SIGNAL",
+        "timestamp_utc": confirm_timestamp_utc,
+        "signal_age_seconds": None,
+        "spread_usd": None,
+        "news_gate_clear": bool(news_gate.get("clear", True)),
+    }
+    if action not in {"BUY", "SELL"}:
+        return result
+
+    signal_timestamp = str(signal.get("timestamp_utc", "") or "").strip()
+    try:
+        signal_time = datetime.fromisoformat(signal_timestamp.replace("Z", "+00:00")).astimezone(timezone.utc)
+    except ValueError:
+        result["reason"] = "INVALID_SIGNAL_TIMESTAMP"
+        return result
+
+    signal_age_seconds = max(0, int((now_utc.astimezone(timezone.utc) - signal_time).total_seconds()))
+    result["signal_age_seconds"] = signal_age_seconds
+    if signal_age_seconds > int(getattr(config, "xauex_signal_max_age_seconds", 300) or 300):
+        result["reason"] = "STALE_SIGNAL"
+        return result
+
+    input_freshness = {}
+    decision_packet = signal.get("decision_packet")
+    if isinstance(decision_packet, dict):
+        input_freshness = decision_packet.get("input_freshness") if isinstance(decision_packet.get("input_freshness"), dict) else {}
+    if bool(input_freshness.get("hard_blocker")):
+        result["reason"] = "INPUT_HARD_BLOCKER"
+        return result
+
+    bid = latest_quote.get("bid")
+    ask = latest_quote.get("ask")
+    if bid is None or ask is None:
+        result["reason"] = "NO_QUOTE"
+        return result
+    try:
+        spread_usd = round(float(ask) - float(bid), 4)
+    except (TypeError, ValueError):
+        result["reason"] = "NO_QUOTE"
+        return result
+    result["spread_usd"] = spread_usd
+    if spread_usd <= 0:
+        result["reason"] = "NO_QUOTE"
+        return result
+    spread_guard = float(getattr(config, "xauex_confirm_spread_max_dollars", 1.0) or 1.0)
+    if spread_usd > spread_guard:
+        result["reason"] = "SPREAD_TOO_WIDE"
+        return result
+
+    if not bool(news_gate.get("clear", True)):
+        result["reason"] = str(news_gate.get("reason") or "LIVE_NEWS_HARD_BLOCK")
+        return result
+
+    trend_alignment = str((trend_snapshot or {}).get("alignment", "") or "").upper()
+    shadow_action = str((shadow_signal or {}).get("action", "") or "").upper()
+    if action == "BUY":
+        opposing_trend = trend_alignment in {"BEARISH", "SHORT"}
+        opposing_shadow = shadow_action == "SELL"
+    else:
+        opposing_trend = trend_alignment in {"BULLISH", "LONG"}
+        opposing_shadow = shadow_action == "BUY"
+    if opposing_trend or opposing_shadow:
+        result["reason"] = "MICROSTRUCTURE_CONFLICT"
+        return result
+
+    result["status"] = "CONFIRMED"
+    result["reason"] = "CONFIRMED"
+    return result
+
+
 def build_xauex_initial_stop_distance(
     *,
     signal_stop: float,
@@ -66,6 +178,158 @@ def build_xauex_initial_stop_distance(
     widest = max(float(signal_stop), float(atr_stop), float(structure_stop))
     bounded = max(float(min_stop), min(widest, float(max_stop)))
     return round(bounded, 2)
+
+
+def build_xauex_protect_stop_price(
+    *,
+    direction: str,
+    entry_price: float,
+    initial_risk_distance: float,
+    lock_r: float,
+    min_buffer_usd: float,
+) -> float:
+    """Move protected stops to a locked-profit R level, with a breakeven buffer floor."""
+    lock_distance = max(float(min_buffer_usd), float(initial_risk_distance) * max(0.0, float(lock_r)))
+    if str(direction).upper() == "SHORT":
+        return round(float(entry_price) - lock_distance, 2)
+    return round(float(entry_price) + lock_distance, 2)
+
+
+def build_xauex_take_profit_distance(
+    *,
+    signal_take_profit: float,
+    stop_distance: float,
+    assurance: XauexAssuranceProfile,
+) -> float:
+    """Use the stronger of the model TP and assurance-based RR target."""
+    rr_target = float(stop_distance) * float(assurance.target_rr)
+    return round(max(float(signal_take_profit), rr_target), 2)
+
+
+def build_xauex_assurance_profile(signal: Dict[str, object], config: Config) -> XauexAssuranceProfile:
+    """Convert signal confidence, validation, and freshness into live risk settings."""
+    action = str(signal.get("action", "HOLD") or "HOLD").upper()
+    if action not in {"BUY", "SELL"}:
+        return _blocked_assurance("NO_DIRECTIONAL_SIGNAL")
+
+    confidence = _safe_signal_float(signal.get("confidence"), 0.0)
+    confidence = max(0.0, min(1.0, confidence))
+    consensus = str(signal.get("consensus_state", "") or "").strip().lower()
+    validator_status = str(signal.get("validator_status", "") or "").strip().lower()
+    validator_summary = str(signal.get("validator_summary", "") or "").strip().lower()
+    packet = signal.get("decision_packet") if isinstance(signal.get("decision_packet"), dict) else {}
+    freshness = packet.get("input_freshness") if isinstance(packet.get("input_freshness"), dict) else {}
+
+    if bool(freshness.get("hard_blocker")):
+        return _blocked_assurance("INPUT_HARD_BLOCKER")
+
+    weak_validator = _validator_summary_is_weak(validator_summary)
+    if confidence < 0.45 and (consensus in {"disagreed", "conflicted", "blocked"} or weak_validator):
+        return _blocked_assurance("LOW_ASSURANCE_VALIDATOR_DISAGREEMENT")
+
+    score = confidence
+    if consensus in {"aligned", "confirmed"}:
+        score += 0.08
+    elif consensus in {"disagreed", "conflicted"}:
+        score -= 0.16
+    elif consensus == "blocked":
+        score -= 0.35
+
+    if validator_status in {"rejected", "blocked"}:
+        score -= 0.25
+    elif validator_status in {"unavailable", "skipped"}:
+        score -= 0.05
+
+    if weak_validator:
+        score -= 0.10
+    elif "well-supported" in validator_summary or "well supported" in validator_summary:
+        score += 0.05
+
+    market_snapshot_state = str(freshness.get("market_snapshot_state", "") or "").lower()
+    if market_snapshot_state in {"warning", "stale"}:
+        score -= 0.05
+
+    score = round(max(0.0, min(1.0, score)), 3)
+    low_protect_r = float(getattr(config, "xauex_session_low_confidence_protect_r", 0.70))
+    normal_protect_r = float(getattr(config, "xauex_session_protect_r", 0.85))
+    high_protect_r = float(getattr(config, "xauex_session_high_confidence_protect_r", 1.00))
+    normal_trail_r = float(getattr(config, "xauex_session_trail_r", 1.35))
+    low_lock_r = float(getattr(config, "xauex_session_low_confidence_protect_lock_r", 0.35))
+    normal_lock_r = float(getattr(config, "xauex_session_protect_lock_r", 0.30))
+    high_lock_r = float(getattr(config, "xauex_session_high_confidence_protect_lock_r", 0.25))
+
+    if score >= 0.70:
+        return XauexAssuranceProfile(
+            bucket="high",
+            score=score,
+            allow_trade=True,
+            reason="HIGH_ASSURANCE",
+            risk_multiplier=1.0,
+            target_rr=2.5,
+            protect_r=round(high_protect_r, 2),
+            trail_r=round(max(normal_trail_r + 0.15, high_protect_r + 0.2), 2),
+            protect_lock_r=round(high_lock_r, 2),
+        )
+    if score >= 0.55:
+        return XauexAssuranceProfile(
+            bucket="medium",
+            score=score,
+            allow_trade=True,
+            reason="MEDIUM_ASSURANCE",
+            risk_multiplier=0.85,
+            target_rr=2.0,
+            protect_r=round(normal_protect_r, 2),
+            trail_r=round(max(normal_trail_r, normal_protect_r + 0.2), 2),
+            protect_lock_r=round(normal_lock_r, 2),
+        )
+    if score >= 0.48:
+        return XauexAssuranceProfile(
+            bucket="low",
+            score=score,
+            allow_trade=True,
+            reason="LOW_ASSURANCE",
+            risk_multiplier=0.50,
+            target_rr=1.5,
+            protect_r=round(low_protect_r, 2),
+            trail_r=round(max(low_protect_r + 0.3, normal_trail_r - 0.15), 2),
+            protect_lock_r=round(low_lock_r, 2),
+        )
+    return _blocked_assurance("ASSURANCE_TOO_LOW")
+
+
+def _blocked_assurance(reason: str) -> XauexAssuranceProfile:
+    return XauexAssuranceProfile(
+        bucket="blocked",
+        score=0.0,
+        allow_trade=False,
+        reason=reason,
+        risk_multiplier=0.0,
+        target_rr=0.0,
+        protect_r=0.0,
+        trail_r=0.0,
+        protect_lock_r=0.0,
+    )
+
+
+def _safe_signal_float(value: object, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _validator_summary_is_weak(summary: str) -> bool:
+    text = str(summary or "").lower()
+    return any(
+        marker in text
+        for marker in (
+            "not well supported",
+            "not well-supported",
+            "contradict",
+            "weak",
+            "unsupported",
+        )
+    )
 
 
 def advance_xauex_session_phase(
@@ -365,6 +629,13 @@ class BotOrchestrator:
         self._xauex_close_requested: dict[str, datetime] = {}
         self._manual_trade_status: Dict[str, object] = {}
         self._latest_quote: Dict[str, object] = {}
+        self._candidate_signal_history: deque = deque(maxlen=24)
+        self._candidate_metrics: Dict[str, object] = {
+            "total": 0,
+            "completed": 0,
+            "false_negative_wins": 0,
+            "expectancy_usd": 0.0,
+        }
         self.last_tick_time = time.monotonic()
 
         self._recent_h1_closes: deque = deque(maxlen=20)
@@ -609,7 +880,9 @@ class BotOrchestrator:
         """Handle all logic triggered by the active strategy candle closing."""
         if self.config.xauex_mode:
             # In XAUEX signal mode, internal strategies are disabled.
-            # Trades are placed by _poll_xauex_signal instead.
+            # Trades are placed by _poll_xauex_signal instead, but the active
+            # strategy context still needs a fresh trend snapshot for confirm.
+            await self._refresh_xauex_microstructure_context()
             await self._finalize_candle()
             return
         if self.active_strategy_mode == "EMA_PULLBACK_H1":
@@ -649,6 +922,68 @@ class BotOrchestrator:
                 store="shadow",
                 apply_risk_gates=False,
             )
+
+    async def _refresh_xauex_microstructure_context(self) -> None:
+        """Refresh the active strategy trend context without enabling strategy trading."""
+        mode = self.active_strategy_mode
+        timeframe = self._strategy_timeframe(mode)
+        bars, signal_index = await self._fetch_execution_bars(
+            timeframe,
+            count=self._strategy_execution_lookback(mode),
+        )
+        if bars is None or signal_index is None:
+            self._update_strategy_data_status(
+                mode,
+                execution_timeframe=timeframe,
+                execution_bars=bars,
+                signal_index=signal_index,
+            )
+            return
+
+        self._recent_h1_closes = deque([bar["close"] for bar in bars[-20:]], maxlen=20)
+
+        if mode == "SCALP_V1":
+            daily_closes = await self._fetch_daily_closes()
+            h1_closes = self._aggregate_h1_closes_from_m5(bars)
+            self._macro_regime = self._load_macro_regime()
+            self._trade_policy = self._load_trade_policy()
+            self._update_strategy_data_status(
+                mode,
+                execution_timeframe=timeframe,
+                execution_bars=bars,
+                signal_index=signal_index,
+                daily_closes=daily_closes,
+                h1_closes=h1_closes,
+            )
+            if daily_closes is not None and h1_closes is not None:
+                trade_policy = (
+                    self._trade_policy.to_state_dict()
+                    if self._trade_policy is not None
+                    else None
+                )
+                self._trend_snapshot = self.scalp_strategy.state_trend(
+                    daily_closes=daily_closes,
+                    h1_closes=h1_closes,
+                    macro_regime=self._macro_regime,
+                    trade_policy=trade_policy,
+                )
+            else:
+                self._trend_snapshot = {
+                    "alignment": "UNKNOWN",
+                    "reason": "EMA_DATA_UNAVAILABLE",
+                    "execution_timeframe": timeframe,
+                }
+            return
+
+        execution_closes = [bar["close"] for bar in bars[: signal_index + 1]]
+        daily_closes = await self._refresh_trend_snapshot(execution_closes, timeframe)
+        self._update_strategy_data_status(
+            mode,
+            execution_timeframe=timeframe,
+            execution_bars=bars,
+            signal_index=signal_index,
+            daily_closes=daily_closes,
+        )
 
     async def _process_legacy_candle_close(self, price: float, timestamp: datetime) -> None:
         """Run the existing level-reaction strategy on the configured execution timeframe."""
@@ -1681,30 +2016,11 @@ class BotOrchestrator:
         return max(0, min(23, int(hour_text))), max(0, min(59, int(minute_text)))
 
     def _xauex_entry_slot(self, now_utc: datetime) -> Optional[str]:
-        london = now_utc.astimezone(self._xauex_timezone())
-        if london.weekday() >= 5:
-            return None
-
-        morning_start = self._parse_hhmm(self.config.xauex_entry_start_london)
-        morning_end = self._parse_hhmm(self.config.xauex_entry_end_london)
-        second_start = self._parse_hhmm(self.config.xauex_entry_second_start_london)
-        second_end = self._parse_hhmm(self.config.xauex_entry_second_end_london)
-
-        minute_of_day = london.hour * 60 + london.minute
-        morning_start_minute = morning_start[0] * 60 + morning_start[1]
-        morning_end_minute = morning_end[0] * 60 + morning_end[1]
-        second_start_minute = second_start[0] * 60 + second_start[1]
-        second_end_minute = second_end[0] * 60 + second_end[1]
-
-        if morning_start_minute <= minute_of_day < morning_end_minute:
-            return "MORNING"
-        if second_start_minute <= minute_of_day < second_end_minute:
-            return "MIDDAY"
-        return None
+        return active_entry_slot(now_utc.astimezone(timezone.utc))
 
     def _today_london(self, now_utc: Optional[datetime] = None) -> str:
         now_utc = now_utc or datetime.now(timezone.utc)
-        return now_utc.astimezone(self._xauex_timezone()).strftime("%Y-%m-%d")
+        return london_trade_day(now_utc.astimezone(timezone.utc))
 
     def _clear_xauex_runs_for_new_day(self, now_utc: Optional[datetime] = None) -> None:
         london_date = self._today_london(now_utc)
@@ -1769,6 +2085,11 @@ class BotOrchestrator:
         signal_time: datetime,
         signal_reason: Optional[str] = None,
         signal_confidence: Optional[float] = None,
+        signal_action: Optional[str] = None,
+        window_label: Optional[str] = None,
+        confirm_status: Optional[str] = None,
+        confirm_reason: Optional[str] = None,
+        confirm_timestamp_utc: Optional[str] = None,
         terminal: bool = True,
     ) -> None:
         self._reset_xauex_trade_count_if_new_london_day(signal_time)
@@ -1778,8 +2099,13 @@ class BotOrchestrator:
                 "slot": slot,
                 "signal_id": signal_id,
                 "action": action,
+                "signal_action": signal_action,
                 "confidence": signal_confidence,
                 "reason": signal_reason,
+                "window_label": window_label,
+                "confirm_status": confirm_status,
+                "confirm_reason": confirm_reason,
+                "confirm_timestamp_utc": confirm_timestamp_utc,
                 "terminal": terminal,
                 "recorded_at_utc": signal_time.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             }
@@ -1792,6 +2118,12 @@ class BotOrchestrator:
         signal_id: str,
         reason: str,
         signal_time: datetime,
+        signal_action: Optional[str] = None,
+        signal_confidence: Optional[float] = None,
+        window_label: Optional[str] = None,
+        confirm_status: Optional[str] = None,
+        confirm_reason: Optional[str] = None,
+        confirm_timestamp_utc: Optional[str] = None,
         terminal: bool = True,
     ) -> None:
         self._record_xauex_signal_run(
@@ -1800,7 +2132,12 @@ class BotOrchestrator:
             action=reason,
             signal_time=signal_time,
             signal_reason=reason,
-            signal_confidence=None,
+            signal_confidence=signal_confidence,
+            signal_action=signal_action,
+            window_label=window_label,
+            confirm_status=confirm_status,
+            confirm_reason=confirm_reason,
+            confirm_timestamp_utc=confirm_timestamp_utc,
             terminal=terminal,
         )
         self._last_xauex_signal_id_by_slot[slot] = signal_id
@@ -1808,6 +2145,104 @@ class BotOrchestrator:
     def _refresh_signal_window_tracking(self, *, slot: str, signal_id: str, signal_time: datetime) -> None:
         self._last_xauex_signal_id_by_slot[slot] = signal_id
         self._last_xauex_signal_seen_utc[slot] = signal_time.timestamp()
+
+    def _current_news_gate_snapshot(self) -> Dict[str, object]:
+        now_utc = datetime.now(timezone.utc)
+        clear = False
+        reason = "NEWS_FEED_UNAVAILABLE"
+        if self.news_filter is not None:
+            try:
+                clear, reason_value = self.news_filter.is_clear(now_utc)
+                reason = "" if clear else str(reason_value or "LIVE_NEWS_HARD_BLOCK")
+            except Exception:
+                clear = False
+                reason = "NEWS_FEED_UNAVAILABLE"
+        return {
+            "clear": clear,
+            "reason": reason,
+            "updated_at_utc": now_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }
+
+    def _xauex_has_open_position(self) -> bool:
+        if self.executor is None:
+            return False
+        return count_tradeable_open_positions(self.executor.position_manager.get_open_positions()) > 0
+
+    def _xauex_open_reserved_risk(self) -> float:
+        if self.executor is None:
+            return 0.0
+        total = 0.0
+        for position in self.executor.position_manager.get_open_positions():
+            if _position_owner(position) != "xauex":
+                continue
+            metadata = {}
+            if isinstance(position, dict):
+                metadata = dict(position.get("metadata") or {})
+            else:
+                metadata = dict(getattr(position, "metadata", {}) or {})
+            session = metadata.get("session") if isinstance(metadata.get("session"), dict) else {}
+            reserved = _safe_signal_float(session.get("actual_cash_risk"), 0.0)
+            if reserved > 0:
+                total += reserved
+                continue
+            try:
+                entry_price = float(position.get("entry_price") if isinstance(position, dict) else getattr(position, "entry_price"))
+                stop_loss = float(position.get("stop_loss") if isinstance(position, dict) else getattr(position, "stop_loss"))
+                lot_size = float(position.get("lot_size") if isinstance(position, dict) else getattr(position, "lot_size"))
+            except (AttributeError, TypeError, ValueError):
+                continue
+            contract_size = float(getattr(self.symbol_spec, "lot_size", 0.0) or 0.0)
+            if contract_size <= 0:
+                continue
+            total += abs(entry_price - stop_loss) * lot_size * contract_size
+        return round(total, 2)
+
+    def _xauex_remaining_daily_loss_budget(self) -> float:
+        return calculate_xauex_remaining_daily_loss_budget(
+            day_start_balance=float(self.risk_state.day_start_balance or self.account.get("balance", 0.0) or 0.0),
+            daily_stop_pct=float(self.config.daily_stop_pct or 0.0),
+            realized_daily_pnl=float(self.risk_state.daily_pnl or 0.0),
+            open_reserved_risk=self._xauex_open_reserved_risk(),
+        )
+
+    def _record_candidate_signal(
+        self,
+        *,
+        slot: str,
+        signal_id: str,
+        signal: Dict[str, object],
+        assurance: XauexAssuranceProfile,
+        now_utc: datetime,
+    ) -> None:
+        entry = {
+            "recorded_at_utc": now_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "slot": slot,
+            "window_label": str(signal.get("window_label") or "").lower() or slot.lower(),
+            "signal_id": signal_id,
+            "action": str(signal.get("action") or "HOLD").upper(),
+            "confidence": _safe_signal_float(signal.get("confidence"), 0.0),
+            "assurance_reason": assurance.reason,
+        }
+        self._candidate_signal_history.appendleft(entry)
+        self._candidate_metrics["total"] = int(self._candidate_metrics.get("total", 0) or 0) + 1
+
+    def _persist_inline_confirm_result(
+        self,
+        *,
+        command_payload: Dict[str, object],
+        signal: Dict[str, object],
+        confirm: Dict[str, object],
+    ) -> None:
+        updated_signal = dict(signal)
+        updated_signal["confirm_status"] = confirm["status"]
+        updated_signal["confirm_reason"] = confirm["reason"]
+        updated_signal["confirm_timestamp_utc"] = confirm["timestamp_utc"]
+        command_payload["xauex_signal"] = updated_signal
+        try:
+            with open(self.config.xauex_signal_path, "w", encoding="utf-8") as handle:
+                json.dump(command_payload, handle, indent=2)
+        except Exception as exc:
+            logger.warning("[XAUEX] Failed to persist inline confirm result: %s", exc)
 
     def _clear_stale_close_requests(self, *, open_position_ids: set[str], now_utc: datetime) -> None:
         stale_cutoff = now_utc - timedelta(seconds=_XAUEX_CLOSE_REQUEST_TTL_SECONDS)
@@ -1856,25 +2291,21 @@ class BotOrchestrator:
             self._trade_entries_on_chart = self._trade_entries_on_chart[-max_entries:]
 
     def _xauex_entry_window_gate(self, now_utc: datetime) -> Optional[str]:
-        london = now_utc.astimezone(self._xauex_timezone())
-        if london.weekday() >= 5:
+        london_now = now_utc.astimezone(ZoneInfo("Europe/London"))
+        if london_now.weekday() >= 5:
             return "WEEKEND"
 
         slot = self._xauex_entry_slot(now_utc)
         if slot is not None:
             return None
 
-        morning_start_hour, morning_start_minute = self._parse_hhmm(self.config.xauex_entry_start_london)
-        second_start_hour, second_start_minute = self._parse_hhmm(self.config.xauex_entry_second_start_london)
-        minute_of_day = london.hour * 60 + london.minute
-        morning_start_minute_of_day = morning_start_hour * 60 + morning_start_minute
-        second_start_minute_of_day = second_start_hour * 60 + second_start_minute
-
-        if minute_of_day < morning_start_minute_of_day:
+        future_windows = [
+            window
+            for window in all_live_windows()
+            if window.entry_start_dt_utc(now_utc.astimezone(timezone.utc)) > now_utc.astimezone(timezone.utc)
+        ]
+        if future_windows:
             return "TOO_EARLY"
-
-        if minute_of_day >= second_start_minute_of_day:
-            return "ENTRY_WINDOW_CLOSED"
         return "ENTRY_WINDOW_CLOSED"
 
     def _xauex_force_flat_due(self, now_utc: datetime) -> bool:
@@ -1887,12 +2318,10 @@ class BotOrchestrator:
         return minute_of_day >= flat_minute_of_day
 
     def _xauex_slot_start_utc(self, slot: str, *, now_utc: datetime) -> datetime:
-        london = now_utc.astimezone(self._xauex_timezone())
-        if slot == "MIDDAY":
-            hour, minute = self._parse_hhmm(self.config.xauex_entry_second_start_london)
-        else:
-            hour, minute = self._parse_hhmm(self.config.xauex_entry_start_london)
-        return london.replace(hour=hour, minute=minute, second=0, microsecond=0).astimezone(timezone.utc)
+        window = get_live_window(slot=slot)
+        if window is None:
+            return now_utc.astimezone(timezone.utc)
+        return window.entry_start_dt_utc(now_utc.astimezone(timezone.utc))
 
     def _stale_signal_should_consume_slot(
         self,
@@ -1997,11 +2426,26 @@ class BotOrchestrator:
             trail_r = float(self.config.xauex_session_trail_r)
         return bucket, round(protect_r, 2), round(max(trail_r, protect_r + 0.2), 2)
 
-    def _xauex_protect_stop_price(self, *, direction: str, entry_price: float) -> float:
+    def _xauex_protect_stop_price(
+        self,
+        *,
+        direction: str,
+        entry_price: float,
+        initial_risk_distance: float,
+        lock_r: float,
+    ) -> float:
         buffer_usd = max(float(self.config.xauex_session_protect_buffer_usd), self._safe_current_spread() * 1.5)
-        if direction == "SHORT":
-            return round(entry_price - buffer_usd, 2)
-        return round(entry_price + buffer_usd, 2)
+        return build_xauex_protect_stop_price(
+            direction=direction,
+            entry_price=entry_price,
+            initial_risk_distance=initial_risk_distance,
+            lock_r=lock_r,
+            min_buffer_usd=buffer_usd,
+        )
+
+    def _xauex_cash_take_profit_threshold(self, session: Dict[str, object]) -> float:
+        target_cash_reward = _safe_signal_float(session.get("target_cash_reward"), 0.0)
+        return round(max(float(self.config.xauex_cash_take_profit_gbp), target_cash_reward), 2)
 
     def _xauex_trailing_stop_price(
         self,
@@ -2130,6 +2574,7 @@ class BotOrchestrator:
                 "execution_timeframe": self.execution_timeframe,
                 "reconnect_count": self.watchdog.reconnect_count if self.watchdog else 0,
                 "news_feed_available": self.news_filter.feed_available if self.news_filter else None,
+                "news_gate": self._current_news_gate_snapshot(),
                 "kill_switch_active": self.kill_switch_active,
                 "candle_index": self._candle_index,
                 "pending_inside_bar_pairs": len(self.executor._pending_pairs) if self.executor else 0,
@@ -2148,7 +2593,10 @@ class BotOrchestrator:
                 "xauex_trade_date_london": self.risk_state.xauex_trade_date_london,
                 "xauex_trades_taken_london": self.risk_state.xauex_trades_taken_london,
                 "xauex_signal_runs_taken_london": len(self.risk_state.xauex_signal_runs_london),
+                "xauex_signal_runs_london": list(self.risk_state.xauex_signal_runs_london),
                 "xauex_max_trades_per_day": self.config.xauex_max_trades_per_day,
+                "candidate_metrics": dict(self._candidate_metrics),
+                "candidate_signal_history": list(self._candidate_signal_history),
                 "strategy_data_status": self._strategy_data_status.get(self.active_strategy_mode),
                 "shadow_strategy_data_status": (
                     self._strategy_data_status.get(self.shadow_strategy_mode)
@@ -2206,6 +2654,7 @@ class BotOrchestrator:
                 continue
 
             signal_id = str(sig.get("timestamp_utc", "") or "").strip()
+            window_label = str(sig.get("window_label") or "").lower() or "current"
             now_utc = datetime.now(timezone.utc)
             slot = self._xauex_entry_slot(now_utc)
             if slot is None:
@@ -2234,7 +2683,18 @@ class BotOrchestrator:
             direction = _DIRECTION_MAP.get(action)
             if direction is None:
                 logger.info("[XAUEX] Signal action=%s - treated as HOLD / no trade", action)
-                self._mark_slot_used(slot=slot, signal_id=signal_id, reason="HOLD", signal_time=now_utc, terminal=True)
+                self._mark_slot_used(
+                    slot=slot,
+                    signal_id=signal_id,
+                    reason="HOLD",
+                    signal_time=now_utc,
+                    signal_action=action,
+                    window_label=window_label,
+                    confirm_status=str(sig.get("confirm_status") or "SKIP"),
+                    confirm_reason=str(sig.get("confirm_reason") or "NO_DIRECTIONAL_SIGNAL"),
+                    confirm_timestamp_utc=str(sig.get("confirm_timestamp_utc") or ""),
+                    terminal=True,
+                )
                 await self.write_state()
                 continue
 
@@ -2242,6 +2702,9 @@ class BotOrchestrator:
                 confidence = float(sig.get("confidence", 0.0) or 0.0)
             except (TypeError, ValueError):
                 confidence = 0.0
+            confirm_status = str(sig.get("confirm_status") or "PENDING").upper()
+            confirm_reason = str(sig.get("confirm_reason") or "WAITING_FOR_CONFIRM")
+            confirm_timestamp_utc = str(sig.get("confirm_timestamp_utc") or "")
 
             try:
                 ts = datetime.fromisoformat(signal_id.replace("Z", "+00:00"))
@@ -2262,13 +2725,31 @@ class BotOrchestrator:
                         signal_id=signal_id,
                         reason="STALE",
                         signal_time=now_utc,
+                        signal_action=action,
+                        signal_confidence=confidence,
+                        window_label=window_label,
+                        confirm_status="SKIP",
+                        confirm_reason="STALE_SIGNAL",
+                        confirm_timestamp_utc=now_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
                         terminal=terminal_stale,
                     )
                     await self.write_state()
                     continue
             except (ValueError, TypeError):
                 logger.warning("[XAUEX] Cannot parse signal timestamp '%s' - skipping", signal_id)
-                self._mark_slot_used(slot=slot, signal_id=signal_id, reason="INVALID_SIGNAL_TIMESTAMP", signal_time=now_utc, terminal=True)
+                self._mark_slot_used(
+                    slot=slot,
+                    signal_id=signal_id,
+                    reason="INVALID_SIGNAL_TIMESTAMP",
+                    signal_time=now_utc,
+                    signal_action=action,
+                    signal_confidence=confidence,
+                    window_label=window_label,
+                    confirm_status="SKIP",
+                    confirm_reason="INVALID_SIGNAL_TIMESTAMP",
+                    confirm_timestamp_utc=now_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    terminal=True,
+                )
                 await self.write_state()
                 continue
 
@@ -2281,7 +2762,37 @@ class BotOrchestrator:
                         self.risk_state.xauex_trades_taken_london,
                         self.config.xauex_max_trades_per_day,
                     )
-                    self._mark_slot_used(slot=slot, signal_id=signal_id, reason="CAP_REACHED", signal_time=now_utc, terminal=True)
+                    self._mark_slot_used(
+                        slot=slot,
+                        signal_id=signal_id,
+                        reason="CAP_REACHED",
+                        signal_time=now_utc,
+                        signal_action=action,
+                        signal_confidence=confidence,
+                        window_label=window_label,
+                        confirm_status=confirm_status,
+                        confirm_reason=confirm_reason,
+                        confirm_timestamp_utc=confirm_timestamp_utc,
+                        terminal=True,
+                    )
+                    await self.write_state()
+                    continue
+
+                if self._xauex_has_open_position():
+                    logger.info("[XAUEX] Existing XAUEX position still open - skipping new slot.")
+                    self._mark_slot_used(
+                        slot=slot,
+                        signal_id=signal_id,
+                        reason="XAUEX_POSITION_OPEN",
+                        signal_time=now_utc,
+                        signal_action=action,
+                        signal_confidence=confidence,
+                        window_label=window_label,
+                        confirm_status=confirm_status,
+                        confirm_reason=confirm_reason,
+                        confirm_timestamp_utc=confirm_timestamp_utc,
+                        terminal=True,
+                    )
                     await self.write_state()
                     continue
 
@@ -2292,6 +2803,12 @@ class BotOrchestrator:
                         signal_id=signal_id,
                         reason="SYMBOL_SPEC_MISSING",
                         signal_time=now_utc,
+                        signal_action=action,
+                        signal_confidence=confidence,
+                        window_label=window_label,
+                        confirm_status=confirm_status,
+                        confirm_reason=confirm_reason,
+                        confirm_timestamp_utc=confirm_timestamp_utc,
                         terminal=False,
                     )
                     await self.write_state()
@@ -2305,7 +2822,19 @@ class BotOrchestrator:
                         signal_symbol,
                         live_symbol,
                     )
-                    self._mark_slot_used(slot=slot, signal_id=signal_id, reason="SYMBOL_MISMATCH", signal_time=now_utc, terminal=True)
+                    self._mark_slot_used(
+                        slot=slot,
+                        signal_id=signal_id,
+                        reason="SYMBOL_MISMATCH",
+                        signal_time=now_utc,
+                        signal_action=action,
+                        signal_confidence=confidence,
+                        window_label=window_label,
+                        confirm_status=confirm_status,
+                        confirm_reason=confirm_reason,
+                        confirm_timestamp_utc=confirm_timestamp_utc,
+                        terminal=True,
+                    )
                     await self.write_state()
                     continue
 
@@ -2315,7 +2844,93 @@ class BotOrchestrator:
                         "[XAUEX] Signal distance_unit=%s is not executable by the current XAUEX runtime - skipping",
                         distance_unit,
                     )
-                    self._mark_slot_used(slot=slot, signal_id=signal_id, reason="INVALID_DISTANCE_UNIT", signal_time=now_utc, terminal=True)
+                    self._mark_slot_used(
+                        slot=slot,
+                        signal_id=signal_id,
+                        reason="INVALID_DISTANCE_UNIT",
+                        signal_time=now_utc,
+                        signal_action=action,
+                        signal_confidence=confidence,
+                        window_label=window_label,
+                        confirm_status=confirm_status,
+                        confirm_reason=confirm_reason,
+                        confirm_timestamp_utc=confirm_timestamp_utc,
+                        terminal=True,
+                    )
+                    await self.write_state()
+                    continue
+
+                if confirm_status not in {"CONFIRMED", "SKIP"}:
+                    confirm = build_xauex_confirm_decision(
+                        signal=sig,
+                        now_utc=now_utc,
+                        latest_quote=dict(self._latest_quote),
+                        news_gate=self._current_news_gate_snapshot(),
+                        trend_snapshot=self._trend_snapshot,
+                        shadow_signal=self._shadow_last_signal,
+                        config=self.config,
+                    )
+                    confirm_status = str(confirm["status"] or "SKIP").upper()
+                    confirm_reason = str(confirm["reason"] or "UNKNOWN")
+                    confirm_timestamp_utc = str(confirm["timestamp_utc"] or "")
+                    sig["confirm_status"] = confirm_status
+                    sig["confirm_reason"] = confirm_reason
+                    sig["confirm_timestamp_utc"] = confirm_timestamp_utc
+                    self._persist_inline_confirm_result(
+                        command_payload=cmd,
+                        signal=sig,
+                        confirm=confirm,
+                    )
+
+                if confirm_status != "CONFIRMED":
+                    logger.info("[XAUEX] Confirm veto: %s", confirm_reason)
+                    self._mark_slot_used(
+                        slot=slot,
+                        signal_id=signal_id,
+                        reason=confirm_reason,
+                        signal_time=now_utc,
+                        signal_action=action,
+                        signal_confidence=confidence,
+                        window_label=window_label,
+                        confirm_status=confirm_status,
+                        confirm_reason=confirm_reason,
+                        confirm_timestamp_utc=confirm_timestamp_utc,
+                        terminal=True,
+                    )
+                    await self.write_state()
+                    continue
+
+                assurance = build_xauex_assurance_profile(sig, self.config)
+                if not assurance.allow_trade:
+                    logger.info(
+                        "[XAUEX] Blocked by assurance profile: %s score=%.2f confidence=%.2f consensus=%s validator=%s",
+                        assurance.reason,
+                        assurance.score,
+                        confidence,
+                        sig.get("consensus_state", ""),
+                        sig.get("validator_status", ""),
+                    )
+                    if assurance.reason in {"ASSURANCE_TOO_LOW", "LOW_ASSURANCE_VALIDATOR_DISAGREEMENT"}:
+                        self._record_candidate_signal(
+                            slot=slot,
+                            signal_id=signal_id,
+                            signal=sig,
+                            assurance=assurance,
+                            now_utc=now_utc,
+                        )
+                    self._mark_slot_used(
+                        slot=slot,
+                        signal_id=signal_id,
+                        reason=assurance.reason,
+                        signal_time=now_utc,
+                        signal_action=action,
+                        signal_confidence=confidence,
+                        window_label=window_label,
+                        confirm_status=confirm_status,
+                        confirm_reason=confirm_reason,
+                        confirm_timestamp_utc=confirm_timestamp_utc,
+                        terminal=True,
+                    )
                     await self.write_state()
                     continue
 
@@ -2323,7 +2938,19 @@ class BotOrchestrator:
                 if gate_result is not None:
                     if self._should_emit_repeated_xauex_log(f"environment_gate:{gate_result}"):
                         logger.info("[XAUEX] Blocked by gate: %s", gate_result)
-                    self._mark_slot_used(slot=slot, signal_id=signal_id, reason=gate_result, signal_time=now_utc, terminal=False)
+                    self._mark_slot_used(
+                        slot=slot,
+                        signal_id=signal_id,
+                        reason=gate_result,
+                        signal_time=now_utc,
+                        signal_action=action,
+                        signal_confidence=confidence,
+                        window_label=window_label,
+                        confirm_status=confirm_status,
+                        confirm_reason=confirm_reason,
+                        confirm_timestamp_utc=confirm_timestamp_utc,
+                        terminal=False,
+                    )
                     await self.write_state()
                     continue
 
@@ -2331,7 +2958,19 @@ class BotOrchestrator:
                 ask = self.api_client._last_ask
                 if bid is None or ask is None:
                     logger.warning("[XAUEX] No bid/ask available yet - skipping")
-                    self._mark_slot_used(slot=slot, signal_id=signal_id, reason="NO_QUOTE", signal_time=now_utc, terminal=False)
+                    self._mark_slot_used(
+                        slot=slot,
+                        signal_id=signal_id,
+                        reason="NO_QUOTE",
+                        signal_time=now_utc,
+                        signal_action=action,
+                        signal_confidence=confidence,
+                        window_label=window_label,
+                        confirm_status=confirm_status,
+                        confirm_reason=confirm_reason,
+                        confirm_timestamp_utc=confirm_timestamp_utc,
+                        terminal=False,
+                    )
                     await self.write_state()
                     continue
 
@@ -2340,13 +2979,37 @@ class BotOrchestrator:
                     signal_tp_distance = float(sig.get("take_profit_usd", sig.get("take_profit_distance", 24.0)))
                 except (TypeError, ValueError):
                     logger.warning("[XAUEX] Invalid stop or take-profit values in signal - skipping")
-                    self._mark_slot_used(slot=slot, signal_id=signal_id, reason="INVALID_DISTANCE_VALUES", signal_time=now_utc, terminal=True)
+                    self._mark_slot_used(
+                        slot=slot,
+                        signal_id=signal_id,
+                        reason="INVALID_DISTANCE_VALUES",
+                        signal_time=now_utc,
+                        signal_action=action,
+                        signal_confidence=confidence,
+                        window_label=window_label,
+                        confirm_status=confirm_status,
+                        confirm_reason=confirm_reason,
+                        confirm_timestamp_utc=confirm_timestamp_utc,
+                        terminal=True,
+                    )
                     await self.write_state()
                     continue
 
                 if signal_stop_distance <= 0 or signal_tp_distance <= 0:
                     logger.info("[XAUEX] Non-positive stop or take-profit distance - skipping")
-                    self._mark_slot_used(slot=slot, signal_id=signal_id, reason="NONPOSITIVE_DISTANCE", signal_time=now_utc, terminal=True)
+                    self._mark_slot_used(
+                        slot=slot,
+                        signal_id=signal_id,
+                        reason="NONPOSITIVE_DISTANCE",
+                        signal_time=now_utc,
+                        signal_action=action,
+                        signal_confidence=confidence,
+                        window_label=window_label,
+                        confirm_status=confirm_status,
+                        confirm_reason=confirm_reason,
+                        confirm_timestamp_utc=confirm_timestamp_utc,
+                        terminal=True,
+                    )
                     await self.write_state()
                     continue
 
@@ -2361,7 +3024,11 @@ class BotOrchestrator:
                     min_stop=float(self.config.sl_min_dollars),
                     max_stop=max_stop_distance,
                 )
-                tp_distance = max(float(signal_tp_distance), round(sl_distance * 1.5, 2))
+                tp_distance = build_xauex_take_profit_distance(
+                    signal_take_profit=signal_tp_distance,
+                    stop_distance=sl_distance,
+                    assurance=assurance,
+                )
 
                 if direction == 1:
                     stop_loss_price = current_price - sl_distance
@@ -2373,12 +3040,25 @@ class BotOrchestrator:
                 cash_risk_budget = self._xauex_cash_risk_budget()
                 if cash_risk_budget <= 0:
                     logger.info("[XAUEX] Cash risk budget is non-positive - skipping")
-                    self._mark_slot_used(slot=slot, signal_id=signal_id, reason="NO_RISK_BUDGET", signal_time=now_utc, terminal=False)
+                    self._mark_slot_used(
+                        slot=slot,
+                        signal_id=signal_id,
+                        reason="NO_RISK_BUDGET",
+                        signal_time=now_utc,
+                        signal_action=action,
+                        signal_confidence=confidence,
+                        window_label=window_label,
+                        confirm_status=confirm_status,
+                        confirm_reason=confirm_reason,
+                        confirm_timestamp_utc=confirm_timestamp_utc,
+                        terminal=False,
+                    )
                     await self.write_state()
                     continue
 
+                assurance_cash_risk = round(cash_risk_budget * assurance.risk_multiplier, 2)
                 lot = calculate_xauex_lot_size_from_cash_risk(
-                    cash_risk=cash_risk_budget,
+                    cash_risk=assurance_cash_risk,
                     stop_distance=sl_distance,
                     lot_size=float(self.symbol_spec.lot_size),
                     volume_step=float(self.symbol_spec.volume_step),
@@ -2387,25 +3067,53 @@ class BotOrchestrator:
                     max_lot_size=float(getattr(self.config, "max_lot_size", self.symbol_spec.volume_max)),
                 )
                 if lot is None:
-                    logger.info("[XAUEX] Lot size calculation returned None - skipping")
-                    self._mark_slot_used(slot=slot, signal_id=signal_id, reason="LOT_CALCULATION", signal_time=now_utc, terminal=True)
-                    await self.write_state()
-                    continue
-
-                scaled_lot = self._scale_lot_to_confidence(lot, confidence)
-                if scaled_lot is None:
                     logger.info(
-                        "[XAUEX] Confidence-scaled lot fell below broker minimum | base_lot=%.5f confidence=%.2f",
-                        lot,
-                        confidence,
+                        "[XAUEX] Assurance risk budget %.2f below broker minimum for stop %.2f - skipping",
+                        assurance_cash_risk,
+                        sl_distance,
                     )
-                    self._mark_slot_used(slot=slot, signal_id=signal_id, reason="LOT_FLOORED", signal_time=now_utc, terminal=True)
+                    self._mark_slot_used(
+                        slot=slot,
+                        signal_id=signal_id,
+                        reason="ASSURANCE_RISK_BELOW_MIN_LOT",
+                        signal_time=now_utc,
+                        signal_action=action,
+                        signal_confidence=confidence,
+                        window_label=window_label,
+                        confirm_status=confirm_status,
+                        confirm_reason=confirm_reason,
+                        confirm_timestamp_utc=confirm_timestamp_utc,
+                        terminal=True,
+                    )
                     await self.write_state()
                     continue
 
                 reasoning = sig.get("reasoning", "XAUEX signal")
                 dir_label = "LONG" if direction == 1 else "SHORT"
-                confidence_bucket, protect_r, trail_r = self._xauex_session_thresholds(confidence)
+                actual_cash_risk = round(lot * float(self.symbol_spec.lot_size) * sl_distance, 2)
+                remaining_daily_risk = self._xauex_remaining_daily_loss_budget()
+                if actual_cash_risk > remaining_daily_risk:
+                    logger.info(
+                        "[XAUEX] Remaining daily loss budget %.2f is below proposed risk %.2f - skipping",
+                        remaining_daily_risk,
+                        actual_cash_risk,
+                    )
+                    self._mark_slot_used(
+                        slot=slot,
+                        signal_id=signal_id,
+                        reason="REMAINING_DAILY_RISK_EXCEEDED",
+                        signal_time=now_utc,
+                        signal_action=action,
+                        signal_confidence=confidence,
+                        window_label=window_label,
+                        confirm_status=confirm_status,
+                        confirm_reason=confirm_reason,
+                        confirm_timestamp_utc=confirm_timestamp_utc,
+                        terminal=True,
+                    )
+                    await self.write_state()
+                    continue
+                target_cash_reward = round(lot * float(self.symbol_spec.lot_size) * tp_distance, 2)
                 session_metadata = {
                     "session": {
                         "phase": "OBSERVE",
@@ -2413,33 +3121,48 @@ class BotOrchestrator:
                         "entry_price": round(current_price, 2),
                         "initial_risk_distance": round(sl_distance, 2),
                         "confidence": round(confidence, 2),
-                        "confidence_bucket": confidence_bucket,
-                        "protect_r": protect_r,
-                        "trail_r": trail_r,
+                        "confidence_bucket": assurance.bucket,
+                        "assurance_score": assurance.score,
+                        "assurance_reason": assurance.reason,
+                        "risk_multiplier": assurance.risk_multiplier,
+                        "allowed_cash_risk": assurance_cash_risk,
+                        "actual_cash_risk": actual_cash_risk,
+                        "target_rr": assurance.target_rr,
+                        "target_cash_reward": target_cash_reward,
+                        "protect_r": assurance.protect_r,
+                        "trail_r": assurance.trail_r,
+                        "protect_lock_r": assurance.protect_lock_r,
                         "created_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                         "signal_id": signal_id,
+                        "window_label": window_label,
+                        "confirm_status": confirm_status,
+                        "confirm_reason": confirm_reason,
+                        "confirm_timestamp_utc": confirm_timestamp_utc,
                     }
                 }
                 logger.info(
-                    "[XAUEX] Executing %s %s | Lot:%.2f base_lot:%.2f multiplier:%.2f SL:%.2f TP:%.2f signal_sl:%.2f atr_sl:%.2f structure_sl:%.2f cash_risk:%.2f | Confidence:%.2f | %s",
+                    "[XAUEX] Executing %s %s | Lot:%.2f assurance=%s score=%.2f risk_budget:%.2f/%.2f actual_risk:%.2f target_rr:%.2f SL:%.2f TP:%.2f signal_sl:%.2f atr_sl:%.2f structure_sl:%.2f | Confidence:%.2f | %s",
                     signal_symbol or live_symbol or "XAUUSD",
                     dir_label,
-                    scaled_lot,
                     lot,
-                    self._xauex_lot_multiplier(confidence),
+                    assurance.bucket,
+                    assurance.score,
+                    assurance_cash_risk,
+                    cash_risk_budget,
+                    actual_cash_risk,
+                    assurance.target_rr,
                     stop_loss_price,
                     take_profit_price,
                     signal_stop_distance,
                     atr_stop_distance,
                     structure_stop_distance,
-                    cash_risk_budget,
                     confidence,
                     reasoning,
                 )
 
                 pos_id = await self.executor.place_market_order(
                     direction=direction,
-                    lot_size=scaled_lot,
+                    lot_size=lot,
                     stop_loss_price=stop_loss_price,
                     take_profit_price=take_profit_price,
                     pattern=PatternType.NONE,
@@ -2465,6 +3188,12 @@ class BotOrchestrator:
                     signal_id=signal_id,
                     reason="ORDER_PLACED" if pos_id is not None else "ORDER_NOT_PLACED",
                     signal_time=now_utc,
+                    signal_action=action,
+                    signal_confidence=confidence,
+                    window_label=window_label,
+                    confirm_status=confirm_status,
+                    confirm_reason=confirm_reason,
+                    confirm_timestamp_utc=confirm_timestamp_utc,
                     terminal=True,
                 )
                 await self.write_state()
@@ -2479,6 +3208,12 @@ class BotOrchestrator:
                     signal_id=signal_id,
                     reason="EXECUTION_EXCEPTION",
                     signal_time=now_utc,
+                    signal_action=action,
+                    signal_confidence=confidence,
+                    window_label=window_label,
+                    confirm_status=confirm_status,
+                    confirm_reason=confirm_reason,
+                    confirm_timestamp_utc=confirm_timestamp_utc,
                     terminal=False,
                 )
                 await self.write_state()
@@ -2525,6 +3260,7 @@ class BotOrchestrator:
                 session.setdefault("confidence_bucket", "medium")
                 session.setdefault("protect_r", float(self.config.xauex_session_protect_r))
                 session.setdefault("trail_r", float(self.config.xauex_session_trail_r))
+                session.setdefault("protect_lock_r", float(self.config.xauex_session_protect_lock_r))
 
                 candidate_session = advance_xauex_session_phase(
                     session,
@@ -2548,6 +3284,8 @@ class BotOrchestrator:
                     new_stop_loss = self._xauex_protect_stop_price(
                         direction=tracked.direction,
                         entry_price=tracked.entry_price,
+                        initial_risk_distance=float(updated_session.get("initial_risk_distance", 0.0) or 0.0),
+                        lock_r=float(updated_session.get("protect_lock_r", self.config.xauex_session_protect_lock_r) or 0.0),
                     )
                 elif current_phase == "TRAIL":
                     new_stop_loss = self._xauex_trailing_stop_price(
@@ -2556,7 +3294,11 @@ class BotOrchestrator:
                         confidence_bucket=str(updated_session.get("confidence_bucket", "medium")),
                     )
 
-                if new_stop_loss is not None and self.executor.validate_sl_modification(tracked, new_stop_loss):
+                if (
+                    new_stop_loss is not None
+                    and self.executor.validate_sl_modification(tracked, new_stop_loss)
+                    and self.executor.validate_sl_against_market(tracked, new_stop_loss, self.symbol_spec)
+                ):
                     amended = await self.api_client.amend_position_sltp(
                         position_id=position.position_id,
                         stop_loss=new_stop_loss,
@@ -2566,10 +3308,11 @@ class BotOrchestrator:
                         tracked.stop_loss = new_stop_loss
 
                 close_reason: Optional[str] = None
+                cash_take_profit_threshold = self._xauex_cash_take_profit_threshold(updated_session)
                 if force_flat_due:
                     close_reason = "FORCE_FLAT_LONDON"
-                elif position.unrealised_pnl >= self.config.xauex_cash_take_profit_gbp:
-                    close_reason = f"CASH_TP_GBP_{self.config.xauex_cash_take_profit_gbp:.2f}"
+                elif position.unrealised_pnl >= cash_take_profit_threshold:
+                    close_reason = f"CASH_TP_GBP_{cash_take_profit_threshold:.2f}"
                 elif position.unrealised_pnl <= -self.config.xauex_cash_stop_loss_gbp:
                     close_reason = f"CASH_SL_GBP_{self.config.xauex_cash_stop_loss_gbp:.2f}"
 

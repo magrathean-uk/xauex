@@ -1,0 +1,22 @@
+[Unit]
+Description=XAUEX Window Confirm Refresh (%i)
+After=network-online.target xauex.service
+Wants=network-online.target
+Requires=xauex.service
+OnFailure=systemd-email-alert@%n.service
+
+[Service]
+Type=oneshot
+User=__RUN_USER__
+WorkingDirectory=__REPO_ROOT__
+EnvironmentFile=__REPO_ROOT__/.env
+Environment=PYTHONUNBUFFERED=1
+Environment=LOG_LEVEL=DEBUG
+Environment=XAUEX_ENFORCE_WINDOW_SCHEDULE=1
+ExecStart=__REPO_ROOT__/ops/run_xauex_confirm.sh %i
+TimeoutStartSec=1800
+StandardOutput=append:__REPO_ROOT__/logs/xauex-confirm-%i.log
+StandardError=append:__REPO_ROOT__/logs/xauex-confirm-%i-error.log
+
+[Install]
+WantedBy=multi-user.target

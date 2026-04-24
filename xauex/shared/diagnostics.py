@@ -331,7 +331,7 @@ def _manual_section(runtime: Mapping[str, Any]) -> tuple[dict[str, Any], list[di
 
 def _risk_section(risk: Mapping[str, Any], runtime: Mapping[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
     trades_taken = _safe_int(_first_present(risk, "xauex_trades_taken_london", default=0))
-    run_cap = _safe_int(_first_present(runtime, "xauex_max_trades_per_day", default=2), 2)
+    run_cap = _safe_int(_first_present(runtime, "xauex_max_trades_per_day", default=3), 3)
     signal_runs = count_london_signal_runs(risk, runtime)
     issues: list[dict[str, Any]] = []
     events: list[dict[str, Any]] = [

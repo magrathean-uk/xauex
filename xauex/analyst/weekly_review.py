@@ -73,6 +73,8 @@ def build_review_prompt(
     risk = state.get("risk", {})
     signals = state.get("signal_history", [])
     shadow = state.get("shadow_signal_history", [])
+    runtime = state.get("runtime", {}) if isinstance(state.get("runtime"), dict) else {}
+    candidate_metrics = runtime.get("candidate_metrics", {}) if isinstance(runtime.get("candidate_metrics"), dict) else {}
 
     week_start_str = week_start.strftime("%Y-%m-%d")
     week_end_str = week_end.strftime("%Y-%m-%d")
@@ -89,6 +91,12 @@ def build_review_prompt(
 
     signals_text = f"{len(signals)} signals in history (last 12 shown in state)"
     shadow_text = f"{len(shadow)} shadow signals in history"
+    candidate_text = (
+        f"candidate lane total={candidate_metrics.get('total', 0)} "
+        f"completed={candidate_metrics.get('completed', 0)} "
+        f"false_negative_wins={candidate_metrics.get('false_negative_wins', 0)} "
+        f"expectancy_usd={candidate_metrics.get('expectancy_usd', 0.0)}"
+    )
 
     return f"""You are a senior trading analyst reviewing an automated XAUUSD bot's performance for the week of {week_start_str} to {week_end_str}.
 
@@ -106,6 +114,7 @@ SETUP SCORES ({len(scores)} setups):
 SIGNAL ACTIVITY:
   Primary strategy: {signals_text}
   Shadow strategy: {shadow_text}
+  Candidate lane: {candidate_text}
 
 Provide a strategic weekly review covering:
 1. Overall performance: win rate, RR quality, patterns in outcomes

@@ -9,12 +9,15 @@ from pathlib import Path
 from typing import Any, Optional
 
 from dotenv import dotenv_values
-from openai import OpenAI
+
+from xauex.shared.llm_client import create_chat_client
 
 XAUEX_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = XAUEX_ROOT.parent
 
 logger = logging.getLogger(__name__)
+
+OpenAI = None
 
 STATE_FILE = os.environ.get("XAUEX_STATE_FILE", os.environ.get("STATE_FILE_PATH", "/var/lib/xauex/state.json"))
 LOG_FILE = os.environ.get("XAUEX_ANALYST_LOG", "/var/log/xauex/analyst.log")
@@ -46,7 +49,6 @@ def default_model() -> str:
         "XAUEX_SIGNAL_LLM_MODEL",
         "LLM_MODEL_NAME",
         "XAUEX_SIGNAL_PARSER_LLM_MODEL",
-        "DEEPSEEK_MODEL",
         default="llama-3.1-8b-instant",
     )
 
@@ -56,7 +58,6 @@ def _resolve_llm_settings(model: Optional[str] = None) -> tuple[str, str, str]:
         "XAUEX_ANALYST_API_KEY",
         "XAUEX_SIGNAL_LLM_API_KEY",
         "LLM_API_KEY",
-        "DEEPSEEK_API_KEY",
         "XAUEX_SIGNAL_PARSER_LLM_API_KEY",
     )
     if not api_key:
@@ -68,9 +69,8 @@ def _resolve_llm_settings(model: Optional[str] = None) -> tuple[str, str, str]:
         "XAUEX_ANALYST_BASE_URL",
         "XAUEX_SIGNAL_LLM_BASE_URL",
         "LLM_BASE_URL",
-        "DEEPSEEK_BASE_URL",
         "XAUEX_SIGNAL_PARSER_LLM_BASE_URL",
-        default="https://api.deepseek.com/v1",
+        default="https://api.groq.com/openai/v1",
     )
     resolved_model = (model or "").strip() or default_model()
     return api_key, base_url, resolved_model
@@ -137,7 +137,10 @@ def save_cursor(path: str, data: Any) -> None:
 
 def call_llm(prompt: str, model: Optional[str] = None, timeout: int = 120) -> str:
     api_key, base_url, resolved_model = _resolve_llm_settings(model)
-    client = OpenAI(api_key=api_key, base_url=base_url)
+    if OpenAI is not None:
+        client = OpenAI(api_key=api_key, base_url=base_url)
+    else:
+        client = create_chat_client(api_key=api_key, base_url=base_url, timeout=float(timeout))
     logger.info("[ANALYST] Calling model=%s via %s", resolved_model, base_url)
     response = client.chat.completions.create(
         model=resolved_model,

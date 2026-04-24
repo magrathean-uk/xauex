@@ -1,0 +1,19 @@
+[Unit]
+Description=XAUEX Shadow Trial Weekly Report
+After=network-online.target
+Wants=network-online.target
+OnFailure=systemd-email-alert@%n.service
+
+[Service]
+Type=oneshot
+User=__RUN_USER__
+WorkingDirectory=__REPO_ROOT__
+EnvironmentFile=-__REPO_ROOT__/.env
+EnvironmentFile=-__REPO_ROOT__/xauex/.env
+Environment=XAUEX_REPO_ROOT=__REPO_ROOT__
+ExecStart=/usr/local/bin/xauex-run-shadow-report
+StandardOutput=append:__REPO_ROOT__/logs/xauex-shadow-report.log
+StandardError=append:__REPO_ROOT__/logs/xauex-shadow-report-error.log
+
+[Install]
+WantedBy=multi-user.target

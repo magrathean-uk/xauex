@@ -76,6 +76,12 @@ This installs:
 - `xauex-signal.service`
 - `xauex-signal.timer`
 - `xauex.service`
+- `xauex-shadow-compare.service`
+- `xauex-shadow-compare.timer`
+- `xauex-shadow-evaluate.service`
+- `xauex-shadow-evaluate.timer`
+- `xauex-shadow-report.service`
+- `xauex-shadow-report.timer`
 - `xauex-start.timer`
 - `xauex-stop.service`
 - `xauex-stop.timer`
@@ -84,7 +90,9 @@ This installs:
 - `xauex-weekly-review.service`
 - `xauex-weekly-review.timer`
 - `/etc/cron.d/xauex-daily-report`
+- the shadow compare weekly report timer, which emails the last 7 days of baseline-vs-debate results each Wednesday at 20:00 London time after at least 6 days of completed shadow history exists
 - the VPN-only Caddy snippet that redirects dashboard HTTP to HTTPS on the VPN interfaces and reverse-proxies to `127.0.0.1:8089`
+- a VPN-only compatibility redirect for old `http://10.x:8089` bookmarks so they land on the HTTPS dashboard instead of failing
 - `/usr/local/bin/xauex-check-host-layout`, which validates the Caddy/Pi-hole host layout and causes the install to fail if the host still conflicts with XAUEX's VPN HTTPS model
 
 It also installs:
@@ -108,6 +116,7 @@ Confirm the dashboard ingress model:
 
 ```bash
 curl -I http://10.8.0.1/
+curl -I http://10.8.0.1:8089/
 curl -Ik https://10.8.0.1/
 ```
 
@@ -123,6 +132,8 @@ Check logs:
 tail -f /var/log/xauex/xauex.log
 tail -f logs/xauex-signal.log
 tail -f logs/xauex-signal-error.log
+tail -f logs/xauex-shadow-compare.log
+tail -f logs/xauex-shadow-evaluate.log
 ```
 
 ## 7. What Is Not In Git

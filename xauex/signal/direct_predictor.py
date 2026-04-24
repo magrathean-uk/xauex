@@ -217,8 +217,9 @@ def build_recent_actions(payload: dict[str, Any]) -> list[dict[str, Any]]:
 def _price_features(state_snapshot: dict[str, Any]) -> dict[str, Any]:
     closes = [float(value) for value in (state_snapshot.get('recent_h1_closes') or []) if value is not None]
     daily = (state_snapshot.get('levels') or {}).get('daily') or {}
+    latest_quote = ((state_snapshot.get('runtime') or {}).get('latest_quote') or {}) if isinstance(state_snapshot, dict) else {}
     if len(closes) < 2:
-        return {
+        out = {
             'h1_count': len(closes),
             'momentum_3': 0.0,
             'momentum_6': 0.0,
@@ -226,6 +227,7 @@ def _price_features(state_snapshot: dict[str, Any]) -> dict[str, Any]:
             'range_position': 'UNKNOWN',
             'price_bias': 'NEUTRAL',
         }
+        return _attach_latest_quote(out, latest_quote)
     latest = closes[-1]
     low = float(daily.get('low') or min(closes))
     high = float(daily.get('high') or max(closes))
@@ -247,7 +249,7 @@ def _price_features(state_snapshot: dict[str, Any]) -> dict[str, Any]:
         price_bias = 'SELL'
     else:
         price_bias = 'NEUTRAL'
-    return {
+    out = {
         'h1_count': len(closes),
         'momentum_3': round(momentum_3, 2),
         'momentum_6': round(momentum_6, 2),
@@ -255,6 +257,23 @@ def _price_features(state_snapshot: dict[str, Any]) -> dict[str, Any]:
         'range_position': range_position,
         'price_bias': price_bias,
     }
+    return _attach_latest_quote(out, latest_quote)
+
+
+def _attach_latest_quote(price_features: dict[str, Any], latest_quote: dict[str, Any]) -> dict[str, Any]:
+    out = dict(price_features)
+    if not isinstance(latest_quote, dict):
+        return out
+    for source_key, target_key in (
+        ('bid', 'current_bid'),
+        ('ask', 'current_ask'),
+        ('mid', 'current_mid'),
+        ('updated_at_utc', 'quote_updated_at_utc'),
+    ):
+        value = latest_quote.get(source_key)
+        if value is not None:
+            out[target_key] = value
+    return out
 
 
 def _memory_summary(recent_runs: list[dict[str, Any]]) -> dict[str, Any]:

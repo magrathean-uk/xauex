@@ -13,9 +13,11 @@ class SignalConfig:
     llm_api_key: str
     llm_base_url: str
     llm_model: str
+    decision_mode: str
     parser_llm_api_key: str
     parser_llm_base_url: str
     parser_llm_model: str
+    debate_analyst_model: str
     validator_llm_api_key: str
     validator_llm_base_url: str
     validator_llm_model: str
@@ -34,6 +36,7 @@ class SignalConfig:
     project_prefix: str
     daily_cost_cap_usd: float
     cost_ledger_path: str
+    archive_dir: str
     cme_fedwatch_api_url: str | None
     cme_fedwatch_api_key: str | None
     cme_fedwatch_api_key_header: str
@@ -44,23 +47,26 @@ class SignalConfig:
         llm_api_key = (
             os.getenv('XAUEX_SIGNAL_LLM_API_KEY')
             or os.getenv('LLM_API_KEY')
-            or os.getenv('DEEPSEEK_API_KEY')
         )
         if not llm_api_key:
-            raise KeyError('XAUEX_SIGNAL_LLM_API_KEY/LLM_API_KEY/DEEPSEEK_API_KEY')
+            raise KeyError('XAUEX_SIGNAL_LLM_API_KEY/LLM_API_KEY')
 
         llm_base_url = (
             os.getenv('XAUEX_SIGNAL_LLM_BASE_URL')
             or os.getenv('LLM_BASE_URL')
-            or os.getenv('DEEPSEEK_BASE_URL')
-            or 'https://api.deepseek.com/v1'
+            or 'https://api.groq.com/openai/v1'
         )
         llm_model = (
             os.getenv('XAUEX_SIGNAL_LLM_MODEL')
             or os.getenv('LLM_MODEL_NAME')
-            or os.getenv('DEEPSEEK_MODEL')
-            or 'deepseek-chat'
+            or 'llama-3.1-8b-instant'
         )
+        decision_mode = (
+            os.getenv('XAUEX_SIGNAL_DECISION_MODE')
+            or 'baseline'
+        ).strip().lower()
+        if decision_mode not in {'baseline', 'analyst_debate'}:
+            raise ValueError('XAUEX_SIGNAL_DECISION_MODE must be baseline or analyst_debate')
         parser_llm_api_key = (
             os.getenv('XAUEX_SIGNAL_PARSER_LLM_API_KEY')
             or llm_api_key
@@ -72,6 +78,10 @@ class SignalConfig:
         parser_llm_model = (
             os.getenv('XAUEX_SIGNAL_PARSER_LLM_MODEL')
             or 'openai/gpt-oss-120b'
+        )
+        debate_analyst_model = (
+            os.getenv('XAUEX_SIGNAL_DEBATE_ANALYST_MODEL')
+            or 'llama-3.1-8b-instant'
         )
         validator_llm_api_key = (
             os.getenv('XAUEX_SIGNAL_VALIDATOR_LLM_API_KEY')
@@ -102,9 +112,11 @@ class SignalConfig:
             llm_api_key=llm_api_key,
             llm_base_url=llm_base_url,
             llm_model=llm_model,
+            decision_mode=decision_mode,
             parser_llm_api_key=parser_llm_api_key,
             parser_llm_base_url=parser_llm_base_url,
             parser_llm_model=parser_llm_model,
+            debate_analyst_model=debate_analyst_model,
             validator_llm_api_key=validator_llm_api_key,
             validator_llm_base_url=validator_llm_base_url,
             validator_llm_model=validator_llm_model,
@@ -126,6 +138,7 @@ class SignalConfig:
             project_prefix=os.getenv('XAUEX_SIGNAL_PROJECT_PREFIX', 'XAUEX Macro Swarm'),
             daily_cost_cap_usd=float(os.getenv('XAUEX_SIGNAL_DAILY_COST_CAP_USD', '0.20')),
             cost_ledger_path=os.getenv('XAUEX_SIGNAL_COST_LEDGER_PATH', '/var/lib/xauex/signal_costs.jsonl'),
+            archive_dir=os.getenv('XAUEX_SIGNAL_ARCHIVE_DIR', '/var/lib/xauex/signal_runs'),
             cme_fedwatch_api_url=os.getenv('XAUEX_SIGNAL_CME_FEDWATCH_API_URL') or None,
             cme_fedwatch_api_key=os.getenv('XAUEX_SIGNAL_CME_FEDWATCH_API_KEY') or None,
             cme_fedwatch_api_key_header=os.getenv('XAUEX_SIGNAL_CME_FEDWATCH_API_KEY_HEADER', 'Authorization'),

@@ -9,10 +9,9 @@ import logging
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from zoneinfo import ZoneInfo
-
 from dotenv import load_dotenv
 
+from xauex.live_windows import detect_window_label, get_live_window
 from xauex.signal.assets import all_symbols, resolve_asset
 from xauex.signal.config import SignalConfig
 from xauex.signal.direct_predictor import build_prediction_payload, build_recent_actions, render_direct_report
@@ -43,6 +42,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument('--dump-context', type=str, help='Write the normalized context markdown to this path')
     parser.add_argument('--dry-run', action='store_true', help="Parse signal but don't write cmd.json")
     parser.add_argument('--output', type=str, help='Override signal output path')
+    parser.add_argument(
+        '--window-label',
+        choices=('morning', 'midday', 'us_open', 'current'),
+        help='Explicit decision window label. Defaults to auto-detection from the shared live-window registry.',
+    )
     return parser.parse_args()
 
 
@@ -50,6 +54,14 @@ def main() -> None:
     load_dotenv()
     args = _parse_args()
     asset = resolve_asset(args.asset)
+    explicit_window_label = getattr(args, "window_label", None)
+    if explicit_window_label:
+        enforce_schedule = __import__("os").environ.get("XAUEX_ENFORCE_WINDOW_SCHEDULE", "").lower() in {"1", "true", "yes"}
+        if enforce_schedule:
+            window = get_live_window(window_label=explicit_window_label)
+            if window is not None and not window.phase_due(datetime.now(timezone.utc), phase="signal"):
+                logger.info("Skipping %s signal run because the shared timer fired outside that window's schedule.", explicit_window_label)
+                return
 
     if args.list_sources:
         rows = [row.to_dict() for row in get_sources(asset.symbol, auto_fetch_only=not args.include_manual_sources)]
@@ -112,7 +124,7 @@ def main() -> None:
         sys.exit(1)
 
     context_items = [item.to_dict() for item in bundle.items] if bundle is not None else []
-    window_label = _window_label()
+    window_label = explicit_window_label or _window_label()
     artifacts = build_direct_prediction_artifacts(
         config=config,
         asset_symbol=asset.symbol,
@@ -147,6 +159,10 @@ def main() -> None:
         prediction_payload=payload,
         window_label=window_label,
     )
+    signal['window_label'] = window_label
+    signal['confirm_status'] = str(signal.get('confirm_status') or 'PENDING')
+    signal['confirm_reason'] = str(signal.get('confirm_reason') or 'WAITING_FOR_CONFIRM')
+    signal['confirm_timestamp_utc'] = signal.get('confirm_timestamp_utc')
     signal['source'] = {
         'mode': (
             'history_fallback'
@@ -203,6 +219,21 @@ def main() -> None:
             estimated_total_cost_usd=(signal.get('llm_usage') or {}).get('estimated_total_cost_usd'),
             prediction_mode='direct',
         )
+
+    archive_dir = None
+    if signal.get('decision_mode') == 'baseline':
+        archive_dir = _archive_signal_run(
+            config=config,
+            asset=asset,
+            context_markdown=news_text,
+            context_items=context_items,
+            payload=payload,
+            results={**results, 'window_label': window_label},
+            signal=signal,
+            brief_meta=brief_meta,
+            evidence_path=Path(config.evidence_output_path),
+        )
+        signal['source']['archive_dir'] = str(archive_dir)
 
     output_path = args.output or config.signal_output_path
     write_signal(signal, output_path)
@@ -275,14 +306,7 @@ def build_direct_prediction_artifacts(
 
 
 def _window_label() -> str:
-    london_now = datetime.now(ZoneInfo('Europe/London'))
-    hour = london_now.hour
-    minute = london_now.minute
-    if (hour == 7 and minute >= 50) or hour == 8:
-        return 'morning'
-    if (hour == 11 and minute >= 20) or (hour == 12 and minute <= 10):
-        return 'midday'
-    return 'current'
+    return detect_window_label(datetime.now(timezone.utc))
 
 
 def _merge_usage(existing: dict[str, object], stage_usage: dict[str, object], *, stage_name: str) -> dict[str, object]:
@@ -300,6 +324,39 @@ def _merge_usage(existing: dict[str, object], stage_usage: dict[str, object], *,
     )
     merged['estimated_cost_usd'] = merged['estimated_total_cost_usd']
     return merged
+
+
+def _archive_signal_run(
+    *,
+    config: SignalConfig,
+    asset,
+    context_markdown: str,
+    context_items: list[dict[str, object]],
+    payload: dict[str, object],
+    results: dict[str, object],
+    signal: dict[str, object],
+    brief_meta: dict[str, object] | None,
+    evidence_path: Path,
+) -> Path:
+    timestamp = str(signal.get('timestamp_utc') or datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))
+    slug = timestamp.replace('-', '').replace(':', '')
+    archive_dir = Path(config.archive_dir) / f'{slug}_{asset.symbol.lower()}_{signal.get("decision_mode", "baseline")}'
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    (archive_dir / 'context.md').write_text(context_markdown, encoding='utf-8')
+    (archive_dir / 'context_items.json').write_text(json.dumps(context_items, indent=2), encoding='utf-8')
+    (archive_dir / 'prediction_payload.json').write_text(json.dumps(payload, indent=2), encoding='utf-8')
+    (archive_dir / 'results.json').write_text(json.dumps(results, indent=2), encoding='utf-8')
+    (archive_dir / 'signal.json').write_text(json.dumps(signal, indent=2), encoding='utf-8')
+    if brief_meta and brief_meta.get('path'):
+        brief_path = Path(str(brief_meta['path']))
+        if brief_path.exists():
+            (archive_dir / 'brief.md').write_text(brief_path.read_text(encoding='utf-8'), encoding='utf-8')
+        brief_meta_path = brief_path.with_suffix('.json')
+        if brief_meta_path.exists():
+            (archive_dir / 'brief.json').write_text(brief_meta_path.read_text(encoding='utf-8'), encoding='utf-8')
+    if evidence_path.exists():
+        (archive_dir / 'evidence.json').write_text(evidence_path.read_text(encoding='utf-8'), encoding='utf-8')
+    return archive_dir
 
 
 def _append_cost_ledger_entry(path: str, signal: dict[str, object]) -> None:

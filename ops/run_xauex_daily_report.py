@@ -20,7 +20,15 @@ DAILY_COST_CAP_USD = float(os.environ.get("XAUEX_SIGNAL_DAILY_COST_CAP_USD", "0.
 SERVICES = [
     "xauex-web.service",
     "xauex.service",
-    "xauex-signal.timer",
+    "xauex-window-signal@morning.timer",
+    "xauex-window-signal@midday.timer",
+    "xauex-window-signal@us_open.timer",
+    "xauex-window-confirm@morning.timer",
+    "xauex-window-confirm@midday.timer",
+    "xauex-window-confirm@us_open.timer",
+    "xauex-shadow-compare.timer",
+    "xauex-shadow-evaluate.timer",
+    "xauex-shadow-report.timer",
     "xauex-start.timer",
     "xauex-stop.timer",
     "xauex-trade-journal.timer",
@@ -37,6 +45,27 @@ class CheckResult:
 
 def _is_critical_issue(issue: Any) -> bool:
     return str(issue.get("severity", "")).lower() == "critical" if isinstance(issue, dict) else False
+
+
+def _signal_runs_complete(account: Any) -> bool:
+    if not isinstance(account, dict):
+        return False
+    try:
+        taken = int(account.get("signal_runs_taken_today", 0) or 0)
+        cap = int(account.get("signal_runs_cap", 0) or 0)
+    except (TypeError, ValueError):
+        return False
+    return cap > 0 and taken >= cap
+
+
+def _is_expected_end_of_day_issue(issue: Any, account: Any) -> bool:
+    if not isinstance(issue, dict):
+        return False
+    return (
+        str(issue.get("code") or "").upper() == "SIGNAL_STALE"
+        and str(issue.get("component") or "").lower() == "signal"
+        and _signal_runs_complete(account)
+    )
 
 
 def _positions_snapshot(diagnostics: Any) -> dict[str, Any]:
@@ -118,6 +147,7 @@ def _render_report() -> CheckResult:
     signal_confidence = signal.get("confidence") or "UNKNOWN"
     signal_generated_at = signal.get("generated_at_utc") or "-"
     signal_cost = ((signal.get("llm_usage") or {}) if isinstance(signal, dict) else {}).get("estimated_total_cost_usd")
+    candidate_metrics = payload.get("candidate_metrics", {}) if isinstance(payload, dict) else {}
     bot_state = bot.get("state") or "-"
     quote_state = quote.get("state") or "-"
     summary = diagnostics.get("summary") if isinstance(diagnostics, dict) else None
@@ -126,8 +156,16 @@ def _render_report() -> CheckResult:
     diagnostic_issues = diagnostics.get("current_issues", []) if isinstance(diagnostics, dict) else []
     if not isinstance(diagnostic_issues, list):
         diagnostic_issues = []
-    warning_issues = [issue for issue in diagnostic_issues if not _is_critical_issue(issue)]
-    critical_issues = [issue for issue in diagnostic_issues if _is_critical_issue(issue)]
+    warning_issues = [
+        issue
+        for issue in diagnostic_issues
+        if not _is_critical_issue(issue) or _is_expected_end_of_day_issue(issue, account)
+    ]
+    critical_issues = [
+        issue
+        for issue in diagnostic_issues
+        if _is_critical_issue(issue) and not _is_expected_end_of_day_issue(issue, account)
+    ]
     cost_summary = _daily_cost_summary()
     budget_warning = None
     if cost_summary["daily_cap_usd"] > 0 and cost_summary["total_cost_usd"] / cost_summary["daily_cap_usd"] >= 0.8:
@@ -174,8 +212,9 @@ def _render_report() -> CheckResult:
             f"- generated_at_utc: {signal_generated_at}",
             f"- bot state: {bot_state}",
             f"- quote state: {quote_state}",
-            f"- signal runs: {account.get('signal_runs_taken_today', 0)}/{account.get('signal_runs_cap', 2)}",
-            f"- trades used: {account.get('trades_taken_today', 0)}/{account.get('trade_cap', 2)}",
+            f"- signal runs: {account.get('signal_runs_taken_today', 0)}/{account.get('signal_runs_cap', 3)}",
+            f"- trades used: {account.get('trades_taken_today', 0)}/{account.get('trade_cap', 3)}",
+            f"- candidate lane: total {candidate_metrics.get('total', 0)} / completed {candidate_metrics.get('completed', 0)} / false-negative wins {candidate_metrics.get('false_negative_wins', 0)}",
             f"- latest run cost: {float(signal_cost or 0.0):.6f} USD",
             f"- daily LLM cost: {cost_summary['total_cost_usd']:.4f} USD across {cost_summary['run_count']} run(s)",
             f"- health: {health_status}",

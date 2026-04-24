@@ -164,9 +164,9 @@ def test_dashboard_payload_keeps_signal_run_cap_distinct_from_trade_cap(monkeypa
     assert response.status_code == 200
     payload = response.get_json()["data"]
     assert payload["account"]["signal_runs_taken_today"] == 1
-    assert payload["account"]["signal_runs_cap"] == 2
+    assert payload["account"]["signal_runs_cap"] == 3
     assert payload["account"]["trade_cap"] == 1
-    assert "both scheduled London run slots" not in payload["trade_explanation"]
+    assert "all three scheduled XAUEX windows" not in payload["trade_explanation"]
 
 
 def test_dashboard_payload_caps_chart_window_and_signal_histories(monkeypatch, tmp_path):
@@ -294,6 +294,94 @@ def test_dashboard_payload_reuses_normalized_oracle_signal_and_run_count(monkeyp
     assert payload["diagnostics"]["components"]["signal"]["action"] == "BUY"
     assert payload["account"]["signal_runs_taken_today"] == 1
     assert payload["diagnostics"]["components"]["risk"]["signal_runs_taken_today"] == 1
+
+
+def test_dashboard_payload_exposes_window_statuses_and_candidate_metrics(monkeypatch, tmp_path):
+    dashboard_app = _load_dashboard_module(monkeypatch, tmp_path)
+    client = dashboard_app.app.test_client()
+
+    dashboard_app.STATE_PATH.write_text(
+        json.dumps(
+            {
+                "meta": {"bot_status": "RUNNING", "last_updated_utc": "2026-04-07T01:02:03Z"},
+                "account": {"balance": 12345.67, "equity": 12400.1, "open_pnl": 54.43},
+                "risk": {
+                    "daily_pnl": 12.5,
+                    "weekly_pnl": 34.5,
+                    "xauex_trades_taken_london": 1,
+                    "xauex_signal_runs_london": [
+                        {
+                            "slot": "MORNING",
+                            "date_london": "2026-04-07",
+                            "signal_id": "2026-04-07T06:55:00Z",
+                            "action": "ORDER_PLACED",
+                            "reason": "ORDER_PLACED",
+                            "confirm_status": "CONFIRMED",
+                            "confirm_reason": "CONFIRMED",
+                            "confirm_timestamp_utc": "2026-04-07T06:59:00Z",
+                            "terminal": True,
+                        },
+                        {
+                            "slot": "MIDDAY",
+                            "date_london": "2026-04-07",
+                            "signal_id": "2026-04-07T10:25:00Z",
+                            "action": "SPREAD_TOO_WIDE",
+                            "reason": "SPREAD_TOO_WIDE",
+                            "confirm_status": "SKIP",
+                            "confirm_reason": "SPREAD_TOO_WIDE",
+                            "confirm_timestamp_utc": "2026-04-07T10:29:00Z",
+                            "terminal": True,
+                        },
+                    ],
+                },
+                "runtime": {
+                    "candidate_metrics": {
+                        "total": 4,
+                        "completed": 3,
+                        "false_negative_wins": 2,
+                        "expectancy_usd": 6.25,
+                    }
+                },
+                "open_positions": [],
+                "closed_trades_today": [],
+                "signal_history": [],
+                "shadow_signal_history": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    dashboard_app.CMD_PATH.write_text(
+        json.dumps(
+            {
+                "generated_at_utc": "2026-04-07T12:25:00Z",
+                "xauex_signal": {
+                    "action": "BUY",
+                    "symbol": "XAUUSD",
+                    "confidence": 0.81,
+                    "reasoning": "Breakout confirmed from local momentum.",
+                    "window_label": "us_open",
+                    "confirm_status": "PENDING",
+                    "confirm_reason": "WAITING_FOR_CONFIRM",
+                    "source": {"mode": "direct"},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    response = client.get("/api/dashboard")
+
+    assert response.status_code == 200
+    payload = response.get_json()["data"]
+    assert payload["account"]["signal_runs_cap"] == 3
+    assert len(payload["windows"]) == 3
+    assert payload["windows"][0]["slot"] == "MORNING"
+    assert payload["windows"][0]["confirm_status"] == "CONFIRMED"
+    assert payload["windows"][1]["slot"] == "MIDDAY"
+    assert payload["windows"][1]["confirm_status"] == "SKIP"
+    assert payload["windows"][2]["slot"] == "US_OPEN"
+    assert payload["windows"][2]["confirm_status"] == "PENDING"
+    assert payload["candidate_metrics"]["false_negative_wins"] == 2
 
 
 def test_diagnostics_endpoint_returns_structured_snapshot(monkeypatch, tmp_path):

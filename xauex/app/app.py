@@ -8,6 +8,7 @@ from typing import Any
 
 from flask import Flask, Response, abort, jsonify, render_template, request
 
+from xauex.live_windows import all_live_windows, london_trade_day
 from xauex.shared.diagnostics import build_diagnostics_snapshot, count_london_signal_runs
 
 
@@ -23,7 +24,7 @@ EVIDENCE_PATH = Path(os.getenv("XAUEX_SIGNAL_EVIDENCE_OUTPUT_PATH", "/var/lib/xa
 XAUEX_API_URL = os.getenv("XAUEX_API_URL", "http://10.8.0.1:8088").rstrip("/")
 MAX_SIGNAL_HISTORY = 12
 MAX_CHART_POINTS = 20
-MAX_SIGNAL_RUN_SLOTS = 2
+MAX_SIGNAL_RUN_SLOTS = 3
 
 
 def _load_json(path: Path, default: Any) -> Any:
@@ -78,6 +79,10 @@ def _extract_signal(cmd: dict[str, Any]) -> dict[str, Any]:
         "validator_summary": signal.get("validator_summary"),
         "consensus_state": signal.get("consensus_state"),
         "decision_packet": signal.get("decision_packet") or {},
+        "window_label": signal.get("window_label") or "current",
+        "confirm_status": signal.get("confirm_status") or "PENDING",
+        "confirm_reason": signal.get("confirm_reason") or "WAITING_FOR_CONFIRM",
+        "confirm_timestamp_utc": _fmt_ts(signal.get("confirm_timestamp_utc")),
     }
 
 
@@ -160,7 +165,7 @@ def _daily_metrics(account: dict[str, Any], risk: dict[str, Any], runtime: dict[
         risk.get("xauex_trades_taken_london"),
         _safe_int(runtime.get("xauex_trades_taken_london")),
     )
-    trade_cap = max(1, _safe_int(runtime.get("xauex_max_trades_per_day"), 2))
+    trade_cap = max(1, _safe_int(runtime.get("xauex_max_trades_per_day"), 3))
     return {
         "balance": balance,
         "equity": equity,
@@ -177,6 +182,66 @@ def _daily_metrics(account: dict[str, Any], risk: dict[str, Any], runtime: dict[
         "signal_runs_taken_today": int(signal_runs),
         "signal_runs_cap": MAX_SIGNAL_RUN_SLOTS,
     }
+
+
+def _window_runs_for_today(risk: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    runs = risk.get("xauex_signal_runs_london", []) if isinstance(risk, dict) else []
+    if not isinstance(runs, list):
+        return {}
+    today_text = str(risk.get("xauex_trade_date_london") or "").strip()
+    if not today_text:
+        available_dates = sorted(
+            {
+                str(item.get("date_london", "") or "").strip()
+                for item in runs
+                if isinstance(item, dict) and str(item.get("date_london", "") or "").strip()
+            }
+        )
+        today_text = available_dates[-1] if available_dates else london_trade_day(datetime.now(timezone.utc))
+    latest: dict[str, dict[str, Any]] = {}
+    for item in runs:
+        if not isinstance(item, dict):
+            continue
+        slot = str(item.get("slot", "") or "").upper()
+        if not slot:
+            continue
+        if item.get("date_london") and str(item.get("date_london")) != today_text:
+            continue
+        latest[slot] = item
+    return latest
+
+
+def _build_window_statuses(risk: dict[str, Any], signal: dict[str, Any]) -> list[dict[str, Any]]:
+    latest_runs = _window_runs_for_today(risk)
+    active_window = str(signal.get("window_label") or "current").lower()
+    statuses: list[dict[str, Any]] = []
+    for window in all_live_windows():
+        run = latest_runs.get(window.slot, {})
+        confirm_status = run.get("confirm_status")
+        confirm_reason = run.get("confirm_reason")
+        confirm_timestamp = run.get("confirm_timestamp_utc")
+        if not confirm_status and active_window == window.window_label:
+            confirm_status = signal.get("confirm_status") or "PENDING"
+            confirm_reason = signal.get("confirm_reason") or "WAITING_FOR_CONFIRM"
+            confirm_timestamp = signal.get("confirm_timestamp_utc")
+        statuses.append(
+            {
+                "slot": window.slot,
+                "window_label": window.window_label,
+                "timezone": window.timezone,
+                "description": window.description,
+                "signal_time_local": window.signal_time_local,
+                "confirm_time_local": window.confirm_time_local,
+                "entry_window_local": f"{window.entry_start_local}-{window.entry_end_local}",
+                "signal_id": run.get("signal_id"),
+                "outcome": run.get("reason") or ("PENDING" if active_window == window.window_label else "WAITING"),
+                "confirm_status": confirm_status or ("PENDING" if active_window == window.window_label else "WAITING"),
+                "confirm_reason": confirm_reason or ("WAITING_FOR_CONFIRM" if active_window == window.window_label else ""),
+                "confirm_timestamp_utc": _fmt_ts(confirm_timestamp),
+                "terminal": bool(run.get("terminal", False)),
+            }
+        )
+    return statuses
 
 
 def _load_text(path: Path, default: str = "") -> str:
@@ -335,7 +400,7 @@ def _trade_explanation(
     if trades_taken >= max_trades_per_day:
         return f"No trade is open because today’s XAUEX trade budget ({max_trades_per_day}) is already used."
     if signal_runs_taken >= signal_runs_cap:
-        return "No trade is open because both scheduled London run slots for today are already used."
+        return "No trade is open because all three scheduled XAUEX windows for today are already used."
     return "There is a directional signal, but no live position is open right now. That usually means the entry window was missed, the trade already closed, or execution conditions blocked it."
 
 
@@ -398,6 +463,7 @@ def _build_payload() -> dict[str, Any]:
     chart_payload = _build_chart_payload(state, latest_quote)
     signal_history = _leading_list(state.get("signal_history", []) or [], MAX_SIGNAL_HISTORY)
     shadow_signal_history = _leading_list(state.get("shadow_signal_history", []) or [], MAX_SIGNAL_HISTORY)
+    window_statuses = _build_window_statuses(risk, signal)
     return {
         "meta": {
             "bot_status": meta.get("bot_status", "UNKNOWN"),
@@ -416,6 +482,7 @@ def _build_payload() -> dict[str, Any]:
         "recent_trades": recent_trades,
         "signal_history": signal_history,
         "shadow_signal_history": shadow_signal_history,
+        "windows": window_statuses,
         "recent_h1_closes": chart_payload["recent_h1_closes"],
         "trade_entries_on_chart": chart_payload["trade_entries"],
         "chart": chart_payload,
@@ -427,6 +494,7 @@ def _build_payload() -> dict[str, Any]:
         "brief": brief_meta,
         "evidence": evidence,
         "manual_trade_status": manual_trade_status,
+        "candidate_metrics": runtime.get("candidate_metrics", {}) or {},
         "manual_command_pending": MANUAL_CMD_PATH.exists(),
         "auth": _dashboard_auth_payload(),
         "links": {

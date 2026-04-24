@@ -10,11 +10,11 @@ from typing import Any
 
 from xauex.signal.assets import AssetProfile
 from xauex.signal.config import SignalConfig
+from xauex.shared.llm_client import create_chat_client
 
 logger = logging.getLogger(__name__)
 
 _TOKEN_PRICES_USD_PER_MILLION: dict[str, tuple[float, float]] = {
-    'deepseek-chat': (0.28, 0.42),
     'llama-3.1-8b-instant': (0.05, 0.08),
     'llama-3.3-70b-versatile': (0.59, 0.79),
     'openai/gpt-oss-20b': (0.075, 0.30),
@@ -33,9 +33,10 @@ def write_brief(
     output_path: str,
     config: SignalConfig,
 ) -> dict[str, Any]:
-    from openai import OpenAI
-
-    client = OpenAI(api_key=config.brief_llm_api_key, base_url=config.brief_llm_base_url)
+    client = create_chat_client(
+        api_key=config.brief_llm_api_key,
+        base_url=config.brief_llm_base_url,
+    )
     action_lines = _action_lines(actions)
     prompt = (
         f'Asset: {asset.symbol}\n'

@@ -1,0 +1,12 @@
+[Unit]
+Description=XAUEX Shadow Compare Timer
+
+[Timer]
+OnCalendar=Mon-Fri *-*-* 08:10:00 Europe/London
+OnCalendar=Mon-Fri *-*-* 11:40:00 Europe/London
+OnCalendar=Mon-Fri *-*-* 08:40:00 America/New_York
+Persistent=true
+Unit=xauex-shadow-compare.service
+
+[Install]
+WantedBy=timers.target

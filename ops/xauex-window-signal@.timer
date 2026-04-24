@@ -1,0 +1,10 @@
+[Unit]
+Description=XAUEX Window Signal Refresh Timer (__WINDOW_LABEL__)
+
+[Timer]
+OnCalendar=__ON_CALENDAR__
+Persistent=true
+Unit=xauex-window-signal@__WINDOW_LABEL__.service
+
+[Install]
+WantedBy=timers.target
