@@ -214,6 +214,23 @@ def build_recent_actions(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return actions
 
 
+def _calculate_atr(closes: list[float], periods: int = 14) -> float:
+    if len(closes) < 2:
+        return 0.0
+    tr_values = []
+    for i in range(1, len(closes)):
+        high = closes[i]
+        low = min(closes[:i+1])
+        prev_close = closes[i - 1]
+        tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
+        tr_values.append(tr)
+    if len(tr_values) == 0:
+        return 0.0
+    if len(tr_values) < periods:
+        return mean(tr_values)
+    return mean(tr_values[-periods:])
+
+
 def _price_features(state_snapshot: dict[str, Any]) -> dict[str, Any]:
     closes = [float(value) for value in (state_snapshot.get('recent_h1_closes') or []) if value is not None]
     daily = (state_snapshot.get('levels') or {}).get('daily') or {}
@@ -226,6 +243,8 @@ def _price_features(state_snapshot: dict[str, Any]) -> dict[str, Any]:
             'momentum_12': 0.0,
             'range_position': 'UNKNOWN',
             'price_bias': 'NEUTRAL',
+            'atr_14': 0.0,
+            'momentum_threshold': 0.75,
         }
         return _attach_latest_quote(out, latest_quote)
     latest = closes[-1]
@@ -243,11 +262,17 @@ def _price_features(state_snapshot: dict[str, Any]) -> dict[str, Any]:
     momentum_6 = latest - closes[max(0, len(closes) - 7)]
     momentum_12 = latest - closes[max(0, len(closes) - 13)]
     avg_momentum = mean([momentum_3, momentum_6, momentum_12])
-    if avg_momentum > 0.75:
+    atr_14 = _calculate_atr(closes, periods=14)
+    momentum_threshold = atr_14 * 0.4
+    if avg_momentum > momentum_threshold:
         price_bias = 'BUY'
-    elif avg_momentum < -0.75:
+    elif avg_momentum < -momentum_threshold:
         price_bias = 'SELL'
     else:
+        price_bias = 'NEUTRAL'
+    if price_bias == 'BUY' and range_position == 'UPPER_THIRD':
+        price_bias = 'NEUTRAL'
+    elif price_bias == 'SELL' and range_position == 'LOWER_THIRD':
         price_bias = 'NEUTRAL'
     out = {
         'h1_count': len(closes),
@@ -256,6 +281,8 @@ def _price_features(state_snapshot: dict[str, Any]) -> dict[str, Any]:
         'momentum_12': round(momentum_12, 2),
         'range_position': range_position,
         'price_bias': price_bias,
+        'atr_14': round(atr_14, 4),
+        'momentum_threshold': round(momentum_threshold, 4),
     }
     return _attach_latest_quote(out, latest_quote)
 

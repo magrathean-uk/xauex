@@ -258,41 +258,43 @@ def build_xauex_assurance_profile(signal: Dict[str, object], config: Config) -> 
     normal_lock_r = float(getattr(config, "xauex_session_protect_lock_r", 0.30))
     high_lock_r = float(getattr(config, "xauex_session_high_confidence_protect_lock_r", 0.25))
 
+    loss_memory_gate = ""
+    memory_summary = signal.get("memory_summary") if isinstance(signal.get("memory_summary"), dict) else {}
+    net_pnl = float(memory_summary.get("net_pnl", 0.0) or 0.0)
+    trade_count = int(memory_summary.get("trade_count", 0) or 0)
+    memory_loss_threshold = float(getattr(config, "xauex_memory_loss_threshold_r", -2.0)) * 50.0
+    if net_pnl < memory_loss_threshold and trade_count >= 4:
+        loss_memory_gate = "_LOSS_MEMORY_TIGHTENED"
+
     if score >= 0.70:
+        target_rr = 2.5
+        if loss_memory_gate:
+            target_rr *= 0.5
         return XauexAssuranceProfile(
             bucket="high",
             score=score,
             allow_trade=True,
-            reason="HIGH_ASSURANCE",
+            reason="HIGH_ASSURANCE" + loss_memory_gate,
             risk_multiplier=1.0,
-            target_rr=2.5,
+            target_rr=round(target_rr, 2),
             protect_r=round(high_protect_r, 2),
             trail_r=round(max(normal_trail_r + 0.15, high_protect_r + 0.2), 2),
             protect_lock_r=round(high_lock_r, 2),
         )
     if score >= 0.55:
+        target_rr = 2.0
+        if loss_memory_gate:
+            target_rr *= 0.5
         return XauexAssuranceProfile(
             bucket="medium",
             score=score,
             allow_trade=True,
-            reason="MEDIUM_ASSURANCE",
+            reason="MEDIUM_ASSURANCE" + loss_memory_gate,
             risk_multiplier=0.85,
-            target_rr=2.0,
+            target_rr=round(target_rr, 2),
             protect_r=round(normal_protect_r, 2),
             trail_r=round(max(normal_trail_r, normal_protect_r + 0.2), 2),
             protect_lock_r=round(normal_lock_r, 2),
-        )
-    if score >= 0.48:
-        return XauexAssuranceProfile(
-            bucket="low",
-            score=score,
-            allow_trade=True,
-            reason="LOW_ASSURANCE",
-            risk_multiplier=0.50,
-            target_rr=1.5,
-            protect_r=round(low_protect_r, 2),
-            trail_r=round(max(low_protect_r + 0.3, normal_trail_r - 0.15), 2),
-            protect_lock_r=round(low_lock_r, 2),
         )
     return _blocked_assurance("ASSURANCE_TOO_LOW")
 
@@ -3180,6 +3182,7 @@ class BotOrchestrator:
                         "assurance_score": assurance.score,
                         "assurance_reason": assurance.reason,
                         "risk_multiplier": assurance.risk_multiplier,
+                        "cooldown_multiplier": cooldown,
                         "allowed_cash_risk": assurance_cash_risk,
                         "actual_cash_risk": actual_cash_risk,
                         "target_rr": assurance.target_rr,
