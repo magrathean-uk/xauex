@@ -3037,6 +3037,33 @@ class BotOrchestrator:
                     stop_loss_price = current_price + sl_distance
                     take_profit_price = current_price - tp_distance
 
+                # Reject trades when the stop would sit inside or within reach of
+                # the current bid/ask. bot/risk/sizing.calculate_lot_size enforces
+                # the same 3x-spread rule, but the XAUEX cash-risk sizer does not,
+                # so we guard the XAUEX path here to match.
+                current_spread = self._safe_current_spread()
+                if current_spread > 0 and sl_distance < current_spread * 3.0:
+                    logger.info(
+                        "[XAUEX] Stop distance %.2f is below 3x current spread %.2f - skipping",
+                        sl_distance,
+                        current_spread,
+                    )
+                    self._mark_slot_used(
+                        slot=slot,
+                        signal_id=signal_id,
+                        reason="SPREAD_TOO_WIDE",
+                        signal_time=now_utc,
+                        signal_action=action,
+                        signal_confidence=confidence,
+                        window_label=window_label,
+                        confirm_status=confirm_status,
+                        confirm_reason=confirm_reason,
+                        confirm_timestamp_utc=confirm_timestamp_utc,
+                        terminal=False,
+                    )
+                    await self.write_state()
+                    continue
+
                 cash_risk_budget = self._xauex_cash_risk_budget()
                 if cash_risk_budget <= 0:
                     logger.info("[XAUEX] Cash risk budget is non-positive - skipping")

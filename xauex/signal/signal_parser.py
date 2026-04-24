@@ -874,15 +874,28 @@ def _fallback_direction(actions: list, report_markdown: str, reasoning: Any) -> 
     bullish_hits = sum(normalized.count(term) for term in bullish_patterns)
     bearish_hits = sum(normalized.count(term) for term in bearish_patterns)
     score = bullish_hits - bearish_hits
-    action = 'BUY' if score >= 0 else 'SELL'
     total_hits = bullish_hits + bearish_hits
     conflict_ratio = (min(bullish_hits, bearish_hits) / total_hits) if total_hits else 0.5
     margin = abs(score) / max(total_hits, 1)
-    confidence = 0.51 + (0.17 / (1.0 + exp(-6.0 * (margin - 0.25))))
-    confidence = max(0.51, min(0.68, confidence))
+
+    # Require real evidence before converting HOLD into a direction.
+    # Pure keyword counts on news text are noisy; low total hits or a thin net
+    # margin is not enough conviction to take risk. Ties return HOLD so the
+    # downstream parser does not inherit a permanent long bias.
+    min_total_hits = 4
+    min_margin = 0.15
+    if score == 0 or total_hits < min_total_hits or margin < min_margin:
+        action = 'HOLD'
+        confidence = 0.0
+    else:
+        action = 'BUY' if score > 0 else 'SELL'
+        confidence = 0.51 + (0.17 / (1.0 + exp(-6.0 * (margin - 0.25))))
+        confidence = max(0.51, min(0.68, confidence))
+
     summary = (
         f'Fallback bias {action} from action/report score {score} '
-        f'(bullish_hits={bullish_hits}, bearish_hits={bearish_hits}, conflict_ratio={conflict_ratio:.2f}).'
+        f'(bullish_hits={bullish_hits}, bearish_hits={bearish_hits}, '
+        f'conflict_ratio={conflict_ratio:.2f}, margin={margin:.2f}).'
     )
     return {
         'action': action,

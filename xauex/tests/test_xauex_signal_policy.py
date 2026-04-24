@@ -74,6 +74,60 @@ def test_parser_keeps_hard_blocker_hold():
     assert signal["take_profit_distance"] == 0.0
 
 
+def test_parser_fallback_rejects_weak_evidence_hold():
+    """Weak or empty keyword evidence must not override HOLD.
+
+    Prior behavior used a permanent long-tie bias (score>=0 -> BUY) and a 0.51
+    confidence floor, so a HOLD from the LLM turned into a half-size BUY even
+    without real evidence. Now the fallback must stay HOLD when evidence is
+    thin.
+    """
+    asset = resolve_asset("XAUUSD")
+
+    # Empty inputs: the old code returned BUY at ~0.54; now must be HOLD.
+    empty_fallback = _fallback_direction(actions=[], report_markdown="", reasoning=None)
+    assert empty_fallback["action"] == "HOLD"
+    assert empty_fallback["confidence"] == 0.0
+
+    # A single bullish mention is not enough evidence to take risk.
+    thin_fallback = _fallback_direction(
+        actions=[],
+        report_markdown="Gold could drift a bit higher.",
+        reasoning=None,
+    )
+    assert thin_fallback["action"] == "HOLD"
+
+    # When fallback is HOLD the normalizer must preserve the HOLD decision.
+    signal = _normalize_signal(
+        asset,
+        {
+            "action": "HOLD",
+            "confidence": 0.30,
+            "reasoning": "Mixed signals; staying sidelined.",
+            "stop_loss_distance": 12.0,
+            "take_profit_distance": 24.0,
+        },
+        fallback=empty_fallback,
+    )
+    assert signal["action"] == "HOLD"
+    assert signal["stop_loss_distance"] == 0.0
+    assert signal["take_profit_distance"] == 0.0
+
+
+def test_parser_fallback_breaks_score_tie_into_hold():
+    """A score tie (equal bullish and bearish hits) must not default to BUY."""
+    balanced_fallback = _fallback_direction(
+        actions=[
+            {"agent_name": "A", "action_type": "POST", "content": "bullish upside higher dovish inflow"},
+            {"agent_name": "B", "action_type": "POST", "content": "bearish downside hawkish outflow selloff"},
+        ],
+        report_markdown="",
+        reasoning=None,
+    )
+    assert balanced_fallback["action"] == "HOLD"
+    assert balanced_fallback["confidence"] == 0.0
+
+
 def test_confidence_scales_lot_size_without_skipping_trade():
     dummy = SimpleNamespace(
         config=SimpleNamespace(
