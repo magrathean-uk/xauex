@@ -1,20 +1,18 @@
 """Backtest engine simulating bot logic on historical data."""
 
 import argparse
-import asyncio
 import logging
 from collections import defaultdict
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Dict
 
 from bot.patterns.detector import PatternDetector, Candle, PatternType
 from bot.filters.session import SessionFilter
-from bot.filters.news import NewsFilter
 from bot.risk.sizing import calculate_lot_size
 from bot.risk.gates import RiskGates, RiskState
-from bot.levels.htf_levels import HTFLevels, LevelManager
+from bot.levels.htf_levels import HTFLevels
 from bot.api.models import SymbolSpec
 from backtester.loader import OHLCBar, TickLoader
 from backtester.report import BacktestReport
@@ -73,11 +71,6 @@ class _HTFLevelManagerStub:
 
     def update_from_bars(self, bars: List[OHLCBar], current_bar_time: datetime) -> None:
         """Refresh levels when a new weekly bar opens."""
-        week_start = current_bar_time - (
-            current_bar_time - current_bar_time.replace(
-                hour=0, minute=0, second=0, microsecond=0
-            )
-        )
         # Identify bars that completed before this bar (closed)
         closed = [b for b in bars if b.open_time < current_bar_time]
         if len(closed) < 4:
@@ -139,10 +132,10 @@ class _HTFLevelManagerStub:
 
     def next_level_from(self, price: float, direction: int) -> Optional[float]:
         if direction > 0:
-            above = [l for l in self._levels if l > price]
+            above = [level for level in self._levels if level > price]
             return min(above) if above else None
         else:
-            below = [l for l in self._levels if l < price]
+            below = [level for level in self._levels if level < price]
             return max(below) if below else None
 
 

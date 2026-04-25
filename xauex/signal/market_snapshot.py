@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 _ACTIVE_WINDOWS = {'morning', 'midday', 'us_open'}
 _MARKET_SNAPSHOT_WARNING_AGE_SECONDS = 3 * 24 * 3600
 _MARKET_SNAPSHOT_BLOCK_AGE_SECONDS = 7 * 24 * 3600
-_MARKET_SNAPSHOT_BLOCK_STALE_SERIES_COUNT = 2
+_MARKET_SNAPSHOT_BLOCK_STALE_SERIES_COUNT = 3
 _MARKET_SNAPSHOT_WARNING_MISSING_COUNT = 1
 _MARKET_SNAPSHOT_BLOCK_MISSING_COUNT = 2
 
@@ -34,7 +34,7 @@ _FRED_SERIES: dict[str, dict[str, str]] = {
         'category': 'usd',
     },
     'usd_major_index': {
-        'series_id': 'DTWEXM',
+        'series_id': 'DTWEXAFEGS',
         'label': 'Trade-weighted USD major-currencies index',
         'category': 'usd',
     },

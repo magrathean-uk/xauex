@@ -1,5 +1,7 @@
 """State file writer for dashboard consumption."""
 
+# ruff: noqa: E402
+
 import asyncio
 import json
 import logging

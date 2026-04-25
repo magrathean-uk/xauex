@@ -20,7 +20,7 @@ import tempfile
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import Callable, List, Optional
+from typing import Callable, Optional
 
 from dotenv import dotenv_values
 
@@ -186,8 +186,6 @@ class ApiClient:
 
     def _route_message(self, envelope) -> None:
         """Called by transport on every inbound ProtoMessage envelope."""
-        from ctrader_open_api.messages.OpenApiCommonMessages_pb2 import ProtoMessage
-
         # Correlate request/response via clientMsgId
         msg_id = getattr(envelope, 'clientMsgId', None)
         if msg_id and str(msg_id) in self._message_futures:
@@ -626,7 +624,6 @@ class ApiClient:
     async def _dispatch_ticks(self) -> None:
         """Drain tick queue and invoke callback with mid price."""
         from ctrader_open_api import Protobuf
-        from ctrader_open_api.messages.OpenApiMessages_pb2 import ProtoOASpotEvent
 
         while True:
             raw_msg = await self._tick_event_queue.get()

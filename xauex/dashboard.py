@@ -8,6 +8,8 @@ Run separately from the bot:
     cd /opt/xauex && python dashboard.py
 """
 
+# ruff: noqa: E402
+
 import json
 import os
 import sys
@@ -419,7 +421,6 @@ class XAUEXDashboard(App):
         entries = state.get("trade_entries_on_chart", [])
         signal = state.get("last_signal", {})
         signal_history = state.get("signal_history", [])
-        shadow_signal = state.get("shadow_last_signal", {})
         shadow_signal_history = state.get("shadow_signal_history", [])
         diagnostics = state.get("diagnostics", {}) or {}
         observe = state.get("observe_only", True)

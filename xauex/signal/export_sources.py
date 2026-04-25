@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 
 from xauex.signal.assets import all_symbols
-from xauex.signal.source_registry import get_sources, get_source_map
+from xauex.signal.source_registry import get_sources
 
 
 FIELDNAMES = [

@@ -3,7 +3,7 @@
 import logging
 import os
 import sys
-from typing import Any, Dict, List
+from typing import Dict, List
 
 from xauex.analyst._utils import (
     default_model,

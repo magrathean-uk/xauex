@@ -34,6 +34,8 @@ import time
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Optional
 
+from aiohttp import web
+
 if TYPE_CHECKING:
     from main import BotOrchestrator
 
@@ -67,12 +69,6 @@ class HealthCheck:
 
     async def run(self) -> None:
         """Start the aiohttp server. Runs until cancelled."""
-        try:
-            from aiohttp import web
-        except ImportError:
-            logger.warning("[HEALTH] aiohttp not installed — health check disabled.")
-            return
-
         app = web.Application()
         app.router.add_get("/health", self._handle_health)
         app.router.add_get("/state", self._handle_state)
@@ -94,8 +90,6 @@ class HealthCheck:
             await self._runner.cleanup()
 
     async def _handle_health(self, request) -> "web.Response":
-        from aiohttp import web
-
         now_mono = time.monotonic()
         uptime   = int(now_mono - self._start_time)
         last_tick_age = None
@@ -151,8 +145,6 @@ class HealthCheck:
         return web.json_response(body, status=http_status)
 
     async def _handle_state(self, request) -> "web.Response":
-        from aiohttp import web
-
         state_path = self.orchestrator.config.state_file_path
         try:
             state = await asyncio.to_thread(self._load_state_file, state_path)

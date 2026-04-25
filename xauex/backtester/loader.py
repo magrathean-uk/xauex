@@ -7,7 +7,6 @@ for ~20× faster CSV parsing. Falls back to pure Python automatically.
 import csv
 import glob
 import logging
-import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 from pathlib import Path

@@ -26,6 +26,7 @@ WORKERS     ?= 4
 ENV_FILE    ?= .env
 LOG_FILE    ?= /var/log/xauex/xauex.log
 PYTHON      ?= python3
+LINT_PYTHON ?= .venv/bin/python
 MATURIN     ?= maturin
 
 TICK_DIR    := tick_parser
@@ -61,10 +62,10 @@ help:
 
 # ─── Tests ────────────────────────────────────────────────────────────────────
 test:
-	$(PYTHON) -m pytest tests/ -v
+	cd .. && $(PYTHON) -m pytest xauex/tests/ -v
 
 test-fast:
-	$(PYTHON) -m pytest tests/ -x -q --tb=short
+	cd .. && $(PYTHON) -m pytest xauex/tests/ -x -q --tb=short
 
 # ─── Rust extension ───────────────────────────────────────────────────────────
 build:
@@ -113,8 +114,14 @@ dashboard:
 	$(PYTHON) dashboard.py
 
 lint:
-	$(PYTHON) -m ruff check . || true
-	$(PYTHON) -m mypy bot/ config.py main.py --ignore-missing-imports || true
+	cd .. && $(LINT_PYTHON) -m ruff check xauex tests
+	cd .. && $(LINT_PYTHON) -m mypy --explicit-package-bases --follow-imports=skip \
+		xauex/bot/filters/news.py \
+		xauex/signal/cftc_cot.py \
+		xauex/signal/direct_predictor.py \
+		xauex/signal/market_snapshot.py \
+		xauex/signal/signal_parser.py \
+		--ignore-missing-imports
 
 # ─── Clean ───────────────────────────────────────────────────────────────────
 clean:

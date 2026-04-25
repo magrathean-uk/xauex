@@ -9,8 +9,7 @@ import json
 import logging
 import os
 import tempfile
-from datetime import datetime, timezone
-from pathlib import Path
+from datetime import datetime
 from typing import Optional
 
 from bot.levels.htf_levels import HTFLevels

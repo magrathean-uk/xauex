@@ -1,6 +1,4 @@
-import json
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 import xauex.signal.shadow_trial as shadow_trial
 from xauex.signal.shadow_trial import (

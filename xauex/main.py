@@ -250,11 +250,9 @@ def build_xauex_assurance_profile(signal: Dict[str, object], config: Config) -> 
         score -= 0.05
 
     score = round(max(0.0, min(1.0, score)), 3)
-    low_protect_r = float(getattr(config, "xauex_session_low_confidence_protect_r", 0.70))
     normal_protect_r = float(getattr(config, "xauex_session_protect_r", 0.85))
     high_protect_r = float(getattr(config, "xauex_session_high_confidence_protect_r", 1.00))
     normal_trail_r = float(getattr(config, "xauex_session_trail_r", 1.35))
-    low_lock_r = float(getattr(config, "xauex_session_low_confidence_protect_lock_r", 0.35))
     normal_lock_r = float(getattr(config, "xauex_session_protect_lock_r", 0.30))
     high_lock_r = float(getattr(config, "xauex_session_high_confidence_protect_lock_r", 0.25))
 
@@ -684,12 +682,17 @@ class BotOrchestrator:
         elif mid is None:
             mid = existing_mid if existing_mid is not None else None
 
-        quote_time = timestamp.astimezone(timezone.utc) if timestamp is not None else datetime.now(timezone.utc)
+        if timestamp is not None:
+            updated_at_utc = timestamp.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        else:
+            updated_at_utc = str(self._latest_quote.get("updated_at_utc") or "")
+            if not updated_at_utc:
+                updated_at_utc = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         self._latest_quote = {
             "bid": round(bid, 2) if bid is not None else self._latest_quote.get("bid"),
             "ask": round(ask, 2) if ask is not None else self._latest_quote.get("ask"),
             "mid": round(float(mid), 2) if mid is not None else self._latest_quote.get("mid"),
-            "updated_at_utc": quote_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "updated_at_utc": updated_at_utc,
         }
 
     async def startup(self) -> None:
@@ -3061,7 +3064,6 @@ class BotOrchestrator:
                     min_stop=float(self.config.sl_min_dollars),
                     max_stop=max_stop_distance,
                 )
-                pre_widen_sl = sl_distance
                 wide_spread_threshold = float(getattr(self.config, "xauex_wide_spread_usd", 0.80))
                 wide_spread_multiplier = float(getattr(self.config, "xauex_wide_spread_sl_multiplier", 1.20))
                 spread_for_widen = self._safe_current_spread()

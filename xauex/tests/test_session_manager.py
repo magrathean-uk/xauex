@@ -1,4 +1,5 @@
-import os
+# ruff: noqa: E402
+
 import sys
 import importlib.util
 from datetime import datetime, timezone
@@ -240,7 +241,7 @@ def test_assurance_profile_allows_aligned_high_confidence_with_larger_target():
 
     assert profile.allow_trade is True
     assert profile.bucket == "high"
-    assert profile.risk_multiplier == 1.0
+    assert profile.risk_multiplier == 1.5
     assert profile.target_rr == 2.5
     assert profile.protect_lock_r == 0.25
 

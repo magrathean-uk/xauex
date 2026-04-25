@@ -202,12 +202,6 @@ class Executor:
             logger.info("[EXECUTOR] Skipped. Reason: INVALID_LOT_SIZE")
             return None
 
-        # Get current spread (sync — uses cached bid/ask from tick stream)
-        try:
-            current_spread = self.api_client.get_current_spread()
-        except Exception:
-            current_spread = 0.0
-
         # We can't know the exact entry until filled, but validate the SL distance
         # that was computed by the orchestrator using the symbol spec
         direction_label = "LONG" if direction > 0 else "SHORT"

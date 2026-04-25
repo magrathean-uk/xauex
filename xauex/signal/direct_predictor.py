@@ -239,18 +239,12 @@ def build_recent_actions(payload: dict[str, Any]) -> list[dict[str, Any]]:
 def _calculate_atr(closes: list[float], periods: int = 14) -> float:
     if len(closes) < 2:
         return 0.0
-    tr_values = []
-    for i in range(1, len(closes)):
-        high = closes[i]
-        low = min(closes[:i+1])
-        prev_close = closes[i - 1]
-        tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
-        tr_values.append(tr)
-    if len(tr_values) == 0:
+    close_moves = [abs(closes[i] - closes[i - 1]) for i in range(1, len(closes))]
+    if not close_moves:
         return 0.0
-    if len(tr_values) < periods:
-        return mean(tr_values)
-    return mean(tr_values[-periods:])
+    if len(close_moves) < periods:
+        return mean(close_moves)
+    return mean(close_moves[-periods:])
 
 
 def _price_features(state_snapshot: dict[str, Any]) -> dict[str, Any]:

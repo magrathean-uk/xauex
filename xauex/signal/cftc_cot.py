@@ -66,14 +66,17 @@ def fetch_cot_snapshot(*, config: SignalConfig) -> dict[str, Any]:
     if not isinstance(rows, list) or not rows:
         return _unavailable_payload('CFTC COT response was empty.')
 
-    parsed = [_parse_row(row) for row in rows]
-    parsed = [row for row in parsed if row is not None]
-    if not parsed:
+    parsed_rows: list[dict[str, Any]] = []
+    for row in rows:
+        parsed_row = _parse_row(row)
+        if parsed_row is not None:
+            parsed_rows.append(parsed_row)
+    if not parsed_rows:
         return _unavailable_payload('CFTC COT rows could not be parsed.')
 
-    parsed.sort(key=lambda row: row['report_date'], reverse=True)
-    latest = parsed[0]
-    history = parsed[: _COT_LOOKBACK_WEEKS]
+    parsed_rows.sort(key=lambda row: row['report_date'], reverse=True)
+    latest = parsed_rows[0]
+    history = parsed_rows[: _COT_LOOKBACK_WEEKS]
 
     nets = [row['mm_net'] for row in history]
     latest_net = latest['mm_net']

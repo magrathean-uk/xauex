@@ -1,5 +1,10 @@
 from xauex.signal.assets import resolve_asset
-from xauex.signal.direct_predictor import build_prediction_payload, build_recent_actions, render_direct_report
+from xauex.signal.direct_predictor import (
+    _calculate_atr,
+    build_prediction_payload,
+    build_recent_actions,
+    render_direct_report,
+)
 
 
 def test_build_prediction_payload_includes_context_and_recent_history():
@@ -257,3 +262,45 @@ def test_report_and_actions_surface_warning_market_statuses_consistently():
     assert "2026-05-05" in policy_actions[0]["content"]
     assert "approaching" in policy_actions[0]["content"]
     assert "Official Fed policy context is partially available." in policy_actions[0]["content"]
+
+
+def test_report_and_actions_surface_cot_positioning():
+    asset = resolve_asset("XAUUSD")
+    payload = build_prediction_payload(
+        asset=asset,
+        context_markdown="# Context\nCOT is crowded.",
+        recent_runs=[],
+        state_snapshot={"recent_h1_closes": [10, 11, 12, 13], "levels": {"daily": {"low": 9, "high": 15}}},
+        market_snapshot={
+            "cot": {
+                "status": "available",
+                "available": True,
+                "report_date_utc": "2026-04-21T00:00:00Z",
+                "managed_money_net_long": 250000,
+                "managed_money_net_change_wow": 12000,
+                "net_long_percentile_26w": 0.96,
+                "net_long_zscore_26w": 2.1,
+                "extreme_positioning": True,
+                "bias": "SELL",
+                "summary": "Crowded long positioning.",
+            }
+        },
+    )
+
+    report = render_direct_report(payload)
+    actions = build_recent_actions(payload)
+    cot_actions = [action for action in actions if action["agent_name"] == "cftc_cot"]
+
+    assert "CFTC Gold Positioning" in report
+    assert "net_long_percentile_26w: 0.96" in report
+    assert cot_actions
+    assert cot_actions[0]["action_type"] == "SELL"
+    assert "mm_net_long=250000" in cot_actions[0]["content"]
+
+
+def test_close_volatility_is_direction_symmetric():
+    uptrend_closes = [float(value) for value in range(100, 115)]
+    downtrend_closes = [float(value) for value in range(114, 99, -1)]
+
+    assert _calculate_atr(uptrend_closes) == _calculate_atr(downtrend_closes)
+    assert _calculate_atr(uptrend_closes) == 1.0

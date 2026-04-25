@@ -23,7 +23,7 @@ class BacktestReport:
         print("  XAUEX BACKTEST REPORT")
         print("=" * 50)
         print(f"  Period:               {period}")
-        print(f"  Instrument:           XAUUSD")
+        print("  Instrument:           XAUUSD")
         print()
         print(f"  Signals detected:     {m.get('signals_detected', 0)}")
         print(f"  Trades taken:         {m.get('trades_taken', 0)}")
@@ -69,7 +69,7 @@ class BacktestReport:
         self._check("Win rate ≥ 45%", win_rate >= 45.0)
         from config import load_config
         try:
-            cfg = load_config()
+            load_config()
             balance = 3000.0
         except Exception:
             balance = 3000.0

@@ -3,8 +3,7 @@
 import logging
 import os
 import sys
-from datetime import datetime, timezone, timedelta
-from typing import Optional
+from datetime import datetime, timezone
 
 from xauex.analyst._utils import (
     default_model,

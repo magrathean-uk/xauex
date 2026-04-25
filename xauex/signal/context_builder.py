@@ -6,7 +6,6 @@ from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 import html as html_lib
-import json
 import logging
 import re
 from typing import Optional

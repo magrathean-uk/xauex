@@ -81,6 +81,44 @@ def test_weekends_are_not_tradable():
     assert orch._xauex_entry_slot(_dt("2026-04-04T08:02")) is None
 
 
+def test_dashboard_refresh_does_not_retimestamp_cached_quote_without_new_tick():
+    orch = _build_orchestrator()
+    orch.api_client = SimpleNamespace(get_current_quote=lambda: (4707.26, 4707.66))
+    orch._latest_quote = {
+        "bid": 4707.26,
+        "ask": 4707.66,
+        "mid": 4707.46,
+        "updated_at_utc": "2026-04-24T20:56:58Z",
+    }
+
+    orch._refresh_latest_quote_snapshot()
+
+    assert orch._latest_quote == {
+        "bid": 4707.26,
+        "ask": 4707.66,
+        "mid": 4707.46,
+        "updated_at_utc": "2026-04-24T20:56:58Z",
+    }
+
+
+def test_tick_refresh_uses_broker_tick_timestamp_for_quote_freshness():
+    orch = _build_orchestrator()
+    orch.api_client = SimpleNamespace(get_current_quote=lambda: (4707.26, 4707.66))
+    orch._latest_quote = {}
+
+    orch._refresh_latest_quote_snapshot(
+        mid=4707.46,
+        timestamp=datetime(2026, 4, 24, 20, 56, 58, tzinfo=timezone.utc),
+    )
+
+    assert orch._latest_quote == {
+        "bid": 4707.26,
+        "ask": 4707.66,
+        "mid": 4707.46,
+        "updated_at_utc": "2026-04-24T20:56:58Z",
+    }
+
+
 def test_slot_usage_is_tracked_and_persists_until_next_slot():
     orch = _build_orchestrator()
     now = _dt("2026-04-07T10:20")
