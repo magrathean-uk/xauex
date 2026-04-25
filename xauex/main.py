@@ -275,7 +275,7 @@ def build_xauex_assurance_profile(signal: Dict[str, object], config: Config) -> 
             score=score,
             allow_trade=True,
             reason="HIGH_ASSURANCE" + loss_memory_gate,
-            risk_multiplier=1.0,
+            risk_multiplier=1.5,
             target_rr=round(target_rr, 2),
             protect_r=round(high_protect_r, 2),
             trail_r=round(max(normal_trail_r + 0.15, high_protect_r + 0.2), 2),
@@ -290,7 +290,7 @@ def build_xauex_assurance_profile(signal: Dict[str, object], config: Config) -> 
             score=score,
             allow_trade=True,
             reason="MEDIUM_ASSURANCE" + loss_memory_gate,
-            risk_multiplier=0.85,
+            risk_multiplier=1.0,
             target_rr=round(target_rr, 2),
             protect_r=round(normal_protect_r, 2),
             trail_r=round(max(normal_trail_r, normal_protect_r + 0.2), 2),
@@ -2391,6 +2391,20 @@ class BotOrchestrator:
             return 0.5
         return 1.0
 
+    def _xauex_session_slot_multiplier(self, slot: Optional[str]) -> float:
+        """Per-slot risk scaling. US_OPEN tends to whipsaw around data prints,
+        so apply a small downsize there even when assurance is high. London
+        morning trends remain full size; midday continuation stays full size.
+        """
+        if not slot:
+            return 1.0
+        slot_key = str(slot).upper()
+        if slot_key == "US_OPEN":
+            return float(getattr(self.config, "xauex_us_open_risk_multiplier", 0.85))
+        if slot_key == "MIDDAY":
+            return float(getattr(self.config, "xauex_midday_risk_multiplier", 1.0))
+        return float(getattr(self.config, "xauex_london_open_risk_multiplier", 1.0))
+
     def _xauex_recent_atr_distance(self) -> float:
         closes = [float(value) for value in self._recent_h1_closes if value is not None]
         if len(closes) < 2:
@@ -3047,6 +3061,21 @@ class BotOrchestrator:
                     min_stop=float(self.config.sl_min_dollars),
                     max_stop=max_stop_distance,
                 )
+                pre_widen_sl = sl_distance
+                wide_spread_threshold = float(getattr(self.config, "xauex_wide_spread_usd", 0.80))
+                wide_spread_multiplier = float(getattr(self.config, "xauex_wide_spread_sl_multiplier", 1.20))
+                spread_for_widen = self._safe_current_spread()
+                if spread_for_widen >= wide_spread_threshold:
+                    widened = round(min(sl_distance * wide_spread_multiplier, max_stop_distance), 2)
+                    if widened > sl_distance:
+                        logger.info(
+                            "[XAUEX] Wide spread %.2f >= %.2f - expanding SL %.2f -> %.2f to absorb whipsaw",
+                            spread_for_widen,
+                            wide_spread_threshold,
+                            sl_distance,
+                            widened,
+                        )
+                        sl_distance = widened
                 tp_distance = build_xauex_take_profit_distance(
                     signal_take_profit=signal_tp_distance,
                     stop_distance=sl_distance,
@@ -3113,7 +3142,17 @@ class BotOrchestrator:
                         cooldown,
                         int(getattr(self.risk_gates.state, "consecutive_losses_today", 0) or 0),
                     )
-                assurance_cash_risk = round(cash_risk_budget * assurance.risk_multiplier * cooldown, 2)
+                session_slot_multiplier = self._xauex_session_slot_multiplier(slot)
+                if session_slot_multiplier < 1.0:
+                    logger.info(
+                        "[XAUEX] Session slot multiplier %.2fx applied for slot=%s",
+                        session_slot_multiplier,
+                        slot,
+                    )
+                assurance_cash_risk = round(
+                    cash_risk_budget * assurance.risk_multiplier * cooldown * session_slot_multiplier,
+                    2,
+                )
                 lot = calculate_xauex_lot_size_from_cash_risk(
                     cash_risk=assurance_cash_risk,
                     stop_distance=sl_distance,
@@ -3183,6 +3222,7 @@ class BotOrchestrator:
                         "assurance_reason": assurance.reason,
                         "risk_multiplier": assurance.risk_multiplier,
                         "cooldown_multiplier": cooldown,
+                        "session_slot_multiplier": session_slot_multiplier,
                         "allowed_cash_risk": assurance_cash_risk,
                         "actual_cash_risk": actual_cash_risk,
                         "target_rr": assurance.target_rr,

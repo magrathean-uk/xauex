@@ -450,7 +450,16 @@ Rules:
 - BLOCK only for hard blockers such as stale inputs during a live window, missing core tradeable data, or invalid trade geometry.
 - If the thesis is mixed but still directional, return DISAGREE and reduce confidence instead of blocking.
 - Use ALIGNED when the proposed trade is well supported by structured drivers and the narrative context.
-- Keep the response concise and operational."""
+- Keep the response concise and operational.
+
+Weakness detection (return DISAGREE with negative adjustment when ANY of these apply):
+- Confidence above 0.60 but the reasoning hedges with words like "mixed", "uncertain", "conflicting", "could go either way", or "thin evidence".
+- The trade direction contradicts the dominant macro driver (e.g. BUY gold while DXY is rallying with no offsetting safe-haven flow).
+- Recent trade memory shows 2+ losses in the same direction with no regime change cited.
+- Price action is mid-range with weak momentum and no clear breakout catalyst.
+- The reasoning relies on a single weak signal (one keyword, one indicator) without corroboration.
+
+When in doubt about strength, prefer DISAGREE over ALIGNED. A trimmed confidence is cheaper than a forced trade."""
 
 
 def _parser_user_prompt(asset: AssetProfile, packet: dict[str, Any]) -> str:
