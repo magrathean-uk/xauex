@@ -140,6 +140,20 @@ def render_direct_report(payload: dict[str, Any]) -> str:
             lines.append(f"- fomc_window_state: {policy_context.get('fomc_window_state')}")
         if policy_context.get('summary'):
             lines.append(f"- summary: {policy_context.get('summary')}")
+    cot = market_snapshot.get('cot') or {}
+    cot_status = str(cot.get('status', '') or '').lower()
+    if _is_surfaceable_status(cot_status) and cot.get('available'):
+        lines.append('')
+        lines.append('## CFTC Gold Positioning (Managed Money)')
+        lines.append(f"- report_date_utc: {cot.get('report_date_utc')}")
+        lines.append(f"- net_long_contracts: {cot.get('managed_money_net_long')}")
+        lines.append(f"- net_change_wow: {cot.get('managed_money_net_change_wow')}")
+        lines.append(f"- net_long_percentile_26w: {cot.get('net_long_percentile_26w')}")
+        lines.append(f"- net_long_zscore_26w: {cot.get('net_long_zscore_26w')}")
+        lines.append(f"- extreme_positioning: {cot.get('extreme_positioning')}")
+        lines.append(f"- bias: {cot.get('bias')}")
+        if cot.get('summary'):
+            lines.append(f"- summary: {cot.get('summary')}")
     event_flags = payload.get('event_flags') or {}
     if event_flags:
         lines.append('')
@@ -210,6 +224,14 @@ def build_recent_actions(payload: dict[str, Any]) -> list[dict[str, Any]]:
             'agent_name': 'policy_context',
             'action_type': 'NEUTRAL',
             'content': _format_policy_context(policy_context),
+        })
+    cot = market.get('cot') or {}
+    if cot.get('available'):
+        cot_action = str(cot.get('bias', 'NEUTRAL') or 'NEUTRAL').upper()
+        actions.append({
+            'agent_name': 'cftc_cot',
+            'action_type': cot_action,
+            'content': _format_cot(cot),
         })
     return actions
 
@@ -427,6 +449,27 @@ def _format_policy_context(policy_context: dict[str, Any]) -> str:
     summary = str(policy_context.get('summary', '') or '').strip()
     if summary:
         parts.append(f"summary={summary}")
+    return ' | '.join(parts)[:260]
+
+
+def _format_cot(cot: dict[str, Any]) -> str:
+    parts: list[str] = []
+    bias = str(cot.get('bias', '') or '').strip()
+    if bias:
+        parts.append(f"bias={bias}")
+    net_long = cot.get('managed_money_net_long')
+    if net_long is not None:
+        parts.append(f"mm_net_long={net_long}")
+    change = cot.get('managed_money_net_change_wow')
+    if change is not None:
+        parts.append(f"net_change_wow={change}")
+    percentile = cot.get('net_long_percentile_26w')
+    if percentile is not None:
+        parts.append(f"percentile_26w={percentile}")
+    if cot.get('extreme_positioning'):
+        parts.append('extreme=true')
+    if cot.get('summary'):
+        parts.append(str(cot.get('summary')))
     return ' | '.join(parts)[:260]
 
 

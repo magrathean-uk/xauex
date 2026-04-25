@@ -13,10 +13,15 @@ def test_build_market_snapshot_maps_gold_driver_biases(monkeypatch):
 
     fake_rows = {
         "DTWEXBGS": {"value": 121.0, "previous_value": 121.3, "change_1d": -0.3, "date_utc": "2026-04-14T00:00:00Z", "age_seconds": 3600.0},
+        "DTWEXM": {"value": 105.5, "previous_value": 105.8, "change_1d": -0.3, "date_utc": "2026-04-14T00:00:00Z", "age_seconds": 3600.0},
         "DGS2": {"value": 3.8, "previous_value": 3.85, "change_1d": -0.05, "date_utc": "2026-04-14T00:00:00Z", "age_seconds": 3600.0},
         "DGS10": {"value": 4.2, "previous_value": 4.28, "change_1d": -0.08, "date_utc": "2026-04-14T00:00:00Z", "age_seconds": 3600.0},
         "DFII10": {"value": 1.9, "previous_value": 1.95, "change_1d": -0.05, "date_utc": "2026-04-14T00:00:00Z", "age_seconds": 3600.0},
+        "T5YIE": {"value": 2.4, "previous_value": 2.35, "change_1d": 0.05, "date_utc": "2026-04-14T00:00:00Z", "age_seconds": 3600.0},
+        "T10YIE": {"value": 2.5, "previous_value": 2.46, "change_1d": 0.04, "date_utc": "2026-04-14T00:00:00Z", "age_seconds": 3600.0},
         "VIXCLS": {"value": 18.2, "previous_value": 17.5, "change_1d": 0.7, "date_utc": "2026-04-14T00:00:00Z", "age_seconds": 3600.0},
+        "DCOILWTICO": {"value": 82.5, "previous_value": 81.0, "change_1d": 1.5, "date_utc": "2026-04-14T00:00:00Z", "age_seconds": 3600.0},
+        "CBBTCUSD": {"value": 65000.0, "previous_value": 64200.0, "change_1d": 800.0, "date_utc": "2026-04-14T00:00:00Z", "age_seconds": 3600.0},
     }
 
     monkeypatch.setattr(
@@ -42,6 +47,16 @@ def test_build_market_snapshot_maps_gold_driver_biases(monkeypatch):
             "bias": "NEUTRAL",
         },
     )
+    monkeypatch.setattr(
+        "xauex.signal.market_snapshot.fetch_cot_snapshot",
+        lambda config: {
+            "status": "available",
+            "available": True,
+            "summary": "Managed Money net long mid-range.",
+            "bias": "NEUTRAL",
+            "extreme_positioning": False,
+        },
+    )
 
     snapshot = build_market_snapshot(
         asset=resolve_asset("XAUUSD"),
@@ -51,10 +66,104 @@ def test_build_market_snapshot_maps_gold_driver_biases(monkeypatch):
 
     assert snapshot["overall_bias"] == "BUY"
     assert snapshot["series"]["usd_broad_index"]["bias"] == "BUY"
+    assert snapshot["series"]["usd_major_index"]["bias"] == "BUY"
     assert snapshot["series"]["us10y_yield"]["bias"] == "BUY"
+    assert snapshot["series"]["us5y_breakeven_inflation"]["bias"] == "BUY"
+    assert snapshot["series"]["us10y_breakeven_inflation"]["bias"] == "BUY"
+    assert snapshot["series"]["wti_oil"]["bias"] == "BUY"
+    assert snapshot["series"]["btc_usd"]["bias"] == "NEUTRAL"
+    assert snapshot["cot"]["available"] is True
     assert snapshot["event_flags"]["cpi_release_recent"] is True
     assert snapshot["event_flags"]["fed_event_recent"] is True
     assert snapshot["input_freshness"]["missing_series_count"] == 0
+
+
+def test_falling_breakevens_signal_sell_bias_for_gold(monkeypatch):
+    """Falling inflation expectations should bias gold to SELL."""
+    monkeypatch.setenv("XAUEX_SIGNAL_LLM_API_KEY", "test-key")
+    cfg = SignalConfig.from_env()
+
+    falling_breakeven_rows = {
+        "DTWEXBGS": {"value": 121.0, "previous_value": 121.0, "change_1d": 0.0, "date_utc": "2026-04-14T00:00:00Z", "age_seconds": 3600.0},
+        "DTWEXM": {"value": 105.5, "previous_value": 105.5, "change_1d": 0.0, "date_utc": "2026-04-14T00:00:00Z", "age_seconds": 3600.0},
+        "DGS2": {"value": 3.8, "previous_value": 3.8, "change_1d": 0.0, "date_utc": "2026-04-14T00:00:00Z", "age_seconds": 3600.0},
+        "DGS10": {"value": 4.2, "previous_value": 4.2, "change_1d": 0.0, "date_utc": "2026-04-14T00:00:00Z", "age_seconds": 3600.0},
+        "DFII10": {"value": 1.9, "previous_value": 1.9, "change_1d": 0.0, "date_utc": "2026-04-14T00:00:00Z", "age_seconds": 3600.0},
+        "T5YIE": {"value": 2.20, "previous_value": 2.30, "change_1d": -0.10, "date_utc": "2026-04-14T00:00:00Z", "age_seconds": 3600.0},
+        "T10YIE": {"value": 2.30, "previous_value": 2.40, "change_1d": -0.10, "date_utc": "2026-04-14T00:00:00Z", "age_seconds": 3600.0},
+        "VIXCLS": {"value": 18.2, "previous_value": 18.2, "change_1d": 0.0, "date_utc": "2026-04-14T00:00:00Z", "age_seconds": 3600.0},
+        "DCOILWTICO": {"value": 82.5, "previous_value": 82.5, "change_1d": 0.0, "date_utc": "2026-04-14T00:00:00Z", "age_seconds": 3600.0},
+        "CBBTCUSD": {"value": 65000.0, "previous_value": 65000.0, "change_1d": 0.0, "date_utc": "2026-04-14T00:00:00Z", "age_seconds": 3600.0},
+    }
+    monkeypatch.setattr(
+        "xauex.signal.market_snapshot._fetch_fred_series",
+        lambda client, series_id: falling_breakeven_rows[series_id],
+    )
+    monkeypatch.setattr(
+        "xauex.signal.market_snapshot.fetch_policy_context",
+        lambda config: {"status": "unavailable", "available": False, "summary": ""},
+    )
+    monkeypatch.setattr(
+        "xauex.signal.market_snapshot.fetch_fedwatch_snapshot",
+        lambda config: {"status": "unavailable", "available": False, "summary": ""},
+    )
+    monkeypatch.setattr(
+        "xauex.signal.market_snapshot.fetch_cot_snapshot",
+        lambda config: {"status": "unavailable", "available": False, "summary": ""},
+    )
+
+    snapshot = build_market_snapshot(
+        asset=resolve_asset("XAUUSD"),
+        config=replace(cfg, source_timeout_seconds=1.0),
+        context_items=[],
+    )
+    assert snapshot["series"]["us5y_breakeven_inflation"]["bias"] == "SELL"
+    assert snapshot["series"]["us10y_breakeven_inflation"]["bias"] == "SELL"
+    assert snapshot["overall_bias"] == "SELL"
+
+
+def test_extreme_cot_long_positioning_adds_sell_bias(monkeypatch):
+    """When Managed Money net long is extreme high, COT contributes SELL bias."""
+    monkeypatch.setenv("XAUEX_SIGNAL_LLM_API_KEY", "test-key")
+    cfg = SignalConfig.from_env()
+
+    neutral_rows = {sid: {"value": 1.0, "previous_value": 1.0, "change_1d": 0.0, "date_utc": "2026-04-14T00:00:00Z", "age_seconds": 3600.0} for sid in (
+        "DTWEXBGS", "DTWEXM", "DGS2", "DGS10", "DFII10",
+        "T5YIE", "T10YIE", "VIXCLS", "DCOILWTICO", "CBBTCUSD",
+    )}
+    monkeypatch.setattr(
+        "xauex.signal.market_snapshot._fetch_fred_series",
+        lambda client, series_id: neutral_rows[series_id],
+    )
+    monkeypatch.setattr(
+        "xauex.signal.market_snapshot.fetch_policy_context",
+        lambda config: {"status": "unavailable", "available": False, "summary": ""},
+    )
+    monkeypatch.setattr(
+        "xauex.signal.market_snapshot.fetch_fedwatch_snapshot",
+        lambda config: {"status": "unavailable", "available": False, "summary": ""},
+    )
+    monkeypatch.setattr(
+        "xauex.signal.market_snapshot.fetch_cot_snapshot",
+        lambda config: {
+            "status": "available",
+            "available": True,
+            "extreme_positioning": True,
+            "bias": "SELL",
+            "summary": "Crowded long, squeeze risk.",
+            "managed_money_net_long": 250000,
+            "net_long_percentile_26w": 0.96,
+        },
+    )
+
+    snapshot = build_market_snapshot(
+        asset=resolve_asset("XAUUSD"),
+        config=replace(cfg, source_timeout_seconds=1.0),
+        context_items=[],
+    )
+    assert snapshot["overall_bias"] == "SELL"
+    assert snapshot["cot"]["bias"] == "SELL"
+    assert snapshot["cot"]["extreme_positioning"] is True
 
 
 def test_market_snapshot_blocks_stale_inputs_during_live_window():

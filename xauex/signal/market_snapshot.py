@@ -13,6 +13,7 @@ from typing import Any
 import httpx
 
 from xauex.signal.assets import AssetProfile
+from xauex.signal.cftc_cot import fetch_cot_snapshot
 from xauex.signal.config import SignalConfig
 from xauex.signal.fedwatch import fetch_fedwatch_snapshot
 from xauex.signal.policy_context import fetch_policy_context
@@ -32,6 +33,11 @@ _FRED_SERIES: dict[str, dict[str, str]] = {
         'label': 'Trade-weighted USD broad index',
         'category': 'usd',
     },
+    'usd_major_index': {
+        'series_id': 'DTWEXM',
+        'label': 'Trade-weighted USD major-currencies index',
+        'category': 'usd',
+    },
     'us2y_yield': {
         'series_id': 'DGS2',
         'label': 'US 2Y Treasury yield',
@@ -47,9 +53,29 @@ _FRED_SERIES: dict[str, dict[str, str]] = {
         'label': 'US 10Y real yield',
         'category': 'real_yield',
     },
+    'us5y_breakeven_inflation': {
+        'series_id': 'T5YIE',
+        'label': 'US 5Y breakeven inflation expectation',
+        'category': 'inflation',
+    },
+    'us10y_breakeven_inflation': {
+        'series_id': 'T10YIE',
+        'label': 'US 10Y breakeven inflation expectation',
+        'category': 'inflation',
+    },
     'vix': {
         'series_id': 'VIXCLS',
         'label': 'CBOE VIX',
+        'category': 'risk',
+    },
+    'wti_oil': {
+        'series_id': 'DCOILWTICO',
+        'label': 'WTI crude oil spot',
+        'category': 'commodity',
+    },
+    'btc_usd': {
+        'series_id': 'CBBTCUSD',
+        'label': 'Bitcoin USD (Coinbase)',
         'category': 'risk',
     },
 }
@@ -93,6 +119,11 @@ def build_market_snapshot(
                 'available': False,
                 'summary': 'FedWatch is only evaluated for XAUUSD.',
             },
+            'cot': {
+                'status': 'unsupported',
+                'available': False,
+                'summary': 'CFTC COT positioning is only evaluated for XAUUSD.',
+            },
             'event_flags': _event_flags(context_items or []),
             'input_freshness': freshness,
             'overall_bias': 'NEUTRAL',
@@ -100,9 +131,10 @@ def build_market_snapshot(
             'policy_context': policy_context,
         }
 
-    with ThreadPoolExecutor(max_workers=len(_FRED_SERIES) + 2) as executor:
+    with ThreadPoolExecutor(max_workers=len(_FRED_SERIES) + 3) as executor:
         policy_context_future = executor.submit(fetch_policy_context, config=config)
         fedwatch_future = executor.submit(fetch_fedwatch_snapshot, config=config)
+        cot_future = executor.submit(fetch_cot_snapshot, config=config)
         series_futures = {
             executor.submit(_fetch_fred_series_payload, config, key, meta): key
             for key, meta in _FRED_SERIES.items()
@@ -144,6 +176,7 @@ def build_market_snapshot(
 
         fedwatch = fedwatch_future.result()
         policy_context = policy_context_future.result()
+        cot = cot_future.result()
     freshness = _assess_market_snapshot_freshness(
         market_snapshot_age_seconds=int(max(ages)) if ages else None,
         missing_series_count=len(missing_series),
@@ -178,9 +211,10 @@ def build_market_snapshot(
     return {
         'series': series_payload,
         'fedwatch': fedwatch,
+        'cot': cot,
         'event_flags': event_flags,
         'input_freshness': freshness,
-        'overall_bias': _overall_bias(series_payload),
+        'overall_bias': _overall_bias(series_payload, cot=cot),
         'missing_series': missing_series,
         'policy_context': policy_context,
     }
@@ -308,27 +342,56 @@ def _event_flags(context_items: list[dict[str, Any]] | list[Any]) -> dict[str, b
 def _series_bias(asset_symbol: str, key: str, change_1d: float) -> str:
     if asset_symbol != 'XAUUSD':
         return 'NEUTRAL'
-    if key in {'usd_broad_index', 'us2y_yield', 'us10y_yield', 'us10y_real_yield'}:
+    # USD strength and yields are inverse to gold.
+    if key in {
+        'usd_broad_index',
+        'usd_major_index',
+        'us2y_yield',
+        'us10y_yield',
+        'us10y_real_yield',
+    }:
         if change_1d > 0:
             return 'SELL'
         if change_1d < 0:
             return 'BUY'
         return 'NEUTRAL'
-    if key == 'vix':
+    # Rising inflation expectations are gold-positive (gold as inflation hedge).
+    if key in {'us5y_breakeven_inflation', 'us10y_breakeven_inflation'}:
         if change_1d > 0:
             return 'BUY'
         if change_1d < 0:
             return 'SELL'
+        return 'NEUTRAL'
+    # Rising risk (VIX) and oil (inflation proxy) are gold-positive.
+    if key in {'vix', 'wti_oil'}:
+        if change_1d > 0:
+            return 'BUY'
+        if change_1d < 0:
+            return 'SELL'
+        return 'NEUTRAL'
+    # BTC: regime-dependent correlation with gold; let the LLM judge.
+    if key == 'btc_usd':
+        return 'NEUTRAL'
     return 'NEUTRAL'
 
 
-def _overall_bias(series_payload: dict[str, dict[str, Any]]) -> str:
+def _overall_bias(
+    series_payload: dict[str, dict[str, Any]],
+    *,
+    cot: dict[str, Any] | None = None,
+) -> str:
     score = 0
     for row in series_payload.values():
         bias = str(row.get('bias', 'NEUTRAL')).upper()
         if bias == 'BUY':
             score += 1
         elif bias == 'SELL':
+            score -= 1
+    if cot and cot.get('available') and cot.get('extreme_positioning'):
+        cot_bias = str(cot.get('bias', 'NEUTRAL')).upper()
+        if cot_bias == 'BUY':
+            score += 1
+        elif cot_bias == 'SELL':
             score -= 1
     if score > 0:
         return 'BUY'
