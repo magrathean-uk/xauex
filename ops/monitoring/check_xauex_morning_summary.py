@@ -21,7 +21,7 @@ REPO_ROOT_CANDIDATES = (
 
 for candidate in REPO_ROOT_CANDIDATES:
     candidate_str = str(candidate)
-    if candidate.is_dir():
+    if (candidate / "xauex").is_dir():
         if candidate_str not in sys.path:
             sys.path.insert(0, candidate_str)
         break

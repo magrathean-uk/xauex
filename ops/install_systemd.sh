@@ -109,6 +109,7 @@ install_if_changed "$REPO_ROOT/ops/enforce_log_budget.sh" /usr/local/bin/xauex-e
 install_if_changed "$REPO_ROOT/ops/check_host_layout.sh" /usr/local/bin/xauex-check-host-layout 755
 install_if_changed "$REPO_ROOT/ops/monitoring/check_xauex_runtime.sh" /usr/local/lib/monitoring/check_xauex_runtime.sh 755
 install_if_changed "$REPO_ROOT/ops/monitoring/check_xauex_morning_summary.py" /usr/local/lib/monitoring/check_xauex_morning_summary.py 755
+install_if_changed "$REPO_ROOT/ops/monitoring/check_xauex_trade_alerts.py" /usr/local/lib/monitoring/check_xauex_trade_alerts.py 755
 install_if_changed "$REPO_ROOT/ops/monitoring/45-xauex-notify.monit" /etc/monit/conf-enabled/45-xauex-notify.monit 644
 
 for unit in xauex.service xauex-signal.service xauex-signal.timer xauex-window-signal@.service xauex-window-confirm@.service xauex-shadow-compare.service xauex-shadow-compare.timer xauex-shadow-evaluate.service xauex-shadow-evaluate.timer xauex-shadow-report.service xauex-shadow-report.timer xauex-start.timer xauex-stop.service xauex-stop.timer xauex-trade-journal.service xauex-trade-journal.timer xauex-weekly-review.service xauex-weekly-review.timer xauex-web.service; do
