@@ -538,6 +538,16 @@
       <div class="card span-6 manual-locked" id="manual-trade-card">
         <div class="label">Manual Trade</div>
         <div class="subtle">Manual controls are available only on localhost and VPN-reachable interfaces.</div>
+        <div id="manual-auth-state" class="auth-state locked">Read-only</div>
+        <form id="manual-auth-form" class="auth-form">
+          <label class="auth-field">
+            Dashboard Token
+            <input id="manual-auth-token" type="password" autocomplete="off">
+          </label>
+          <div class="manual-actions">
+            <button class="button" id="manual-auth-save" type="submit">Unlock</button>
+          </div>
+        </form>
         <div id="manual-quote-hint" class="subtle">Waiting for live quote...</div>
         <form id="manual-trade-form">
           <div class="manual-grid">
@@ -624,9 +634,10 @@
 
     let dashboardAuth = {
       configured: false,
-      authenticated: true,
-      controls_enabled: true,
+      authenticated: false,
+      controls_enabled: false,
       csrf_token: null,
+      token: localStorage.getItem("xauexDashboardToken") || "",
     };
 
     const setManualControlsEnabled = (enabled) => {
@@ -648,6 +659,24 @@
       };
       const enabled = Boolean(dashboardAuth.controls_enabled);
       setManualControlsEnabled(enabled);
+      const authState = document.getElementById("manual-auth-state");
+      if (authState) {
+        authState.classList.toggle("authenticated", enabled);
+        authState.classList.toggle("locked", !enabled);
+        authState.textContent = enabled
+          ? "Unlocked"
+          : dashboardAuth.configured
+            ? "Locked"
+            : "Read-only";
+      }
+    };
+
+    const authHeaders = () => {
+      const headers = {};
+      if (dashboardAuth.token) {
+        headers.Authorization = `Bearer ${dashboardAuth.token}`;
+      }
+      return headers;
     };
 
     const postJson = async (url, payload) => {
@@ -655,6 +684,7 @@
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          ...authHeaders(),
         },
         body: JSON.stringify(payload),
       });
@@ -817,7 +847,7 @@
     };
 
     const updateDashboard = async () => {
-      const res = await fetch("/api/dashboard");
+      const res = await fetch("/api/dashboard", {headers: authHeaders()});
       const payload = await res.json();
       const data = payload.data;
       updateAuthUi(data.auth || {});
@@ -956,6 +986,17 @@
       } catch (error) {
         status.textContent = String(error);
       }
+    });
+
+    document.getElementById("manual-auth-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      dashboardAuth.token = document.getElementById("manual-auth-token").value.trim();
+      if (dashboardAuth.token) {
+        localStorage.setItem("xauexDashboardToken", dashboardAuth.token);
+      } else {
+        localStorage.removeItem("xauexDashboardToken");
+      }
+      await tick();
     });
 
     document.getElementById("manual-side").addEventListener("change", () => {

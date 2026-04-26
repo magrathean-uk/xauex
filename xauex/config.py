@@ -102,6 +102,8 @@ class Config:
     xauex_session_low_confidence_protect_r: float
     xauex_session_high_confidence_protect_r: float
     xauex_manual_command_path: str
+    xauex_manual_command_secret: str
+    xauex_event_journal_path: str
     scalp_fast_ema_period: int
     scalp_slow_ema_period: int
     scalp_atr_period: int
@@ -470,6 +472,8 @@ def load_config(env_file: str = ".env") -> Config:
         "XAUEX_MANUAL_COMMAND_PATH",
         os.getenv("MIROFISH_MANUAL_COMMAND_PATH", "/var/lib/xauex/manual_trade_cmd.json"),
     )
+    xauex_manual_command_secret = os.getenv("XAUEX_MANUAL_COMMAND_SECRET", "").strip()
+    xauex_event_journal_path = os.getenv("XAUEX_EVENT_JOURNAL_PATH", "/var/lib/xauex/events.jsonl").strip()
     scalp_fast_ema_period = collect(_int_range, "SCALP_FAST_EMA_PERIOD", 3, 50, 9)
     scalp_slow_ema_period = collect(_int_range, "SCALP_SLOW_EMA_PERIOD", 5, 100, 20)
     scalp_atr_period = collect(_int_range, "SCALP_ATR_PERIOD", 5, 100, 14)
@@ -688,6 +692,8 @@ def load_config(env_file: str = ".env") -> Config:
         xauex_session_low_confidence_protect_r=xauex_session_low_confidence_protect_r,
         xauex_session_high_confidence_protect_r=xauex_session_high_confidence_protect_r,
         xauex_manual_command_path=xauex_manual_command_path,
+        xauex_manual_command_secret=xauex_manual_command_secret,
+        xauex_event_journal_path=xauex_event_journal_path,
         scalp_fast_ema_period=scalp_fast_ema_period,
         scalp_slow_ema_period=scalp_slow_ema_period,
         scalp_atr_period=scalp_atr_period,

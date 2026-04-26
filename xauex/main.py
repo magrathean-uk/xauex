@@ -44,6 +44,11 @@ from xauex.bot.state.writer import StateWriter
 from xauex.bot.state.risk_persistence import save_risk_state, load_risk_state
 from xauex.bot.watchdog import Watchdog
 from xauex.bot.health import HealthCheck
+from xauex.shared.event_journal import safe_append_event
+from xauex.shared.manual_commands import (
+    ManualCommandConsumeResult,
+    consume_manual_command_file,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -503,21 +508,40 @@ def match_recovered_position_metadata(
     }
 
 
-def load_manual_trade_command(path: Path) -> Optional[Dict[str, object]]:
-    """Load and atomically consume a dashboard-issued manual trade command."""
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return None
-    except (OSError, json.JSONDecodeError):
-        return None
-    try:
-        path.unlink()
-    except FileNotFoundError:
-        pass
-    except OSError:
-        logger.warning("[MANUAL] Failed to remove consumed manual command file: %s", path)
-    return payload if isinstance(payload, dict) else None
+def consume_manual_trade_command(
+    path: Path,
+    *,
+    secret: str | None = None,
+    seen_command_ids: set[str] | None = None,
+    now_utc: datetime | None = None,
+    journal_path: str | Path | None = None,
+) -> ManualCommandConsumeResult:
+    """Load, verify, and atomically consume a signed manual command envelope."""
+    return consume_manual_command_file(
+        path,
+        secret=secret,
+        seen_command_ids=seen_command_ids,
+        now_utc=now_utc,
+        journal_path=journal_path,
+    )
+
+
+def load_manual_trade_command(
+    path: Path,
+    *,
+    secret: str | None = None,
+    seen_command_ids: set[str] | None = None,
+    now_utc: datetime | None = None,
+    journal_path: str | Path | None = None,
+) -> Optional[Dict[str, object]]:
+    """Backward-compatible payload-only loader for signed manual commands."""
+    return consume_manual_trade_command(
+        path,
+        secret=secret,
+        seen_command_ids=seen_command_ids,
+        now_utc=now_utc,
+        journal_path=journal_path,
+    ).payload
 
 
 def validate_manual_trade_command(payload: Dict[str, object]) -> Tuple[bool, str]:
@@ -627,6 +651,7 @@ class BotOrchestrator:
         self._last_xauex_signal_seen_utc: dict[str, float] = {}
         self._last_xauex_gate_log_at: dict[str, float] = {}
         self._xauex_close_requested: dict[str, datetime] = {}
+        self._manual_command_ids: set[str] = set()
         self._manual_trade_status: Dict[str, object] = {}
         self._latest_quote: Dict[str, object] = {}
         self._candidate_signal_history: deque = deque(maxlen=24)
@@ -759,6 +784,7 @@ class BotOrchestrator:
             level_manager=self.level_manager,
             risk_gates=self.risk_gates,
             state_writer=self.state_writer,
+            event_journal_path=self.config.xauex_event_journal_path,
         )
         self.api_client.set_execution_callback(self._on_execution_event)
 
@@ -2115,6 +2141,18 @@ class BotOrchestrator:
                 "recorded_at_utc": signal_time.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             }
         )
+        self._journal_event(
+            "risk_result",
+            {
+                "slot": slot,
+                "reason": signal_reason or action,
+                "action": action,
+                "signal_action": signal_action,
+                "confidence": signal_confidence,
+                "terminal": terminal,
+            },
+            correlation_id=signal_id,
+        )
 
     def _mark_slot_used(
         self,
@@ -2574,6 +2612,18 @@ class BotOrchestrator:
     def set_status(self, status: str) -> None:
         self.bot_status = status
 
+    def _journal_event(self, event_type: str, payload: Dict[str, object], *, correlation_id: Optional[str] = None) -> None:
+        journal_path = getattr(self.config, "xauex_event_journal_path", None)
+        if not journal_path:
+            return
+        safe_append_event(
+            journal_path,
+            source="bot",
+            event_type=event_type,
+            payload=payload,
+            correlation_id=correlation_id,
+        )
+
     async def write_state(self) -> None:
         if self.state_writer is None:
             return
@@ -2745,6 +2795,18 @@ class BotOrchestrator:
             confirm_status = str(sig.get("confirm_status") or "PENDING").upper()
             confirm_reason = str(sig.get("confirm_reason") or "WAITING_FOR_CONFIRM")
             confirm_timestamp_utc = str(sig.get("confirm_timestamp_utc") or "")
+            self._journal_event(
+                "signal_decision",
+                {
+                    "slot": slot,
+                    "window_label": window_label,
+                    "action": action,
+                    "confidence": confidence,
+                    "confirm_status": confirm_status,
+                    "confirm_reason": confirm_reason,
+                },
+                correlation_id=signal_id,
+            )
 
             try:
                 ts = datetime.fromisoformat(signal_id.replace("Z", "+00:00"))
@@ -3380,6 +3442,18 @@ class BotOrchestrator:
                 new_stop_loss: Optional[float] = None
                 previous_phase = str(session.get("phase", "OBSERVE")).upper()
                 current_phase = str(updated_session.get("phase", previous_phase)).upper()
+                correlation_id = str(updated_session.get("signal_id") or position.position_id)
+                if current_phase != previous_phase:
+                    self._journal_event(
+                        "session_phase_transition",
+                        {
+                            "position_id": position.position_id,
+                            "previous_phase": previous_phase,
+                            "current_phase": current_phase,
+                            "progress_r": updated_session.get("progress_r"),
+                        },
+                        correlation_id=correlation_id,
+                    )
                 if current_phase == "PROTECT" and previous_phase == "OBSERVE":
                     new_stop_loss = self._xauex_protect_stop_price(
                         direction=tracked.direction,
@@ -3406,6 +3480,16 @@ class BotOrchestrator:
                     )
                     if amended:
                         tracked.stop_loss = new_stop_loss
+                        self._journal_event(
+                            "stop_updated",
+                            {
+                                "position_id": position.position_id,
+                                "stop_loss": new_stop_loss,
+                                "take_profit": tracked.take_profit,
+                                "phase": current_phase,
+                            },
+                            correlation_id=correlation_id,
+                        )
 
                 close_reason: Optional[str] = None
                 cash_take_profit_threshold = self._xauex_cash_take_profit_threshold(updated_session)
@@ -3445,18 +3529,41 @@ class BotOrchestrator:
             await asyncio.sleep(2)
             if self.api_client is None or self.executor is None:
                 continue
-            payload = load_manual_trade_command(command_path)
-            if payload is None:
+            command_result = consume_manual_trade_command(
+                command_path,
+                secret=self.config.xauex_manual_command_secret,
+                seen_command_ids=self._manual_command_ids,
+                journal_path=self.config.xauex_event_journal_path,
+            )
+            if not command_result.file_found:
                 continue
+            if command_result.payload is None:
+                self._manual_trade_status = {
+                    "ok": False,
+                    "reason": command_result.rejection_reason or "invalid manual command",
+                    "command_id": command_result.command_id,
+                    "updated_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                }
+                logger.warning("[MANUAL] Rejected command envelope: %s", command_result.rejection_reason)
+                await self.write_state()
+                continue
+            payload = command_result.payload
+            command_id = command_result.command_id
 
             valid, reason = validate_manual_trade_command(payload)
             if not valid:
                 self._manual_trade_status = {
                     "ok": False,
                     "reason": reason,
+                    "command_id": command_id,
                     "updated_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 }
                 logger.warning("[MANUAL] Rejected command: %s", reason)
+                self._journal_event(
+                    "manual_command_rejected",
+                    {"command_id": command_id, "reason": reason, "payload": payload},
+                    correlation_id=command_id,
+                )
                 await self.write_state()
                 continue
 
@@ -3468,9 +3575,15 @@ class BotOrchestrator:
                     self._manual_trade_status = {
                         "ok": False,
                         "reason": f"manual position {position_id} not found",
+                        "command_id": command_id,
                         "updated_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                     }
                     logger.warning("[MANUAL] Manual close rejected for position %s", position_id)
+                    self._journal_event(
+                        "manual_command_rejected",
+                        {"command_id": command_id, "reason": "POSITION_NOT_FOUND", "position_id": position_id},
+                        correlation_id=command_id,
+                    )
                     await self.write_state()
                     continue
                 closed = await self.api_client.close_position(position_id=position_id, volume_lots=tracked.lot_size)
@@ -3478,8 +3591,14 @@ class BotOrchestrator:
                     "ok": bool(closed),
                     "command": "close",
                     "position_id": position_id,
+                    "command_id": command_id,
                     "updated_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 }
+                self._journal_event(
+                    "manual_close_requested",
+                    {"command_id": command_id, "position_id": position_id, "ok": bool(closed)},
+                    correlation_id=command_id,
+                )
                 await self.write_state()
                 continue
 
@@ -3496,9 +3615,15 @@ class BotOrchestrator:
                 self._manual_trade_status = {
                     "ok": False,
                     "reason": block_reason,
+                    "command_id": command_id,
                     "updated_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 }
                 logger.warning("[MANUAL] Rejected open command: %s", block_reason)
+                self._journal_event(
+                    "manual_command_rejected",
+                    {"command_id": command_id, "reason": block_reason, "payload": payload},
+                    correlation_id=command_id,
+                )
                 await self.write_state()
                 continue
             bid, ask = self.api_client.get_current_quote()
@@ -3507,8 +3632,14 @@ class BotOrchestrator:
                 self._manual_trade_status = {
                     "ok": False,
                     "reason": "price unavailable",
+                    "command_id": command_id,
                     "updated_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 }
+                self._journal_event(
+                    "manual_command_rejected",
+                    {"command_id": command_id, "reason": "PRICE_UNAVAILABLE", "payload": payload},
+                    correlation_id=command_id,
+                )
                 await self.write_state()
                 continue
             valid_prices, price_reason = validate_manual_trade_prices(payload, current_price=current_price)
@@ -3516,9 +3647,15 @@ class BotOrchestrator:
                 self._manual_trade_status = {
                     "ok": False,
                     "reason": price_reason,
+                    "command_id": command_id,
                     "updated_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 }
                 logger.warning("[MANUAL] Rejected open command: %s", price_reason)
+                self._journal_event(
+                    "manual_command_rejected",
+                    {"command_id": command_id, "reason": price_reason, "payload": payload},
+                    correlation_id=command_id,
+                )
                 await self.write_state()
                 continue
 
@@ -3530,7 +3667,7 @@ class BotOrchestrator:
                 pattern=PatternType.NONE,
                 level=current_price,
                 owner="manual",
-                metadata={"manual_command": dict(payload)},
+                metadata={"manual_command": dict(payload), "correlation_id": command_id, "command_id": command_id},
             )
             if pos_id and not str(pos_id).startswith("order:"):
                 self._append_trade_entry_on_chart(str(pos_id), "LONG" if action == "BUY" else "SHORT", current_price, "manual")
@@ -3539,6 +3676,7 @@ class BotOrchestrator:
                 "command": "open",
                 "action": action,
                 "position_id": pos_id,
+                "command_id": command_id,
                 "updated_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             }
             await self.write_state()

@@ -5,10 +5,17 @@ import json
 from pathlib import Path
 
 
-def _load_dashboard_module(monkeypatch, tmp_path: Path):
+def _load_dashboard_module(
+    monkeypatch,
+    tmp_path: Path,
+    *,
+    dashboard_token: str | None = None,
+    manual_secret: str | None = None,
+):
     state_path = tmp_path / "state.json"
     cmd_path = tmp_path / "cmd.json"
     manual_cmd_path = tmp_path / "manual_trade_cmd.json"
+    event_journal_path = tmp_path / "events.jsonl"
     brief_path = tmp_path / "latest_signal_brief.md"
     brief_meta_path = tmp_path / "latest_signal_brief.json"
     evidence_path = tmp_path / "latest_signal_evidence.json"
@@ -100,8 +107,17 @@ def _load_dashboard_module(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("STATE_FILE_PATH", str(state_path))
     monkeypatch.setenv("CMD_FILE_PATH", str(cmd_path))
     monkeypatch.setenv("XAUEX_MANUAL_COMMAND_PATH", str(manual_cmd_path))
+    monkeypatch.setenv("XAUEX_EVENT_JOURNAL_PATH", str(event_journal_path))
     monkeypatch.setenv("XAUEX_SIGNAL_BRIEF_OUTPUT_PATH", str(brief_path))
     monkeypatch.setenv("XAUEX_SIGNAL_EVIDENCE_OUTPUT_PATH", str(evidence_path))
+    if dashboard_token is None:
+        monkeypatch.delenv("ORACLE_DASHBOARD_TOKEN", raising=False)
+    else:
+        monkeypatch.setenv("ORACLE_DASHBOARD_TOKEN", dashboard_token)
+    if manual_secret is None:
+        monkeypatch.delenv("XAUEX_MANUAL_COMMAND_SECRET", raising=False)
+    else:
+        monkeypatch.setenv("XAUEX_MANUAL_COMMAND_SECRET", manual_secret)
 
     import xauex.app.app as dashboard_app
 
@@ -109,6 +125,7 @@ def _load_dashboard_module(monkeypatch, tmp_path: Path):
     dashboard_app.STATE_PATH = state_path
     dashboard_app.CMD_PATH = cmd_path
     dashboard_app.MANUAL_CMD_PATH = manual_cmd_path
+    dashboard_app.EVENT_JOURNAL_PATH = event_journal_path
     dashboard_app.BRIEF_PATH = brief_path
     dashboard_app.BRIEF_META_PATH = brief_meta_path
     dashboard_app.EVIDENCE_PATH = evidence_path
@@ -221,8 +238,9 @@ def test_dashboard_payload_exposes_auth_and_manual_status(monkeypatch, tmp_path)
 
     assert response.status_code == 200
     payload = response.get_json()["data"]
-    assert payload["auth"]["authenticated"] is True
-    assert payload["auth"]["controls_enabled"] is True
+    assert payload["auth"]["configured"] is False
+    assert payload["auth"]["authenticated"] is False
+    assert payload["auth"]["controls_enabled"] is False
     assert payload["manual_trade_status"]["state"] == "idle"
     assert payload["manual_trade_status"]["reason"] == "waiting for operator"
 
@@ -397,17 +415,30 @@ def test_diagnostics_endpoint_returns_structured_snapshot(monkeypatch, tmp_path)
     assert payload["reply"]
 
 
-def test_manual_trade_requires_json(monkeypatch, tmp_path):
-    dashboard_app = _load_dashboard_module(monkeypatch, tmp_path)
+def test_manual_trade_requires_bearer_token_before_json_validation(monkeypatch, tmp_path):
+    dashboard_app = _load_dashboard_module(monkeypatch, tmp_path, dashboard_token="dash-token", manual_secret="manual-secret")
     client = dashboard_app.app.test_client()
 
     response = client.post("/api/manual-trade", data="not-json", headers={"Content-Type": "text/plain"})
 
-    assert response.status_code == 400
+    assert response.status_code == 403
 
 
-def test_manual_trade_endpoint_writes_manual_command_file(monkeypatch, tmp_path):
-    dashboard_app = _load_dashboard_module(monkeypatch, tmp_path)
+def test_manual_trade_rejects_wrong_bearer_token(monkeypatch, tmp_path):
+    dashboard_app = _load_dashboard_module(monkeypatch, tmp_path, dashboard_token="dash-token", manual_secret="manual-secret")
+    client = dashboard_app.app.test_client()
+
+    response = client.post(
+        "/api/manual-trade",
+        json={"command": "open", "action": "BUY", "lot_size": 0.25, "stop_loss": 2351.5, "take_profit": 2364.0},
+        headers={"Authorization": "Bearer wrong-token"},
+    )
+
+    assert response.status_code == 403
+
+
+def test_manual_trade_rejects_when_dashboard_token_is_unset(monkeypatch, tmp_path):
+    dashboard_app = _load_dashboard_module(monkeypatch, tmp_path, manual_secret="manual-secret")
     client = dashboard_app.app.test_client()
 
     response = client.post(
@@ -415,39 +446,77 @@ def test_manual_trade_endpoint_writes_manual_command_file(monkeypatch, tmp_path)
         json={"command": "open", "action": "BUY", "lot_size": 0.25, "stop_loss": 2351.5, "take_profit": 2364.0},
     )
 
+    assert response.status_code == 403
+
+
+def test_manual_trade_rejects_when_manual_secret_is_unset(monkeypatch, tmp_path):
+    dashboard_app = _load_dashboard_module(monkeypatch, tmp_path, dashboard_token="dash-token")
+    client = dashboard_app.app.test_client()
+
+    response = client.post(
+        "/api/manual-trade",
+        json={"command": "open", "action": "BUY", "lot_size": 0.25, "stop_loss": 2351.5, "take_profit": 2364.0},
+        headers={"Authorization": "Bearer dash-token"},
+    )
+
+    assert response.status_code == 403
+
+
+def test_manual_trade_endpoint_writes_signed_manual_command_file(monkeypatch, tmp_path):
+    dashboard_app = _load_dashboard_module(monkeypatch, tmp_path, dashboard_token="dash-token", manual_secret="manual-secret")
+    client = dashboard_app.app.test_client()
+
+    response = client.post(
+        "/api/manual-trade",
+        json={"command": "open", "action": "BUY", "lot_size": 0.25, "stop_loss": 2351.5, "take_profit": 2364.0},
+        headers={"Authorization": "Bearer dash-token"},
+    )
+
     assert response.status_code == 200
     body = response.get_json()
     assert body["success"] is True
     assert body["status"] == "queued"
     assert body["reply"]
     assert body["diagnostics"]["schema_version"] == 1
-    command = json.loads(dashboard_app.MANUAL_CMD_PATH.read_text(encoding="utf-8"))
-    assert command["command"] == "open"
-    assert command["action"] == "BUY"
-    assert command["lot_size"] == 0.25
-    assert command["stop_loss"] == 2351.5
-    assert command["take_profit"] == 2364.0
+    envelope = json.loads(dashboard_app.MANUAL_CMD_PATH.read_text(encoding="utf-8"))
+    assert envelope["schema_version"] == 1
+    assert envelope["command_id"]
+    assert envelope["created_at_utc"]
+    assert envelope["expires_at_utc"]
+    assert envelope["signature"]
+    assert envelope["payload"] == {
+        "command": "open",
+        "action": "BUY",
+        "lot_size": 0.25,
+        "stop_loss": 2351.5,
+        "take_profit": 2364.0,
+    }
+    events = [json.loads(line) for line in dashboard_app.EVENT_JOURNAL_PATH.read_text(encoding="utf-8").splitlines()]
+    assert events[-1]["event_type"] == "manual_command_queued"
+    assert events[-1]["correlation_id"] == envelope["command_id"]
 
 
 def test_manual_trade_endpoint_requires_stop_loss_and_take_profit(monkeypatch, tmp_path):
-    dashboard_app = _load_dashboard_module(monkeypatch, tmp_path)
+    dashboard_app = _load_dashboard_module(monkeypatch, tmp_path, dashboard_token="dash-token", manual_secret="manual-secret")
     client = dashboard_app.app.test_client()
 
     response = client.post(
         "/api/manual-trade",
         json={"command": "open", "action": "BUY", "lot_size": 0.25},
+        headers={"Authorization": "Bearer dash-token"},
     )
 
     assert response.status_code == 400
 
 
-def test_manual_close_endpoint_writes_manual_close_command(monkeypatch, tmp_path):
-    dashboard_app = _load_dashboard_module(monkeypatch, tmp_path)
+def test_manual_close_endpoint_writes_signed_manual_close_command(monkeypatch, tmp_path):
+    dashboard_app = _load_dashboard_module(monkeypatch, tmp_path, dashboard_token="dash-token", manual_secret="manual-secret")
     client = dashboard_app.app.test_client()
 
     response = client.post(
         "/api/manual-close",
         json={"command": "close", "position_id": "m-123"},
+        headers={"Authorization": "Bearer dash-token"},
     )
 
     assert response.status_code == 200
@@ -456,6 +525,17 @@ def test_manual_close_endpoint_writes_manual_close_command(monkeypatch, tmp_path
     assert body["status"] == "queued"
     assert body["reply"]
     assert body["diagnostics"]["schema_version"] == 1
-    command = json.loads(dashboard_app.MANUAL_CMD_PATH.read_text(encoding="utf-8"))
-    assert command["command"] == "close"
-    assert command["position_id"] == "m-123"
+    envelope = json.loads(dashboard_app.MANUAL_CMD_PATH.read_text(encoding="utf-8"))
+    assert envelope["schema_version"] == 1
+    assert envelope["payload"] == {"command": "close", "position_id": "m-123"}
+
+
+def test_auth_payload_reflects_valid_bearer_auth(monkeypatch, tmp_path):
+    dashboard_app = _load_dashboard_module(monkeypatch, tmp_path, dashboard_token="dash-token", manual_secret="manual-secret")
+
+    with dashboard_app.app.test_request_context(headers={"Authorization": "Bearer dash-token"}):
+        auth = dashboard_app._dashboard_auth_payload()
+
+    assert auth["configured"] is True
+    assert auth["authenticated"] is True
+    assert auth["controls_enabled"] is True

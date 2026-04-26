@@ -19,9 +19,9 @@ from typing import Any, Optional
 
 from dotenv import load_dotenv
 
-load_dotenv()  # read .env so STATE_FILE_PATH / CMD_FILE_PATH are picked up
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
+load_dotenv(REPO_ROOT / ".env")  # read repo .env without walking up to /.env
+
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 

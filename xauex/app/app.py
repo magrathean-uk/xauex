@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import hmac
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -10,11 +11,14 @@ from flask import Flask, Response, abort, jsonify, render_template, request
 
 from xauex.live_windows import all_live_windows, london_trade_day
 from xauex.shared.diagnostics import build_diagnostics_snapshot, count_london_signal_runs
+from xauex.shared.event_journal import safe_append_event
+from xauex.shared.manual_commands import create_signed_manual_command
 
 
 STATE_PATH = Path(os.getenv("STATE_FILE_PATH", "/var/lib/xauex/state.json"))
 CMD_PATH = Path(os.getenv("CMD_FILE_PATH", "/var/lib/xauex/cmd.json"))
 MANUAL_CMD_PATH = Path(os.getenv("XAUEX_MANUAL_COMMAND_PATH", "/var/lib/xauex/manual_trade_cmd.json"))
+EVENT_JOURNAL_PATH = Path(os.getenv("XAUEX_EVENT_JOURNAL_PATH", "/var/lib/xauex/events.jsonl"))
 JOURNAL_PATH = Path(os.getenv("TRADE_JOURNAL_PATH", "/var/lib/xauex/trade_journal.json"))
 REVIEW_PATH = Path(os.getenv("WEEKLY_REVIEW_PATH", "/var/lib/xauex/weekly_review.json"))
 RISK_PATH = Path(os.getenv("RISK_STATE_PATH", "/var/lib/xauex/risk_state.json"))
@@ -277,20 +281,45 @@ def _request_payload() -> dict[str, Any]:
     return form if form else {}
 
 
+def _dashboard_token() -> str:
+    return os.getenv("ORACLE_DASHBOARD_TOKEN", "").strip()
+
+
+def _manual_command_secret() -> str:
+    return os.getenv("XAUEX_MANUAL_COMMAND_SECRET", "").strip()
+
+
+def _bearer_token() -> str:
+    auth_header = request.headers.get("Authorization", "")
+    prefix = "Bearer "
+    if not auth_header.startswith(prefix):
+        return ""
+    return auth_header[len(prefix):].strip()
+
+
 def _dashboard_auth_payload() -> dict[str, Any]:
+    configured_token = _dashboard_token()
+    authenticated = bool(configured_token) and hmac.compare_digest(_bearer_token(), configured_token)
+    controls_enabled = authenticated and bool(_manual_command_secret())
     return {
-        "configured": False,
-        "authenticated": True,
+        "configured": bool(configured_token),
+        "authenticated": authenticated,
         "username": None,
-        "controls_enabled": True,
+        "controls_enabled": controls_enabled,
         "csrf_token": None,
     }
 
 
-def _manual_controls_allowed() -> tuple[bool, str | None]:
+def _manual_controls_allowed() -> tuple[bool, str | None, int]:
+    if not _dashboard_token():
+        return False, "Dashboard token is not configured; manual controls are read-only.", 403
+    if not _manual_command_secret():
+        return False, "Manual command secret is not configured; manual controls are disabled.", 403
+    if not _dashboard_auth_payload()["authenticated"]:
+        return False, "Manual controls require a valid bearer token.", 403
     if not request.is_json:
-        return False, "JSON body required."
-    return True, None
+        return False, "JSON body required.", 400
+    return True, None, 200
 
 
 def _manual_trade_command(payload: dict[str, Any]) -> dict[str, Any] | None:
@@ -371,6 +400,23 @@ def _format_manual_reply(command: dict[str, Any], diagnostics: dict[str, Any]) -
             "The bot will confirm or reject it on the next execution poll."
         )
     return f"Manual {action} queued for {float(lot_size):.2f} lot(s). Waiting for the next live quote."
+
+
+def _queue_signed_manual_command(command: dict[str, Any]) -> dict[str, Any]:
+    envelope = create_signed_manual_command(command, secret=_manual_command_secret())
+    _write_json_atomic(MANUAL_CMD_PATH, envelope)
+    safe_append_event(
+        EVENT_JOURNAL_PATH,
+        source="dashboard",
+        event_type="manual_command_queued",
+        correlation_id=str(envelope.get("command_id")),
+        payload={
+            "command_id": envelope.get("command_id"),
+            "command": command.get("command", "open"),
+            "payload": command,
+        },
+    )
+    return envelope
 
 
 def _trade_explanation(
@@ -555,7 +601,7 @@ def create_app() -> Flask:
 
     @app.post("/api/manual-trade")
     def manual_trade():
-        allowed, reason = _manual_controls_allowed()
+        allowed, reason, status_code = _manual_controls_allowed()
         if not allowed:
             payload = _build_payload()
             return jsonify({
@@ -563,7 +609,8 @@ def create_app() -> Flask:
                 "error": reason,
                 "reply": reason,
                 "diagnostics": payload.get("diagnostics", {}) or {},
-            }), 400
+                "auth": _dashboard_auth_payload(),
+            }), status_code
         command = _manual_trade_command(_request_payload())
         if command is None:
             payload = _build_payload()
@@ -574,12 +621,13 @@ def create_app() -> Flask:
                 "reply": diagnostics.get("reply") or "Invalid manual trade command.",
                 "diagnostics": diagnostics,
             }), 400
-        _write_json_atomic(MANUAL_CMD_PATH, command)
+        envelope = _queue_signed_manual_command(command)
         payload = _build_payload()
         diagnostics = payload.get("diagnostics", {}) or {}
         return jsonify({
             "success": True,
             "status": "queued",
+            "command_id": envelope.get("command_id"),
             "reply": _format_manual_reply(command, diagnostics),
             "manual_command_pending": True,
             "data": command,
@@ -589,7 +637,7 @@ def create_app() -> Flask:
 
     @app.post("/api/manual-close")
     def manual_close():
-        allowed, reason = _manual_controls_allowed()
+        allowed, reason, status_code = _manual_controls_allowed()
         if not allowed:
             payload = _build_payload()
             return jsonify({
@@ -597,7 +645,8 @@ def create_app() -> Flask:
                 "error": reason,
                 "reply": reason,
                 "diagnostics": payload.get("diagnostics", {}) or {},
-            }), 400
+                "auth": _dashboard_auth_payload(),
+            }), status_code
         command = _manual_close_command(_request_payload())
         if command is None:
             payload = _build_payload()
@@ -608,12 +657,13 @@ def create_app() -> Flask:
                 "reply": diagnostics.get("reply") or "Invalid manual close command.",
                 "diagnostics": diagnostics,
             }), 400
-        _write_json_atomic(MANUAL_CMD_PATH, command)
+        envelope = _queue_signed_manual_command(command)
         payload = _build_payload()
         diagnostics = payload.get("diagnostics", {}) or {}
         return jsonify({
             "success": True,
             "status": "queued",
+            "command_id": envelope.get("command_id"),
             "reply": _format_manual_reply(command, diagnostics),
             "manual_command_pending": True,
             "data": command,
@@ -628,4 +678,4 @@ app = create_app()
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("ORACLE_DASHBOARD_PORT", "8089")))
+    app.run(host="127.0.0.1", port=int(os.getenv("ORACLE_DASHBOARD_PORT", "8089")))

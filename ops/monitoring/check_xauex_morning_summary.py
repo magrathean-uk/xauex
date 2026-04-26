@@ -15,14 +15,15 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 REPO_ROOT_CANDIDATES = (
-    Path("/home/bolyki/mirofish-gold-oracle"),
     Path(__file__).resolve().parents[2],
+    Path("/home/bolyki/mirofish-gold-oracle"),
 )
 
 for candidate in REPO_ROOT_CANDIDATES:
     candidate_str = str(candidate)
-    if candidate.is_dir() and candidate_str not in sys.path:
-        sys.path.insert(0, candidate_str)
+    if candidate.is_dir():
+        if candidate_str not in sys.path:
+            sys.path.insert(0, candidate_str)
         break
 
 from xauex.live_windows import all_live_windows, get_live_window

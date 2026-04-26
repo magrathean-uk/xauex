@@ -1,9 +1,9 @@
 # ruff: noqa: E402
 
-import json
 import sys
 import importlib.util
 import asyncio
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -25,11 +25,14 @@ _SPEC.loader.exec_module(_MODULE)
 count_xauex_open_positions = _MODULE.count_oracle_open_positions
 count_tradeable_open_positions = _MODULE.count_tradeable_open_positions
 load_manual_trade_command = _MODULE.load_manual_trade_command
+consume_manual_trade_command = _MODULE.consume_manual_trade_command
 manual_trade_global_block_reason = _MODULE.manual_trade_global_block_reason
 match_recovered_position_metadata = _MODULE.match_recovered_position_metadata
 should_manage_with_xauex_session_manager = _MODULE.should_manage_with_oracle_session_manager
 validate_manual_trade_command = _MODULE.validate_manual_trade_command
 validate_manual_trade_prices = _MODULE.validate_manual_trade_prices
+
+from xauex.shared.manual_commands import create_signed_manual_command
 
 from bot.execution.executor import TrackedPosition, Executor
 from bot.patterns.detector import PatternType
@@ -38,23 +41,155 @@ from bot.risk.gates import RiskGates, RiskState
 
 def test_manual_trade_command_is_loaded_and_cleared(tmp_path):
     path = tmp_path / "manual_trade_cmd.json"
-    path.write_text(
-        json.dumps(
-            {
-                "command": "open",
-                "action": "BUY",
-                "lot_size": 0.02,
-                "stop_loss": 4690.0,
-                "take_profit": 4710.0,
-            }
-        ),
-        encoding="utf-8",
+    envelope = create_signed_manual_command(
+        {
+            "command": "open",
+            "action": "BUY",
+            "lot_size": 0.02,
+            "stop_loss": 4690.0,
+            "take_profit": 4710.0,
+        },
+        secret="manual-secret",
+        command_id="cmd-open-1",
+        now_utc=datetime(2026, 4, 7, 1, 2, tzinfo=timezone.utc),
     )
+    path.write_text(json.dumps(envelope), encoding="utf-8")
 
-    cmd = load_manual_trade_command(path)
+    cmd = load_manual_trade_command(
+        path,
+        secret="manual-secret",
+        seen_command_ids=set(),
+        now_utc=datetime(2026, 4, 7, 1, 2, 10, tzinfo=timezone.utc),
+    )
 
     assert cmd["action"] == "BUY"
     assert not path.exists()
+
+
+def test_manual_close_command_is_loaded_and_cleared(tmp_path):
+    path = tmp_path / "manual_trade_cmd.json"
+    envelope = create_signed_manual_command(
+        {"command": "close", "position_id": "manual-123"},
+        secret="manual-secret",
+        command_id="cmd-close-1",
+        now_utc=datetime(2026, 4, 7, 1, 2, tzinfo=timezone.utc),
+    )
+    path.write_text(json.dumps(envelope), encoding="utf-8")
+
+    cmd = load_manual_trade_command(
+        path,
+        secret="manual-secret",
+        seen_command_ids=set(),
+        now_utc=datetime(2026, 4, 7, 1, 2, 10, tzinfo=timezone.utc),
+    )
+
+    assert cmd == {"command": "close", "position_id": "manual-123"}
+    assert not path.exists()
+
+
+def test_manual_command_with_bad_signature_is_rejected_and_journalled(tmp_path):
+    path = tmp_path / "manual_trade_cmd.json"
+    journal = tmp_path / "events.jsonl"
+    envelope = create_signed_manual_command(
+        {"command": "open", "action": "BUY", "lot_size": 0.02, "stop_loss": 4690.0, "take_profit": 4710.0},
+        secret="manual-secret",
+        command_id="cmd-bad-signature",
+        now_utc=datetime(2026, 4, 7, 1, 2, tzinfo=timezone.utc),
+    )
+    envelope["payload"]["lot_size"] = 0.09
+    path.write_text(json.dumps(envelope), encoding="utf-8")
+
+    result = consume_manual_trade_command(
+        path,
+        secret="manual-secret",
+        seen_command_ids=set(),
+        journal_path=journal,
+        now_utc=datetime(2026, 4, 7, 1, 2, 10, tzinfo=timezone.utc),
+    )
+
+    assert result.payload is None
+    assert result.rejection_reason == "BAD_SIGNATURE"
+    assert not path.exists()
+    events = [json.loads(line) for line in journal.read_text(encoding="utf-8").splitlines()]
+    assert events[-1]["event_type"] == "manual_command_rejected"
+    assert events[-1]["payload"]["reason"] == "BAD_SIGNATURE"
+
+
+def test_expired_manual_command_is_rejected(tmp_path):
+    path = tmp_path / "manual_trade_cmd.json"
+    envelope = create_signed_manual_command(
+        {"command": "open", "action": "BUY", "lot_size": 0.02, "stop_loss": 4690.0, "take_profit": 4710.0},
+        secret="manual-secret",
+        command_id="cmd-expired",
+        now_utc=datetime(2026, 4, 7, 1, 2, tzinfo=timezone.utc),
+        ttl_seconds=30,
+    )
+    path.write_text(json.dumps(envelope), encoding="utf-8")
+
+    result = consume_manual_trade_command(
+        path,
+        secret="manual-secret",
+        seen_command_ids=set(),
+        now_utc=datetime(2026, 4, 7, 1, 3, tzinfo=timezone.utc),
+    )
+
+    assert result.payload is None
+    assert result.rejection_reason == "EXPIRED"
+
+
+def test_duplicate_manual_command_id_is_rejected(tmp_path):
+    path = tmp_path / "manual_trade_cmd.json"
+    envelope = create_signed_manual_command(
+        {"command": "open", "action": "BUY", "lot_size": 0.02, "stop_loss": 4690.0, "take_profit": 4710.0},
+        secret="manual-secret",
+        command_id="cmd-dupe",
+        now_utc=datetime(2026, 4, 7, 1, 2, tzinfo=timezone.utc),
+    )
+    path.write_text(json.dumps(envelope), encoding="utf-8")
+
+    result = consume_manual_trade_command(
+        path,
+        secret="manual-secret",
+        seen_command_ids={"cmd-dupe"},
+        now_utc=datetime(2026, 4, 7, 1, 2, 10, tzinfo=timezone.utc),
+    )
+
+    assert result.payload is None
+    assert result.rejection_reason == "DUPLICATE_COMMAND"
+
+
+def test_manual_command_is_disabled_without_secret(tmp_path):
+    path = tmp_path / "manual_trade_cmd.json"
+    envelope = create_signed_manual_command(
+        {"command": "close", "position_id": "manual-123"},
+        secret="manual-secret",
+        command_id="cmd-no-secret",
+        now_utc=datetime(2026, 4, 7, 1, 2, tzinfo=timezone.utc),
+    )
+    path.write_text(json.dumps(envelope), encoding="utf-8")
+
+    result = consume_manual_trade_command(
+        path,
+        secret="",
+        seen_command_ids=set(),
+        now_utc=datetime(2026, 4, 7, 1, 2, 10, tzinfo=timezone.utc),
+    )
+
+    assert result.payload is None
+    assert result.rejection_reason == "MANUAL_COMMAND_SECRET_UNSET"
+
+
+def test_legacy_raw_manual_command_is_rejected(tmp_path):
+    path = tmp_path / "manual_trade_cmd.json"
+    path.write_text(
+        json.dumps({"command": "open", "action": "BUY", "lot_size": 0.02, "stop_loss": 4690.0, "take_profit": 4710.0}),
+        encoding="utf-8",
+    )
+
+    result = consume_manual_trade_command(path, secret="manual-secret", seen_command_ids=set())
+
+    assert result.payload is None
+    assert result.rejection_reason == "UNSIGNED_LEGACY_COMMAND"
 
 
 def test_manual_trade_command_validation_rejects_bad_side():

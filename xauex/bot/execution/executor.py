@@ -3,9 +3,12 @@
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional, Tuple, Dict, List
 
 from config import Config
+from xauex.bot.api.broker import BrokerAdapter, CTraderBrokerAdapter, OrderAck, OrderIntent
+from xauex.shared.event_journal import safe_append_event
 from bot.patterns.detector import PatternType
 
 logger = logging.getLogger(__name__)
@@ -99,18 +102,85 @@ class Executor:
 
     HALTED_AUTH_FAILURE = False   # set True on TRADING_DISABLED error
 
-    def __init__(self, config: Config, api_client, level_manager, risk_gates=None, state_writer=None):
+    def __init__(
+        self,
+        config: Config,
+        api_client,
+        level_manager,
+        risk_gates=None,
+        state_writer=None,
+        broker_adapter: BrokerAdapter | None = None,
+        event_journal_path: str | Path | None = None,
+    ):
         self.config = config
         self.api_client = api_client
+        self.broker_adapter = broker_adapter or CTraderBrokerAdapter(api_client)
         self.level_manager = level_manager
         self.risk_gates = risk_gates
         self.state_writer = state_writer
+        self.event_journal_path = event_journal_path if event_journal_path is not None else getattr(config, "xauex_event_journal_path", None)
         self.position_manager = PositionManager()
         self._pending_pairs: List[_InsideBarPair] = []
         self._order_to_pair: Dict[str, _InsideBarPair] = {}
         self._pending_market_orders: Dict[str, dict] = {}
         self._closed_trades_today: List[dict] = []
         self._closed_trades_date_utc: str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    def _journal_event(self, event_type: str, payload: dict, *, correlation_id: str | None = None) -> None:
+        if not self.event_journal_path:
+            return
+        safe_append_event(
+            self.event_journal_path,
+            source="executor",
+            event_type=event_type,
+            payload=payload,
+            correlation_id=correlation_id,
+        )
+
+    def _build_order_intent(
+        self,
+        *,
+        direction: int,
+        lot_size: float,
+        stop_loss_price: float,
+        take_profit_price: float,
+        pattern: PatternType,
+        level: float,
+        owner: str,
+        metadata: Optional[dict],
+    ) -> OrderIntent:
+        metadata = dict(metadata or {})
+        correlation_id = str(metadata.get("correlation_id") or metadata.get("command_id") or metadata.get("signal_id") or "")
+        if not correlation_id:
+            session = metadata.get("session") if isinstance(metadata.get("session"), dict) else {}
+            correlation_id = str(session.get("signal_id") or "")
+        if not correlation_id:
+            correlation_id = f"{owner}-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+        bid = getattr(self.api_client, "_last_bid", None) if self.api_client is not None else None
+        ask = getattr(self.api_client, "_last_ask", None) if self.api_client is not None else None
+        return OrderIntent(
+            direction="BUY" if direction > 0 else "SELL",
+            lot_size=lot_size,
+            stop_loss_price=stop_loss_price,
+            take_profit_price=take_profit_price,
+            entry_price=level,
+            owner=owner,
+            pattern=pattern.name,
+            correlation_id=correlation_id,
+            metadata=metadata,
+            bid=bid,
+            ask=ask,
+        )
+
+    @staticmethod
+    def _ack_payload(ack: OrderAck) -> dict:
+        return {
+            "status": ack.status,
+            "order_id": ack.order_id,
+            "position_id": ack.position_id,
+            "reason": ack.reason,
+            "raw_result": ack.raw_result,
+        }
 
     @staticmethod
     def _today_utc(now_utc: Optional[datetime] = None) -> str:
@@ -213,29 +283,43 @@ class Executor:
             direction_label, lot_size, sl_label, tp_label, pattern.name, level,
         )
 
+        intent = self._build_order_intent(
+            direction=direction,
+            lot_size=lot_size,
+            stop_loss_price=stop_loss_price,
+            take_profit_price=take_profit_price,
+            pattern=pattern,
+            level=level,
+            owner=owner,
+            metadata=metadata,
+        )
+        self._journal_event("order_intent", intent.__dict__, correlation_id=intent.correlation_id)
+
         if self.config.observe_only:
             logger.info(
                 "[EXECUTOR] OBSERVE_ONLY — would have placed %s %.2f lots. SL:%s TP:%s",
                 direction_label, lot_size, sl_label, tp_label,
             )
+            self._journal_event(
+                "order_rejected",
+                {"reason": "OBSERVE_ONLY", **intent.__dict__},
+                correlation_id=intent.correlation_id,
+            )
             return None
 
         try:
-            result = await self.api_client.place_market_order(
-                direction="BUY" if direction > 0 else "SELL",
-                lot_size=lot_size,
-                stop_loss_price=stop_loss_price,
-                take_profit_price=take_profit_price,
-            )
+            ack = await self.broker_adapter.place_market_order(intent)
         except Exception as exc:
             self._handle_api_error(exc)
+            self._journal_event(
+                "order_rejected",
+                {"reason": str(exc), **intent.__dict__},
+                correlation_id=intent.correlation_id,
+            )
             return None
 
-        if result is None:
-            return None
-
-        if isinstance(result, str):
-            position_id = str(result)
+        if ack.status == "filled" and ack.position_id:
+            position_id = str(ack.position_id)
             logger.info("[EXECUTOR] Order placed. Position ID: %s", position_id)
 
             tracked = TrackedPosition(
@@ -252,31 +336,24 @@ class Executor:
                 metadata=dict(metadata or {}),
             )
             self.position_manager.add(tracked)
-            return position_id
-
-        status = result.get("status") if isinstance(result, dict) else None
-        if status == "filled":
-            position_id = str(result["position_id"])
-            logger.info("[EXECUTOR] Order placed. Position ID: %s", position_id)
-
-            tracked = TrackedPosition(
-                position_id=position_id,
-                direction=direction_label,
-                entry_price=level,
-                stop_loss=stop_loss_price,
-                take_profit=take_profit_price,
-                lot_size=lot_size,
-                open_time_utc=datetime.now(timezone.utc),
-                pattern=pattern,
-                level=level,
-                owner=owner,
-                metadata=dict(metadata or {}),
+            self._journal_event("order_ack", self._ack_payload(ack), correlation_id=intent.correlation_id)
+            self._journal_event(
+                "position_opened",
+                {
+                    "position_id": position_id,
+                    "direction": direction_label,
+                    "entry_price": level,
+                    "stop_loss": stop_loss_price,
+                    "take_profit": take_profit_price,
+                    "lot_size": lot_size,
+                    "owner": owner,
+                },
+                correlation_id=intent.correlation_id,
             )
-            self.position_manager.add(tracked)
             return position_id
 
-        if status == "accepted":
-            order_id = str(result["order_id"])
+        if ack.status == "accepted" and ack.order_id:
+            order_id = str(ack.order_id)
             self._pending_market_orders[order_id] = {
                 "direction": direction_label,
                 "stop_loss": stop_loss_price,
@@ -287,10 +364,17 @@ class Executor:
                 "owner": owner,
                 "metadata": dict(metadata or {}),
                 "created_at": datetime.now(timezone.utc),
+                "correlation_id": intent.correlation_id,
             }
             logger.info("[EXECUTOR] Order accepted, awaiting fill. Order ID: %s", order_id)
+            self._journal_event("order_ack", self._ack_payload(ack), correlation_id=intent.correlation_id)
             return f"order:{order_id}"
 
+        self._journal_event(
+            "order_rejected",
+            {**self._ack_payload(ack), "reason": ack.reason or ack.status or "ORDER_REJECTED"},
+            correlation_id=intent.correlation_id,
+        )
         return None
 
     # ──────────────────────────────────────────────────────────────
@@ -406,6 +490,24 @@ class Executor:
         tracked = self.position_manager.get_position(position_id)
         if tracked is not None and entry_price > 0:
             tracked.entry_price = entry_price
+            correlation_id = str((tracked.metadata or {}).get("correlation_id") or "")
+            session = (tracked.metadata or {}).get("session") if isinstance((tracked.metadata or {}).get("session"), dict) else {}
+            if not correlation_id:
+                correlation_id = str(session.get("signal_id") or "")
+            self._journal_event(
+                "position_opened",
+                {
+                    "order_id": order_id,
+                    "position_id": position_id,
+                    "entry_price": entry_price,
+                    "direction": tracked.direction,
+                    "stop_loss": tracked.stop_loss,
+                    "take_profit": tracked.take_profit,
+                    "lot_size": tracked.lot_size,
+                    "owner": tracked.owner,
+                },
+                correlation_id=correlation_id or position_id,
+            )
 
         pair = self._order_to_pair.pop(order_id, None)
         if pair is not None:
@@ -478,6 +580,22 @@ class Executor:
             "metadata": dict(position.metadata or {}),
             "close_time_utc": datetime.now(timezone.utc).isoformat(),
         })
+        correlation_id = str((position.metadata or {}).get("correlation_id") or "")
+        session = (position.metadata or {}).get("session") if isinstance((position.metadata or {}).get("session"), dict) else {}
+        if not correlation_id:
+            correlation_id = str(session.get("signal_id") or "")
+        self._journal_event(
+            "position_closed",
+            {
+                "position_id": position_id,
+                "direction": position.direction,
+                "entry_price": position.entry_price,
+                "close_price": close_price,
+                "pnl": pnl,
+                "owner": position.owner,
+            },
+            correlation_id=correlation_id or position_id,
+        )
 
         if self.state_writer:
             await self.state_writer.write(

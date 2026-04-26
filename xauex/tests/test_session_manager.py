@@ -37,8 +37,15 @@ calculate_xauex_remaining_daily_loss_budget = _MODULE.calculate_xauex_remaining_
 BotOrchestrator = _MODULE.BotOrchestrator
 
 
+def _set_required_config_env(monkeypatch):
+    monkeypatch.setenv("CTRADER_CLIENT_ID", "test-client")
+    monkeypatch.setenv("CTRADER_CLIENT_SECRET", "test-secret")
+    monkeypatch.setenv("CTRADER_ACCOUNT_ID", "123456")
+
+
 def test_load_config_includes_xauex_session_manager_settings(monkeypatch):
     monkeypatch.chdir(XAUEX_ROOT)
+    _set_required_config_env(monkeypatch)
     monkeypatch.setenv("XAUEX_SESSION_PROTECT_R", "0.85")
     monkeypatch.setenv("XAUEX_SESSION_TRAIL_R", "1.35")
     monkeypatch.setenv("XAUEX_SESSION_ATR_MULTIPLIER", "1.4")
@@ -58,10 +65,13 @@ def test_load_config_includes_xauex_session_manager_settings(monkeypatch):
     assert cfg.xauex_session_low_confidence_protect_lock_r == 0.35
     assert cfg.xauex_session_high_confidence_protect_lock_r == 0.25
     assert cfg.xauex_manual_command_path == "/tmp/manual_trade_cmd.json"
+    assert cfg.xauex_manual_command_secret == ""
+    assert cfg.xauex_event_journal_path == "/var/lib/xauex/events.jsonl"
 
 
 def test_load_config_defaults_health_check_host_to_loopback(monkeypatch):
     monkeypatch.chdir(XAUEX_ROOT)
+    _set_required_config_env(monkeypatch)
     monkeypatch.delenv("HEALTH_CHECK_HOST", raising=False)
 
     cfg = load_config()
@@ -71,6 +81,7 @@ def test_load_config_defaults_health_check_host_to_loopback(monkeypatch):
 
 def test_load_config_rejects_force_flat_before_second_window_finishes(monkeypatch):
     monkeypatch.chdir(XAUEX_ROOT)
+    _set_required_config_env(monkeypatch)
     monkeypatch.setenv("XAUEX_ENTRY_SECOND_START_LONDON", "11:30")
     monkeypatch.setenv("XAUEX_ENTRY_SECOND_END_LONDON", "11:35")
     monkeypatch.setenv("XAUEX_FORCE_FLAT_LONDON", "11:30")
