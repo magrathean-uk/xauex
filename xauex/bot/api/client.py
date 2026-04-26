@@ -137,6 +137,7 @@ class ApiClient:
         # Last known bid/ask (spot events may carry partial updates)
         self._last_bid: Optional[float] = None
         self._last_ask: Optional[float] = None
+        self.last_order_reject: Optional[dict[str, str]] = None
 
         # Callbacks set by orchestrator
         self._tick_callback: Optional[Callable] = None
@@ -683,6 +684,12 @@ class ApiClient:
         description = getattr(event, "description", "") or ""
         return (str(error_code), description) if error_code else (None, description)
 
+    def _record_order_reject(self, reason: str, description: str = "") -> None:
+        self.last_order_reject = {
+            "reason": str(reason),
+            "description": str(description or ""),
+        }
+
     async def place_market_order(
         self,
         direction: str,
@@ -698,11 +705,13 @@ class ApiClient:
         """
         from ctrader_open_api.messages.OpenApiMessages_pb2 import ProtoOANewOrderReq
 
+        self.last_order_reject = None
         spec = self._require_symbol_spec()
         proto_vol = _proto_volume(lot_size, spec.lot_size)
         if proto_vol <= 0:
             logger.error("[API] place_market_order: invalid volume %s lots → %s proto",
                          lot_size, proto_vol)
+            self._record_order_reject("INVALID_VOLUME", f"{lot_size} lots converted to {proto_vol} protocol units")
             return None
 
         try:
@@ -737,14 +746,18 @@ class ApiClient:
             error_code, description = self._order_error_details(event)
             if error_code:
                 logger.error("[API] Order rejected: %s %s", error_code, description)
+                self._record_order_reject(error_code, description)
             elif hasattr(event, "executionType"):
                 logger.error("[API] Unexpected market order response. executionType=%s", event.executionType)
+                self._record_order_reject("UNEXPECTED_RESPONSE", f"executionType={event.executionType}")
             else:
                 logger.error("[API] Unexpected market order response: %s", type(event).__name__)
+                self._record_order_reject("UNEXPECTED_RESPONSE", type(event).__name__)
             return None
 
         except Exception as exc:
             logger.error("[API] Market order error: %s", exc)
+            self._record_order_reject("API_ERROR", str(exc))
             return None
 
     async def place_stop_order(

@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 from bot.execution.executor import Executor
 from bot.patterns.detector import PatternType
-from xauex.bot.api.broker import OrderAck, OrderIntent
+from xauex.bot.api.broker import CTraderBrokerAdapter, OrderAck, OrderIntent
 
 
 class _FakeBroker:
@@ -17,6 +17,41 @@ class _FakeBroker:
     async def place_market_order(self, intent: OrderIntent) -> OrderAck:
         self.intent = intent
         return self.ack
+
+
+class _FakeApiClient:
+    def __init__(self, result=None, last_order_reject=None):
+        self.result = result
+        self.last_order_reject = last_order_reject
+        self.calls = []
+
+    async def place_market_order(self, **kwargs):
+        self.calls.append(kwargs)
+        return self.result
+
+
+def test_ctrader_adapter_preserves_structured_broker_rejection():
+    api_client = _FakeApiClient(
+        result=None,
+        last_order_reject={"reason": "MARKET_CLOSED", "description": "Market is closed."},
+    )
+    adapter = CTraderBrokerAdapter(api_client)
+    intent = OrderIntent(
+        direction="BUY",
+        lot_size=0.01,
+        stop_loss_price=2350.0,
+        take_profit_price=2385.0,
+        entry_price=2362.5,
+        owner="manual",
+        pattern="NONE",
+        correlation_id="cmd-1",
+    )
+
+    ack = asyncio.run(adapter.place_market_order(intent))
+
+    assert ack.status == "rejected"
+    assert ack.reason == "MARKET_CLOSED"
+    assert ack.raw_result == {"reason": "MARKET_CLOSED", "description": "Market is closed."}
 
 
 def test_executor_journals_normalized_order_intent_and_ack(tmp_path):

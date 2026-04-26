@@ -50,6 +50,12 @@ class CTraderBrokerAdapter:
             stop_loss_price=intent.stop_loss_price,
             take_profit_price=intent.take_profit_price,
         )
+        if result is None:
+            rejection = getattr(self.api_client, "last_order_reject", None)
+            if isinstance(rejection, dict):
+                reason = rejection.get("reason") or rejection.get("error") or rejection.get("error_code")
+                if reason:
+                    return OrderAck(status="rejected", reason=str(reason), raw_result=dict(rejection))
         return normalise_market_order_result(result)
 
 
