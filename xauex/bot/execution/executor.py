@@ -158,6 +158,8 @@ class Executor:
             correlation_id = f"{owner}-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
         bid = getattr(self.api_client, "_last_bid", None) if self.api_client is not None else None
         ask = getattr(self.api_client, "_last_ask", None) if self.api_client is not None else None
+        symbol_spec = getattr(self.api_client, "_symbol_spec", None) if self.api_client is not None else None
+        symbol = str(getattr(symbol_spec, "symbol", "") or "XAUUSD")
         return OrderIntent(
             direction="BUY" if direction > 0 else "SELL",
             lot_size=lot_size,
@@ -170,6 +172,7 @@ class Executor:
             metadata=metadata,
             bid=bid,
             ask=ask,
+            symbol=symbol,
         )
 
     @staticmethod
