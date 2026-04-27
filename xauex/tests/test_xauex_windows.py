@@ -319,6 +319,14 @@ def test_live_timers_catch_up_after_restarts_and_run_after_force_flat():
     assert "OnCalendar=Fri *-*-* 15:15:00 Europe/London" in review_timer
 
 
+def test_window_runner_scripts_are_executable_for_systemd_execstart():
+    signal_runner = REPO_ROOT / "ops" / "run_xauex_signal.sh"
+    confirm_runner = REPO_ROOT / "ops" / "run_xauex_confirm.sh"
+
+    assert signal_runner.stat().st_mode & 0o111
+    assert confirm_runner.stat().st_mode & 0o111
+
+
 def test_xauex_web_service_uses_repo_placeholders_instead_of_local_user():
     service = _read_ops_file("xauex-web.service")
     script = _read_ops_file("run_xauex_web.sh")
