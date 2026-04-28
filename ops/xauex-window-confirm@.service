@@ -10,6 +10,7 @@ Type=oneshot
 User=__RUN_USER__
 WorkingDirectory=__REPO_ROOT__
 EnvironmentFile=__REPO_ROOT__/.env
+EnvironmentFile=__REPO_ROOT__/xauex/.env
 Environment=PYTHONUNBUFFERED=1
 Environment=LOG_LEVEL=DEBUG
 Environment=XAUEX_ENFORCE_WINDOW_SCHEDULE=1

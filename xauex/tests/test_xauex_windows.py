@@ -327,6 +327,13 @@ def test_window_runner_scripts_are_executable_for_systemd_execstart():
     assert confirm_runner.stat().st_mode & 0o111
 
 
+def test_window_confirm_service_loads_runtime_config_env_file():
+    service = _read_ops_file("xauex-window-confirm@.service")
+
+    assert "EnvironmentFile=__REPO_ROOT__/.env" in service
+    assert "EnvironmentFile=__REPO_ROOT__/xauex/.env" in service
+
+
 def test_xauex_web_service_uses_repo_placeholders_instead_of_local_user():
     service = _read_ops_file("xauex-web.service")
     script = _read_ops_file("run_xauex_web.sh")
