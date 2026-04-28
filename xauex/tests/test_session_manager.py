@@ -55,6 +55,9 @@ def test_load_config_includes_xauex_session_manager_settings(monkeypatch):
     monkeypatch.setenv("XAUEX_SESSION_LOW_CONFIDENCE_PROTECT_LOCK_R", "0.35")
     monkeypatch.setenv("XAUEX_SESSION_HIGH_CONFIDENCE_PROTECT_LOCK_R", "0.25")
     monkeypatch.setenv("XAUEX_MANUAL_COMMAND_PATH", "/tmp/manual_trade_cmd.json")
+    monkeypatch.setenv("XAUEX_COUNTER_SIGNAL_ENABLED", "false")
+    monkeypatch.setenv("XAUEX_COUNTER_SIGNAL_CONFIDENCE", "0.58")
+    monkeypatch.setenv("XAUEX_COUNTER_SIGNAL_RISK_MULTIPLIER", "0.5")
 
     cfg = load_config()
 

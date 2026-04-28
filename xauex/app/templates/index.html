@@ -6,83 +6,205 @@
   <title>XAUEX Dashboard</title>
   <style>
     :root {
-      --bg: #0b1220;
-      --panel: #121b2d;
-      --panel-2: #18243a;
-      --text: #ebf1ff;
-      --muted: #95a4c2;
-      --line: #263551;
-      --green: #25c27a;
-      --red: #ff5e5e;
-      --amber: #f6b73c;
-      --blue: #5ea8ff;
+      --bg: #09090b;
+      --rail: #09090b;
+      --panel: rgba(24, 24, 27, 0.42);
+      --panel-2: rgba(9, 9, 11, 0.44);
+      --panel-3: rgba(39, 39, 42, 0.44);
+      --text: #f4f4f5;
+      --muted: #a1a1aa;
+      --faint: #71717a;
+      --line: rgba(63, 63, 70, 0.72);
+      --green: #34d399;
+      --red: #fb7185;
+      --amber: #fbbf24;
+      --blue: #38bdf8;
     }
     * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
     body {
       margin: 0;
-      font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
-      background: linear-gradient(180deg, #09111d, #0f1728 40%, #09111d);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
       color: var(--text);
+      font-size: 14px;
     }
-    .wrap {
-      max-width: 1280px;
-      margin: 0 auto;
-      padding: 24px;
-    }
-    .hero {
+    a { color: inherit; }
+    .app-shell {
+      min-height: 100vh;
       display: flex;
-      justify-content: space-between;
-      gap: 16px;
-      margin-bottom: 20px;
-      align-items: end;
+      background: var(--bg);
     }
-    .hero h1 {
-      margin: 0;
-      font-size: 30px;
-      letter-spacing: 0.02em;
+    .sidebar {
+      width: 240px;
+      flex: 0 0 240px;
+      min-height: 100vh;
+      position: sticky;
+      top: 0;
+      align-self: flex-start;
+      display: flex;
+      flex-direction: column;
+      background: var(--rail);
+      border-right: 1px solid rgba(39, 39, 42, 0.8);
     }
-    .hero p {
-      margin: 6px 0 0;
-      color: var(--muted);
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 20px;
+      border-bottom: 1px solid rgba(39, 39, 42, 0.8);
     }
-    .pill {
+    .brand-mark {
+      width: 32px;
+      height: 32px;
+      border-radius: 6px;
+      display: grid;
+      place-items: center;
+      color: #18181b;
+      background: linear-gradient(135deg, #fcd34d, #d97706);
+      font-weight: 800;
+    }
+    .brand-title {
+      display: block;
+      color: var(--text);
+      letter-spacing: 0;
+      line-height: 1.2;
+    }
+    .brand-subtitle {
+      display: block;
+      color: var(--faint);
+      font-size: 11px;
+      line-height: 1.2;
+      margin-top: 2px;
+    }
+    .side-nav {
+      flex: 1;
+      padding: 12px;
+      display: grid;
+      align-content: start;
+      gap: 4px;
+    }
+    .side-nav a {
       display: inline-flex;
       align-items: center;
-      gap: 8px;
-      padding: 10px 14px;
-      border-radius: 999px;
-      background: var(--panel);
-      border: 1px solid var(--line);
-      font-weight: 700;
+      gap: 12px;
+      width: 100%;
+      padding: 9px 12px;
+      border-radius: 6px;
+      color: #a1a1aa;
+      border: 1px solid transparent;
+      text-decoration: none;
+      font-size: 14px;
+      transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+    }
+    .side-nav a:hover {
+      color: var(--text);
+      background: rgba(39, 39, 42, 0.45);
+    }
+    .side-nav a.active {
+      color: #fcd34d;
+      background: rgba(245, 158, 11, 0.1);
+      border-color: rgba(245, 158, 11, 0.22);
+    }
+    .nav-icon {
+      width: 16px;
+      text-align: center;
+      color: currentColor;
+      font-size: 12px;
+    }
+    .sidebar-status {
+      margin: 12px;
+      padding: 12px;
+      border-radius: 6px;
+      border: 1px solid rgba(39, 39, 42, 0.9);
+      background: rgba(24, 24, 27, 0.62);
+    }
+    .sidebar-status .subtle { margin-top: 4px; font-size: 11px; }
+    .main-shell {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+    }
+    .topbar {
+      min-height: 64px;
+      display: inline-flex;
+      align-items: center;
+      gap: 16px;
+      padding: 12px 24px;
+      border-bottom: 1px solid rgba(39, 39, 42, 0.8);
+      background: rgba(9, 9, 11, 0.62);
+      backdrop-filter: blur(10px);
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+    .topbar-title {
+      min-width: 220px;
+    }
+    .topbar-title h1 {
+      margin: 0;
+      color: var(--text);
+      font-size: 16px;
+      font-weight: 500;
+      letter-spacing: 0;
+      line-height: 1.35;
+    }
+    .topbar-title p {
+      margin: 2px 0 0;
+      color: var(--faint);
+      font-size: 12px;
+    }
+    .topbar-spacer { flex: 1; }
+    .search-box {
+      width: min(320px, 32vw);
+      border: 1px solid rgba(39, 39, 42, 0.9);
+      border-radius: 6px;
+      background: rgba(24, 24, 27, 0.6);
+      color: var(--faint);
+      padding: 9px 12px;
+      font-size: 13px;
     }
     .actions {
       display: flex;
-      gap: 10px;
+      gap: 8px;
       flex-wrap: wrap;
-      margin-top: 14px;
     }
     .action-link {
       display: inline-flex;
       align-items: center;
-      padding: 10px 14px;
-      border-radius: 999px;
-      border: 1px solid var(--line);
-      background: var(--panel-2);
-      color: var(--text);
+      justify-content: center;
+      min-height: 36px;
+      padding: 8px 12px;
+      border-radius: 6px;
+      border: 1px solid rgba(39, 39, 42, 0.9);
+      background: rgba(24, 24, 27, 0.55);
+      color: #d4d4d8;
       text-decoration: none;
-      font-weight: 700;
+      font-weight: 500;
+      font-size: 13px;
+    }
+    .action-link.primary {
+      color: #fcd34d;
+      background: rgba(245, 158, 11, 0.1);
+      border-color: rgba(245, 158, 11, 0.25);
+    }
+    .wrap {
+      padding: 24px;
+      display: grid;
+      gap: 24px;
     }
     .grid {
       display: grid;
       grid-template-columns: repeat(12, minmax(0, 1fr));
-      gap: 16px;
+      gap: 24px;
     }
     .card {
-      background: rgba(18, 27, 45, 0.95);
+      background: var(--panel);
       border: 1px solid var(--line);
-      border-radius: 18px;
-      padding: 18px;
-      box-shadow: 0 18px 40px rgba(0, 0, 0, 0.18);
+      border-radius: 12px;
+      padding: 20px;
+      box-shadow: none;
     }
     .span-3 { grid-column: span 3; }
     .span-4 { grid-column: span 4; }
@@ -94,14 +216,15 @@
     .label {
       color: var(--muted);
       font-size: 12px;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
+      text-transform: none;
+      letter-spacing: 0;
       margin-bottom: 8px;
     }
     .value {
-      font-size: 28px;
-      font-weight: 800;
+      font-size: 24px;
+      font-weight: 500;
       line-height: 1.1;
+      letter-spacing: 0;
     }
     .subtle {
       margin-top: 8px;
@@ -126,9 +249,9 @@
       align-items: center;
       gap: 6px;
       padding: 7px 10px;
-      border-radius: 999px;
+      border-radius: 6px;
       border: 1px solid var(--line);
-      background: rgba(24, 36, 58, 0.95);
+      background: var(--panel-2);
       font-size: 12px;
       font-weight: 700;
     }
@@ -143,9 +266,9 @@
     }
     .diag-issue {
       padding: 12px;
-      border-radius: 14px;
+      border-radius: 8px;
       border: 1px solid var(--line);
-      background: rgba(24, 36, 58, 0.8);
+      background: var(--panel-2);
       display: grid;
       gap: 6px;
     }
@@ -184,8 +307,8 @@
     }
     .signal-action {
       font-size: 34px;
-      font-weight: 900;
-      letter-spacing: 0.08em;
+      font-weight: 600;
+      letter-spacing: 0;
     }
     .buy { color: var(--green); }
     .sell { color: var(--red); }
@@ -199,7 +322,7 @@
     .kv div {
       background: var(--panel-2);
       border: 1px solid var(--line);
-      border-radius: 14px;
+      border-radius: 8px;
       padding: 12px;
     }
     .kv strong {
@@ -207,8 +330,9 @@
       font-size: 12px;
       color: var(--muted);
       margin-bottom: 6px;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
+      text-transform: none;
+      letter-spacing: 0;
+      font-weight: 500;
     }
     table {
       width: 100%;
@@ -218,20 +342,21 @@
     }
     th, td {
       text-align: left;
-      padding: 10px 8px;
-      border-bottom: 1px solid var(--line);
+      padding: 12px 10px;
+      border-bottom: 1px solid rgba(63, 63, 70, 0.55);
       vertical-align: top;
     }
     th {
       color: var(--muted);
       font-size: 12px;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
+      text-transform: none;
+      letter-spacing: 0;
+      font-weight: 500;
     }
     .mono { font-family: "JetBrains Mono", ui-monospace, monospace; }
     .chart {
       width: 100%;
-      min-height: 220px;
+      min-height: 288px;
     }
     .chart-svg {
       width: 100%;
@@ -240,14 +365,14 @@
     }
     .chart-line {
       fill: none;
-      stroke: var(--blue);
-      stroke-width: 2.5;
+      stroke: var(--amber);
+      stroke-width: 2;
     }
     .chart-area {
       fill: rgba(94, 168, 255, 0.08);
     }
     .chart-grid {
-      stroke: rgba(149, 164, 194, 0.16);
+      stroke: rgba(82, 82, 91, 0.45);
       stroke-width: 1;
       shape-rendering: crispEdges;
     }
@@ -284,9 +409,9 @@
     .manual-grid select {
       width: 100%;
       padding: 10px 12px;
-      border-radius: 12px;
+      border-radius: 6px;
       border: 1px solid var(--line);
-      background: #0d1524;
+      background: rgba(9, 9, 11, 0.55);
       color: var(--text);
       font: inherit;
     }
@@ -308,14 +433,14 @@
       color: var(--muted);
       font-size: 12px;
       text-transform: uppercase;
-      letter-spacing: 0.08em;
+      letter-spacing: 0;
     }
     .auth-field input {
       width: 100%;
       padding: 10px 12px;
       border-radius: 12px;
       border: 1px solid var(--line);
-      background: #0d1524;
+      background: rgba(9, 9, 11, 0.55);
       color: var(--text);
       font: inherit;
     }
@@ -325,7 +450,7 @@
       background: var(--panel-2);
       color: var(--text);
       padding: 10px 14px;
-      border-radius: 12px;
+      border-radius: 6px;
       font: inherit;
       font-weight: 700;
       cursor: pointer;
@@ -337,8 +462,9 @@
       cursor: not-allowed;
     }
     .button-primary {
-      background: rgba(94, 168, 255, 0.15);
-      border-color: rgba(94, 168, 255, 0.35);
+      background: rgba(245, 158, 11, 0.1);
+      border-color: rgba(245, 158, 11, 0.3);
+      color: #fcd34d;
     }
     .button-danger {
       background: rgba(255, 94, 94, 0.12);
@@ -350,7 +476,7 @@
       gap: 12px;
       align-items: center;
       padding: 12px 0;
-      border-bottom: 1px solid var(--line);
+      border-bottom: 1px solid rgba(63, 63, 70, 0.55);
     }
     .manual-locked {
       opacity: 0.65;
@@ -394,7 +520,7 @@
       margin-top: 10px;
       padding: 14px;
       border-radius: 14px;
-      background: rgba(255, 255, 255, 0.03);
+      background: var(--panel-2);
       border: 1px solid var(--line);
       line-height: 1.5;
       font-size: 14px;
@@ -405,9 +531,9 @@
       margin-top: 12px;
       padding: 12px 14px;
       border-radius: 14px;
-      background: rgba(94, 168, 255, 0.08);
-      border: 1px solid rgba(94, 168, 255, 0.2);
-      color: #dfeaff;
+      background: rgba(245, 158, 11, 0.07);
+      border: 1px solid rgba(245, 158, 11, 0.18);
+      color: #fde68a;
       line-height: 1.5;
       font-size: 14px;
     }
@@ -418,9 +544,9 @@
     }
     .window-item {
       padding: 12px;
-      border-radius: 14px;
+      border-radius: 8px;
       border: 1px solid var(--line);
-      background: rgba(24, 36, 58, 0.8);
+      background: var(--panel-2);
     }
     .window-item strong {
       display: block;
@@ -440,33 +566,110 @@
       color: var(--muted);
       padding: 6px 0;
     }
+    .metric-card {
+      min-height: 128px;
+      position: relative;
+      overflow: hidden;
+    }
+    .metric-card:after {
+      content: "";
+      position: absolute;
+      inset: auto 0 0;
+      height: 40px;
+      background: linear-gradient(180deg, rgba(251, 191, 36, 0), rgba(251, 191, 36, 0.08));
+      pointer-events: none;
+    }
+    .metric-card .value { margin-top: 10px; }
+    .section-anchor { scroll-margin-top: 88px; }
+    .chart-card { min-height: 420px; }
+    @media (max-width: 1180px) {
+      .sidebar {
+        width: 72px;
+        flex-basis: 72px;
+      }
+      .brand-copy,
+      .side-nav span:not(.nav-icon),
+      .sidebar-status { display: none; }
+      .brand { justify-content: center; padding: 20px 12px; }
+      .side-nav a { justify-content: center; padding: 10px; }
+      .nav-icon { width: auto; }
+      .search-box { display: none; }
+    }
     @media (max-width: 960px) {
       .span-3, .span-4, .span-5, .span-6, .span-7, .span-8 { grid-column: span 12; }
-      .hero { flex-direction: column; align-items: start; }
+      .topbar { position: static; align-items: flex-start; flex-direction: column; }
+      .topbar-spacer { display: none; }
+      .actions { width: 100%; }
       .kv { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 720px) {
+      .app-shell { display: block; }
+      .sidebar {
+        width: 100%;
+        min-height: 0;
+        position: static;
+        border-right: 0;
+        border-bottom: 1px solid rgba(39, 39, 42, 0.8);
+      }
+      .brand-copy,
+      .side-nav span:not(.nav-icon) { display: inline; }
+      .side-nav {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+      .side-nav a {
+        justify-content: flex-start;
+      }
+      .wrap { padding: 16px; }
+      .manual-grid { grid-template-columns: 1fr; }
     }
   </style>
 </head>
 <body data-auth-configured="{{ 'true' if dashboard_auth.configured else 'false' }}" data-authenticated="{{ 'true' if dashboard_auth.authenticated else 'false' }}">
-  <div class="wrap">
-    <div class="hero">
-      <div>
-        <h1>XAUEX Dashboard</h1>
-        <p>Live bot state, account metrics, open positions, closed trades, and signal telemetry.</p>
-        <div class="actions">
-          <a class="action-link" id="brief-link" href="/brief">Open Latest Brief</a>
-          <a class="action-link" id="brief-download-link" href="/brief/latest.md">Markdown</a>
-          <a class="action-link" id="report-link" href="/report/direct" target="_blank" rel="noreferrer">Open Latest Report</a>
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="Dashboard navigation">
+      <div class="brand">
+        <div class="brand-mark">X</div>
+        <div class="brand-copy">
+          <span class="brand-title">XAUEX</span>
+          <span class="brand-subtitle">London Gold Desk</span>
         </div>
       </div>
-      <div class="pill">
-        <span id="status-dot" class="status-dot"></span>
-        <span id="status-text">Loading</span>
+      <nav class="side-nav">
+        <a class="active" href="#overview"><span class="nav-icon">01</span><span>Overview</span></a>
+        <a href="#signals"><span class="nav-icon">02</span><span>Signals</span></a>
+        <a href="#positions-section"><span class="nav-icon">03</span><span>Positions</span></a>
+        <a href="#performance"><span class="nav-icon">04</span><span>Performance</span></a>
+        <a href="#journal"><span class="nav-icon">05</span><span>Trade Journal</span></a>
+        <a href="#risk"><span class="nav-icon">06</span><span>Risk</span></a>
+        <a href="#services"><span class="nav-icon">07</span><span>Services</span></a>
+      </nav>
+      <div class="sidebar-status">
+        <div>
+          <span id="status-dot" class="status-dot"></span>
+          <span id="status-text">Loading</span>
+        </div>
+        <div class="subtle">cmd.json, state.json, and cTrader bridge telemetry</div>
       </div>
-    </div>
+    </aside>
 
-    <div class="grid">
-      <div class="card span-4">
+    <div class="main-shell">
+      <header class="topbar">
+        <div class="topbar-title">
+          <h1>Operator Dashboard</h1>
+          <p>Live session view · London gold execution</p>
+        </div>
+        <div class="topbar-spacer"></div>
+        <div class="search-box">Search trades, signals, logs...</div>
+        <div class="actions">
+          <a class="action-link" id="brief-link" href="/brief">Brief</a>
+          <a class="action-link" id="brief-download-link" href="/brief/latest.md">Markdown</a>
+          <a class="action-link primary" id="report-link" href="/report/direct" target="_blank" rel="noreferrer">Report</a>
+        </div>
+      </header>
+
+      <main class="wrap">
+    <div class="grid" id="overview">
+      <div class="card span-4 section-anchor" id="signals">
         <div class="label">XAUEX Signal</div>
         <div class="signal">
           <div>
@@ -485,7 +688,7 @@
         <div class="subtle">The signal card and diagnostics card are built from the same live XAUEX snapshot.</div>
       </div>
 
-      <div class="card span-4">
+      <div class="card span-4 metric-card">
         <div class="label">Account</div>
         <div class="value mono" id="balance">-</div>
         <div class="subtle">Balance</div>
@@ -497,7 +700,7 @@
         </div>
       </div>
 
-      <div class="card span-4">
+      <div class="card span-4 metric-card section-anchor" id="risk">
         <div class="label">Risk / Session</div>
         <div class="kv">
           <div><strong>Signal Runs Today</strong><span id="signal-runs-today">-</span></div>
@@ -509,6 +712,12 @@
         <div class="subtle" id="meta-updated">-</div>
       </div>
 
+      <div class="card span-12 chart-card section-anchor" id="performance">
+        <div class="label">Recent H1 Price</div>
+        <div id="chart-quote" class="subtle">Waiting for live quote...</div>
+        <div id="chart" class="chart"></div>
+      </div>
+
       <div class="card span-12">
         <div class="label">Diagnostics</div>
         <div id="diagnostics-summary" class="diag-summary">Waiting for diagnostics data.</div>
@@ -518,7 +727,7 @@
         <div id="diagnostics-updated" class="subtle">-</div>
       </div>
 
-      <div class="card span-6">
+      <div class="card span-6 section-anchor" id="services">
         <div class="label">Live Windows</div>
         <div id="live-windows" class="window-list">
           <div class="muted-empty">Waiting for window status.</div>
@@ -584,20 +793,14 @@
         <div id="manual-positions"></div>
       </div>
 
-      <div class="card span-5">
+      <div class="card span-5 section-anchor" id="positions-section">
         <div class="label">Open Positions</div>
         <div id="positions"></div>
       </div>
 
-      <div class="card span-7">
+      <div class="card span-7 section-anchor" id="journal">
         <div class="label">Recent Closed Trades</div>
         <div id="recent-trades"></div>
-      </div>
-
-      <div class="card span-12">
-        <div class="label">Recent H1 Price</div>
-        <div id="chart-quote" class="subtle">Waiting for live quote...</div>
-        <div id="chart" class="chart"></div>
       </div>
 
       <div class="card span-6">
@@ -618,6 +821,8 @@
         <div class="label">Weekly Review</div>
         <div id="weekly-review" class="review muted-empty">No review yet.</div>
       </div>
+    </div>
+      </main>
     </div>
   </div>
 
