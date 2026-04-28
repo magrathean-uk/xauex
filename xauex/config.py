@@ -101,6 +101,9 @@ class Config:
     xauex_session_high_confidence_protect_lock_r: float
     xauex_session_low_confidence_protect_r: float
     xauex_session_high_confidence_protect_r: float
+    xauex_counter_signal_enabled: bool
+    xauex_counter_signal_confidence: float
+    xauex_counter_signal_risk_multiplier: float
     xauex_manual_command_path: str
     xauex_manual_command_secret: str
     xauex_event_journal_path: str
@@ -468,6 +471,25 @@ def load_config(env_file: str = ".env") -> Config:
         5.0,
         float(os.getenv("MIROFISH_SESSION_HIGH_CONFIDENCE_PROTECT_R", "1.0")),
     )
+    xauex_counter_signal_enabled = os.getenv("XAUEX_COUNTER_SIGNAL_ENABLED", "false").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    xauex_counter_signal_confidence = collect(
+        _float_range,
+        "XAUEX_COUNTER_SIGNAL_CONFIDENCE",
+        0.45,
+        0.75,
+        0.58,
+    )
+    xauex_counter_signal_risk_multiplier = collect(
+        _float_range,
+        "XAUEX_COUNTER_SIGNAL_RISK_MULTIPLIER",
+        0.05,
+        1.0,
+        0.5,
+    )
     xauex_manual_command_path = os.getenv(
         "XAUEX_MANUAL_COMMAND_PATH",
         os.getenv("MIROFISH_MANUAL_COMMAND_PATH", "/var/lib/xauex/manual_trade_cmd.json"),
@@ -691,6 +713,9 @@ def load_config(env_file: str = ".env") -> Config:
         xauex_session_high_confidence_protect_lock_r=xauex_session_high_confidence_protect_lock_r,
         xauex_session_low_confidence_protect_r=xauex_session_low_confidence_protect_r,
         xauex_session_high_confidence_protect_r=xauex_session_high_confidence_protect_r,
+        xauex_counter_signal_enabled=xauex_counter_signal_enabled,
+        xauex_counter_signal_confidence=xauex_counter_signal_confidence,
+        xauex_counter_signal_risk_multiplier=xauex_counter_signal_risk_multiplier,
         xauex_manual_command_path=xauex_manual_command_path,
         xauex_manual_command_secret=xauex_manual_command_secret,
         xauex_event_journal_path=xauex_event_journal_path,

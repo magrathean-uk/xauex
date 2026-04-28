@@ -9,6 +9,7 @@ No Twisted dependency — transport is implemented in bot/api/proto_transport.py
 """
 
 import asyncio
+import copy
 import json
 import time
 import logging
@@ -169,6 +170,83 @@ def build_xauex_confirm_decision(
     result["status"] = "CONFIRMED"
     result["reason"] = "CONFIRMED"
     return result
+
+
+def build_xauex_counter_signal_candidate(
+    *,
+    signal: Dict[str, object],
+    original_confirm: Dict[str, object],
+    now_utc: datetime,
+    latest_quote: Dict[str, object],
+    news_gate: Dict[str, object],
+    trend_snapshot: Optional[Dict[str, object]],
+    shadow_signal: Optional[Dict[str, object]],
+    config: Config,
+) -> Optional[Dict[str, object]]:
+    """Build a reduced-risk inverse candidate only when microstructure vetoed the source signal."""
+    if not bool(getattr(config, "xauex_counter_signal_enabled", False)):
+        return None
+
+    source_action = str(signal.get("action", "HOLD") or "HOLD").upper()
+    if source_action not in {"BUY", "SELL"}:
+        return None
+
+    original_status = str(original_confirm.get("status", "SKIP") or "SKIP").upper()
+    original_reason = str(original_confirm.get("reason", "") or "").upper()
+    if original_status == "CONFIRMED" or original_reason != "MICROSTRUCTURE_CONFLICT":
+        return None
+
+    counter_action = "SELL" if source_action == "BUY" else "BUY"
+    candidate = copy.deepcopy(signal)
+    candidate["action"] = counter_action
+    candidate["confidence"] = round(
+        max(0.0, min(1.0, float(getattr(config, "xauex_counter_signal_confidence", 0.58) or 0.58))),
+        2,
+    )
+    candidate["consensus_state"] = "aligned"
+    candidate["validator_status"] = "reviewed"
+    candidate["validator_summary"] = (
+        f"Counter-signal candidate: source {source_action} was vetoed by microstructure; "
+        f"{counter_action} must pass live confirmation before execution."
+    )
+    candidate["counter_signal"] = True
+    candidate["counter_source_action"] = source_action
+    candidate["counter_source_confidence"] = signal.get("confidence")
+    candidate["counter_source_confirm_reason"] = original_reason
+    candidate["counter_signal_risk_multiplier"] = round(
+        max(0.0, min(1.0, float(getattr(config, "xauex_counter_signal_risk_multiplier", 0.5) or 0.5))),
+        2,
+    )
+
+    if isinstance(candidate.get("decision_packet"), dict):
+        candidate["decision_packet"] = copy.deepcopy(candidate["decision_packet"])
+    else:
+        candidate["decision_packet"] = {}
+    candidate["decision_packet"]["counter_signal"] = {
+        "enabled": True,
+        "source_action": source_action,
+        "counter_action": counter_action,
+        "source_confirm_reason": original_reason,
+        "risk_multiplier": candidate["counter_signal_risk_multiplier"],
+    }
+
+    counter_confirm = build_xauex_confirm_decision(
+        signal=candidate,
+        now_utc=now_utc,
+        latest_quote=latest_quote,
+        news_gate=news_gate,
+        trend_snapshot=trend_snapshot,
+        shadow_signal=shadow_signal,
+        config=config,
+    )
+    if str(counter_confirm.get("status", "SKIP") or "SKIP").upper() != "CONFIRMED":
+        return None
+
+    candidate["confirm_status"] = "CONFIRMED"
+    candidate["confirm_reason"] = "COUNTER_SIGNAL_CONFIRMED"
+    candidate["confirm_timestamp_utc"] = str(counter_confirm.get("timestamp_utc") or "")
+    candidate["counter_confirm_reason"] = str(counter_confirm.get("reason") or "")
+    return candidate
 
 
 def build_xauex_initial_stop_distance(
@@ -2985,6 +3063,73 @@ class BotOrchestrator:
                     )
 
                 if confirm_status != "CONFIRMED":
+                    counter_candidate = build_xauex_counter_signal_candidate(
+                        signal=sig,
+                        original_confirm={
+                            "status": confirm_status,
+                            "reason": confirm_reason,
+                            "timestamp_utc": confirm_timestamp_utc,
+                        },
+                        now_utc=now_utc,
+                        latest_quote=dict(self._latest_quote),
+                        news_gate=self._current_news_gate_snapshot(),
+                        trend_snapshot=self._trend_snapshot,
+                        shadow_signal=self._shadow_last_signal,
+                        config=self.config,
+                    )
+                    if counter_candidate is not None:
+                        original_action = action
+                        original_confidence = confidence
+                        sig = counter_candidate
+                        action = str(sig.get("action", "HOLD") or "HOLD").upper()
+                        direction = _DIRECTION_MAP.get(action)
+                        confidence = _safe_signal_float(sig.get("confidence"), 0.0)
+                        confirm_status = str(sig.get("confirm_status") or "CONFIRMED").upper()
+                        confirm_reason = str(sig.get("confirm_reason") or "COUNTER_SIGNAL_CONFIRMED")
+                        confirm_timestamp_utc = str(sig.get("confirm_timestamp_utc") or "")
+                        self._journal_event(
+                            "counter_signal_candidate",
+                            {
+                                "slot": slot,
+                                "window_label": window_label,
+                                "source_action": original_action,
+                                "source_confidence": original_confidence,
+                                "source_confirm_reason": str(sig.get("counter_source_confirm_reason") or ""),
+                                "counter_action": action,
+                                "counter_confidence": confidence,
+                                "counter_confirm_reason": str(sig.get("counter_confirm_reason") or ""),
+                                "trend_alignment": str((self._trend_snapshot or {}).get("alignment", "") or ""),
+                                "shadow_action": str((self._shadow_last_signal or {}).get("action", "") or ""),
+                                "risk_multiplier": sig.get("counter_signal_risk_multiplier"),
+                            },
+                            correlation_id=signal_id,
+                        )
+                        logger.info(
+                            "[XAUEX] Counter-signal activated: %s vetoed by %s -> %s at %.2fx risk",
+                            original_action,
+                            str(sig.get("counter_source_confirm_reason") or confirm_reason),
+                            action,
+                            _safe_signal_float(sig.get("counter_signal_risk_multiplier"), 0.0),
+                        )
+                    else:
+                        logger.info("[XAUEX] Confirm veto: %s", confirm_reason)
+                        self._mark_slot_used(
+                            slot=slot,
+                            signal_id=signal_id,
+                            reason=confirm_reason,
+                            signal_time=now_utc,
+                            signal_action=action,
+                            signal_confidence=confidence,
+                            window_label=window_label,
+                            confirm_status=confirm_status,
+                            confirm_reason=confirm_reason,
+                            confirm_timestamp_utc=confirm_timestamp_utc,
+                            terminal=True,
+                        )
+                        await self.write_state()
+                        continue
+
+                if confirm_status != "CONFIRMED" or direction is None:
                     logger.info("[XAUEX] Confirm veto: %s", confirm_reason)
                     self._mark_slot_used(
                         slot=slot,
@@ -3213,8 +3358,34 @@ class BotOrchestrator:
                         session_slot_multiplier,
                         slot,
                     )
+                counter_signal_risk_multiplier = 1.0
+                if bool(sig.get("counter_signal")):
+                    counter_signal_risk_multiplier = round(
+                        max(
+                            0.0,
+                            min(
+                                1.0,
+                                _safe_signal_float(
+                                    sig.get(
+                                        "counter_signal_risk_multiplier",
+                                        getattr(self.config, "xauex_counter_signal_risk_multiplier", 0.5),
+                                    ),
+                                    0.5,
+                                ),
+                            ),
+                        ),
+                        2,
+                    )
+                    logger.info(
+                        "[XAUEX] Counter-signal risk multiplier %.2fx applied.",
+                        counter_signal_risk_multiplier,
+                    )
                 assurance_cash_risk = round(
-                    cash_risk_budget * assurance.risk_multiplier * cooldown * session_slot_multiplier,
+                    cash_risk_budget
+                    * assurance.risk_multiplier
+                    * cooldown
+                    * session_slot_multiplier
+                    * counter_signal_risk_multiplier,
                     2,
                 )
                 lot = calculate_xauex_lot_size_from_cash_risk(
@@ -3287,6 +3458,10 @@ class BotOrchestrator:
                         "risk_multiplier": assurance.risk_multiplier,
                         "cooldown_multiplier": cooldown,
                         "session_slot_multiplier": session_slot_multiplier,
+                        "counter_signal": bool(sig.get("counter_signal")),
+                        "counter_signal_risk_multiplier": counter_signal_risk_multiplier,
+                        "counter_source_action": str(sig.get("counter_source_action") or ""),
+                        "counter_source_confirm_reason": str(sig.get("counter_source_confirm_reason") or ""),
                         "allowed_cash_risk": assurance_cash_risk,
                         "actual_cash_risk": actual_cash_risk,
                         "target_rr": assurance.target_rr,

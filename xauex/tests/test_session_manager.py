@@ -30,6 +30,7 @@ build_xauex_initial_stop_distance = _MODULE.build_xauex_initial_stop_distance
 build_xauex_protect_stop_price = _MODULE.build_xauex_protect_stop_price
 build_xauex_assurance_profile = _MODULE.build_xauex_assurance_profile
 build_xauex_take_profit_distance = _MODULE.build_xauex_take_profit_distance
+build_xauex_counter_signal_candidate = _MODULE.build_xauex_counter_signal_candidate
 advance_xauex_session_phase = _MODULE.advance_xauex_session_phase
 confirm_xauex_session_phase_transition = _MODULE.confirm_xauex_session_phase_transition
 build_xauex_confirm_decision = _MODULE.build_xauex_confirm_decision
@@ -67,6 +68,9 @@ def test_load_config_includes_xauex_session_manager_settings(monkeypatch):
     assert cfg.xauex_manual_command_path == "/tmp/manual_trade_cmd.json"
     assert cfg.xauex_manual_command_secret == ""
     assert cfg.xauex_event_journal_path == "/var/lib/xauex/events.jsonl"
+    assert cfg.xauex_counter_signal_enabled is False
+    assert cfg.xauex_counter_signal_confidence == 0.58
+    assert cfg.xauex_counter_signal_risk_multiplier == 0.5
 
 
 def test_load_config_defaults_health_check_host_to_loopback(monkeypatch):
@@ -351,6 +355,104 @@ def test_confirm_decision_skips_when_microstructure_conflicts_with_signal():
 
     assert decision["status"] == "SKIP"
     assert decision["reason"] == "MICROSTRUCTURE_CONFLICT"
+
+
+def _counter_signal_config() -> SimpleNamespace:
+    return SimpleNamespace(
+        xauex_signal_max_age_seconds=300,
+        xauex_confirm_spread_max_dollars=1.0,
+        xauex_counter_signal_enabled=True,
+        xauex_counter_signal_confidence=0.58,
+        xauex_counter_signal_risk_multiplier=0.5,
+        xauex_session_low_confidence_protect_r=0.7,
+        xauex_session_protect_r=0.85,
+        xauex_session_high_confidence_protect_r=1.0,
+        xauex_session_trail_r=1.35,
+        xauex_session_low_confidence_protect_lock_r=0.35,
+        xauex_session_protect_lock_r=0.30,
+        xauex_session_high_confidence_protect_lock_r=0.25,
+    )
+
+
+def test_counter_signal_candidate_flips_microstructure_veto_to_reduced_risk_sell():
+    cfg = _counter_signal_config()
+    original_signal = {
+        "action": "BUY",
+        "confidence": 0.4,
+        "timestamp_utc": "2026-04-15T07:55:10Z",
+        "consensus_state": "disagreed",
+        "validator_status": "reviewed",
+        "validator_summary": "Recent trade memory shows 2+ losses in the same direction.",
+        "decision_packet": {
+            "input_freshness": {
+                "hard_blocker": False,
+                "market_snapshot_state": "fresh",
+            }
+        },
+    }
+
+    candidate = build_xauex_counter_signal_candidate(
+        signal=original_signal,
+        original_confirm={"status": "SKIP", "reason": "MICROSTRUCTURE_CONFLICT"},
+        now_utc=datetime(2026, 4, 15, 7, 59, 0, tzinfo=timezone.utc),
+        latest_quote={"bid": 4782.2, "ask": 4782.7},
+        news_gate={"clear": True, "reason": ""},
+        trend_snapshot={"alignment": "BEARISH"},
+        shadow_signal={"action": "SHADOW_SKIP"},
+        config=cfg,
+    )
+
+    assert candidate is not None
+    assert candidate["action"] == "SELL"
+    assert candidate["confidence"] == 0.58
+    assert candidate["consensus_state"] == "aligned"
+    assert candidate["confirm_status"] == "CONFIRMED"
+    assert candidate["confirm_reason"] == "COUNTER_SIGNAL_CONFIRMED"
+    assert candidate["counter_signal"] is True
+    assert candidate["counter_source_action"] == "BUY"
+    assert candidate["counter_signal_risk_multiplier"] == 0.5
+
+    profile = build_xauex_assurance_profile(candidate, cfg)
+    assert profile.allow_trade is True
+    assert profile.bucket == "medium"
+
+
+def test_counter_signal_candidate_ignores_non_microstructure_veto():
+    cfg = _counter_signal_config()
+
+    candidate = build_xauex_counter_signal_candidate(
+        signal={"action": "BUY", "timestamp_utc": "2026-04-15T07:55:10Z"},
+        original_confirm={"status": "SKIP", "reason": "STALE_SIGNAL"},
+        now_utc=datetime(2026, 4, 15, 7, 59, 0, tzinfo=timezone.utc),
+        latest_quote={"bid": 4782.2, "ask": 4782.7},
+        news_gate={"clear": True, "reason": ""},
+        trend_snapshot={"alignment": "BEARISH"},
+        shadow_signal={"action": "SELL"},
+        config=cfg,
+    )
+
+    assert candidate is None
+
+
+def test_counter_signal_candidate_requires_inverse_confirmation():
+    cfg = _counter_signal_config()
+
+    candidate = build_xauex_counter_signal_candidate(
+        signal={
+            "action": "BUY",
+            "timestamp_utc": "2026-04-15T07:55:10Z",
+            "decision_packet": {"input_freshness": {"hard_blocker": False}},
+        },
+        original_confirm={"status": "SKIP", "reason": "MICROSTRUCTURE_CONFLICT"},
+        now_utc=datetime(2026, 4, 15, 7, 59, 0, tzinfo=timezone.utc),
+        latest_quote={"bid": 4782.2, "ask": 4782.7},
+        news_gate={"clear": True, "reason": ""},
+        trend_snapshot={"alignment": "BULLISH"},
+        shadow_signal={"action": "BUY"},
+        config=cfg,
+    )
+
+    assert candidate is None
 
 
 def test_remaining_daily_loss_budget_accounts_for_realized_and_reserved_risk():
