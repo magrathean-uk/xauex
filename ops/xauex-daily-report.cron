@@ -1,5 +1,0 @@
-CRON_TZ=GMT
-SHELL=/bin/bash
-PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-MAILTO=""
-0 20 * * * root /usr/local/bin/xauex-run-daily-report >> /var/log/xauex/xauex-daily-report.log 2>&1

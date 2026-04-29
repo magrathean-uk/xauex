@@ -7,11 +7,18 @@ echo '=== Services ==='
 systemctl --no-pager --no-legend --plain status \
   xauex-web.service \
   xauex.service \
-  xauex-signal.timer \
+  xauex-window-signal@morning.timer \
+  xauex-window-signal@midday.timer \
+  xauex-window-signal@us_open.timer \
+  xauex-window-confirm@morning.timer \
+  xauex-window-confirm@midday.timer \
+  xauex-window-confirm@us_open.timer \
+  xauex-shadow-compare.timer \
+  xauex-shadow-evaluate.timer \
   xauex-start.timer \
   xauex-stop.timer \
   xauex-trade-journal.timer \
-  xauex-weekly-review.timer 2>/dev/null | sed -n '1,16p'
+  xauex-weekly-review.timer 2>/dev/null | sed -n '1,28p'
 echo
 echo '=== XAUEX Snapshot ==='
 if DASHBOARD_JSON=$(curl -fsS http://127.0.0.1:8089/api/dashboard 2>/dev/null); then
@@ -39,5 +46,12 @@ else
   echo 'Dashboard API unavailable.'
 fi
 echo
+echo '=== XAUEX Monit Checks ==='
+if command -v monit >/dev/null 2>&1; then
+  monit summary 2>/dev/null | grep -Ei 'xauex|trade-alert|morning-summary|dashboard|runtime' || echo 'No XAUEX Monit checks found.'
+else
+  echo 'Monit not installed.'
+fi
+echo
 echo '=== Recent XAUEX Logs ==='
-journalctl --no-pager -u xauex-web.service -u xauex.service -u xauex-signal.service -u xauex-trade-journal.service -u xauex-weekly-review.service -n 20 2>/dev/null || echo 'No recent journal entries.'
+journalctl --no-pager -u xauex-web.service -u xauex.service -u xauex-window-signal@morning.service -u xauex-window-signal@midday.service -u xauex-window-signal@us_open.service -u xauex-window-confirm@morning.service -u xauex-window-confirm@midday.service -u xauex-window-confirm@us_open.service -u xauex-trade-journal.service -u xauex-weekly-review.service -n 20 2>/dev/null || echo 'No recent journal entries.'

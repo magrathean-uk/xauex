@@ -27,7 +27,9 @@ XAUEX is a single live XAUUSD demo trading system with four active surfaces:
    - Entry point: Flask app in `xauex/app/app.py`
    - Key files: `app/app.py`, `app/templates/`
 
-4. **Analyst Jobs** (`xauex/analyst/`): Post-session reporting (trade journal, weekly review, morning brief).
+4. **Analyst Jobs** (`xauex/analyst/`): Post-session trade journal, weekly review, and morning brief helpers.
+
+5. **Monitoring** (`ops/monitoring/`): Monit checks for morning decision summaries and trade-open alerts. Scheduled daily report and weekly shadow report emails are retired.
 
 ## Key Files & Concepts
 
@@ -69,11 +71,12 @@ When behavior looks wrong in code but tests pass, check these files first.
 
 ## Deployment & Operations
 
-- **Systemd units**: See `ops/install_systemd.sh` (source of truth for what gets installed).
-- **Key services**: `xauex-web.service`, `xauex-signal.timer`, `xauex.service`, `xauex-trade-journal.timer`, `xauex-weekly-review.timer`.
+- **Systemd units**: See `ops/install_systemd.sh` (source of truth for what gets installed and what retired units are removed).
+- **Key services**: `xauex-web.service`, `xauex.service`, `xauex-window-signal@*.timer`, `xauex-window-confirm@*.timer`, `xauex-shadow-compare.timer`, `xauex-shadow-evaluate.timer`, `xauex-trade-journal.timer`, `xauex-weekly-review.timer`.
+- **Monitoring**: Monit owns alert emails via `ops/monitoring/45-xauex-notify.monit`.
 - **Rebuild docs**: `docs/REBUILD.md` — fresh host setup.
 - **Runbook**: `ops/RUNBOOK.md` — live host operations.
-- **Daily report**: Emailed at 20:00 GMT via `/etc/cron.d/xauex-daily-report`.
+- **Retired reports**: No `/etc/cron.d/xauex-daily-report` and no `xauex-shadow-report.timer`.
 
 ## Code Style & Conventions
 

@@ -92,19 +92,23 @@ mkdir -p /usr/local/lib/monitoring /etc/monit/conf-enabled
 for stale_unit in oracle-dashboard.service mirofish-backend.service mirofish-bridge.service mirofish-bridge.timer; do
   rm -f "/etc/systemd/system/$stale_unit"
 done
+for retired_unit in xauex-shadow-report.timer xauex-shadow-report.service; do
+  systemctl disable --now "$retired_unit" >/dev/null 2>&1 || true
+  rm -f "/etc/systemd/system/$retired_unit"
+done
 rm -f /etc/systemd/system/xauex-window-signal@.timer /etc/systemd/system/xauex-window-confirm@.timer
 rm -f /etc/logrotate.d/mirofish-gold-oracle
+rm -f /etc/cron.d/xauex-daily-report
+rm -f /usr/local/bin/xauex-run-daily-report /usr/local/bin/xauex-run-shadow-report
 
 install_if_changed "$REPO_ROOT/ops/run_xauex.sh" /usr/local/bin/xauex-run-bot 755 1
 install_if_changed "$REPO_ROOT/ops/run_xauex_signal.sh" /usr/local/bin/xauex-run-signal 755
 install_if_changed "$REPO_ROOT/ops/run_xauex_confirm.sh" /usr/local/bin/xauex-run-confirm 755
 install_if_changed "$REPO_ROOT/ops/run_xauex_shadow_compare.sh" /usr/local/bin/xauex-run-shadow-compare 755
 install_if_changed "$REPO_ROOT/ops/run_xauex_shadow_evaluate.sh" /usr/local/bin/xauex-run-shadow-evaluate 755
-install_if_changed "$REPO_ROOT/ops/run_xauex_shadow_report.sh" /usr/local/bin/xauex-run-shadow-report 755
 install_if_changed "$REPO_ROOT/ops/run_trade_journal.sh" /usr/local/bin/xauex-run-trade-journal 755
 install_if_changed "$REPO_ROOT/ops/run_weekly_review.sh" /usr/local/bin/xauex-run-weekly-review 755
 install_if_changed "$REPO_ROOT/ops/run_xauex_web.sh" /usr/local/bin/xauex-run-web 755
-install_if_changed "$REPO_ROOT/ops/run_xauex_daily_report.py" /usr/local/bin/xauex-run-daily-report 755
 install_if_changed "$REPO_ROOT/ops/enforce_log_budget.sh" /usr/local/bin/xauex-enforce-log-budget 755
 install_if_changed "$REPO_ROOT/ops/check_host_layout.sh" /usr/local/bin/xauex-check-host-layout 755
 install_if_changed "$REPO_ROOT/ops/monitoring/check_xauex_runtime.sh" /usr/local/lib/monitoring/check_xauex_runtime.sh 755
@@ -112,7 +116,7 @@ install_if_changed "$REPO_ROOT/ops/monitoring/check_xauex_morning_summary.py" /u
 install_if_changed "$REPO_ROOT/ops/monitoring/check_xauex_trade_alerts.py" /usr/local/lib/monitoring/check_xauex_trade_alerts.py 755
 install_if_changed "$REPO_ROOT/ops/monitoring/45-xauex-notify.monit" /etc/monit/conf-enabled/45-xauex-notify.monit 644
 
-for unit in xauex.service xauex-signal.service xauex-signal.timer xauex-window-signal@.service xauex-window-confirm@.service xauex-shadow-compare.service xauex-shadow-compare.timer xauex-shadow-evaluate.service xauex-shadow-evaluate.timer xauex-shadow-report.service xauex-shadow-report.timer xauex-start.timer xauex-stop.service xauex-stop.timer xauex-trade-journal.service xauex-trade-journal.timer xauex-weekly-review.service xauex-weekly-review.timer xauex-web.service; do
+for unit in xauex.service xauex-signal.service xauex-signal.timer xauex-window-signal@.service xauex-window-confirm@.service xauex-shadow-compare.service xauex-shadow-compare.timer xauex-shadow-evaluate.service xauex-shadow-evaluate.timer xauex-start.timer xauex-stop.service xauex-stop.timer xauex-trade-journal.service xauex-trade-journal.timer xauex-weekly-review.service xauex-weekly-review.timer xauex-web.service; do
   if [[ "$unit" == "xauex.service" ]]; then
     render_unit_if_changed "$unit" 1
   else
@@ -126,12 +130,6 @@ sed \
   -e "s|__REPO_ROOT__|$REPO_ROOT|g" \
   -e "s|__RUN_USER__|$RUN_USER|g" \
   "$REPO_ROOT/ops/logrotate-xauex.conf" > /etc/logrotate.d/xauex-gold-oracle
-
-sed \
-  -e "s|__REPO_ROOT__|$REPO_ROOT|g" \
-  -e "s|__RUN_USER__|$RUN_USER|g" \
-  "$REPO_ROOT/ops/xauex-daily-report.cron" > /etc/cron.d/xauex-daily-report
-chmod 644 /etc/cron.d/xauex-daily-report
 
 mkdir -p /etc/systemd/journald.conf.d
 install -m 644 "$REPO_ROOT/ops/xauex-journald.conf" /etc/systemd/journald.conf.d/xauex-gold-oracle.conf
@@ -163,7 +161,7 @@ systemctl restart systemd-journald
 systemctl disable xauex.service >/dev/null 2>&1 || true
 systemctl disable xauex-signal.timer >/dev/null 2>&1 || true
 systemctl disable oracle-dashboard.service mirofish-backend.service mirofish-bridge.service mirofish-bridge.timer >/dev/null 2>&1 || true
-systemctl enable xauex-window-signal@morning.timer xauex-window-signal@midday.timer xauex-window-signal@us_open.timer xauex-window-confirm@morning.timer xauex-window-confirm@midday.timer xauex-window-confirm@us_open.timer xauex-shadow-compare.timer xauex-shadow-evaluate.timer xauex-shadow-report.timer xauex-start.timer xauex-stop.timer xauex-trade-journal.timer xauex-weekly-review.timer xauex-web.service
+systemctl enable xauex-window-signal@morning.timer xauex-window-signal@midday.timer xauex-window-signal@us_open.timer xauex-window-confirm@morning.timer xauex-window-confirm@midday.timer xauex-window-confirm@us_open.timer xauex-shadow-compare.timer xauex-shadow-evaluate.timer xauex-start.timer xauex-stop.timer xauex-trade-journal.timer xauex-weekly-review.timer xauex-web.service
 systemctl restart xauex-web.service
 for _ in {1..30}; do
   if ss -ltn | grep -q '127.0.0.1:8089'; then
@@ -179,7 +177,6 @@ systemctl restart xauex-window-confirm@midday.timer
 systemctl restart xauex-window-confirm@us_open.timer
 systemctl restart xauex-shadow-compare.timer
 systemctl restart xauex-shadow-evaluate.timer
-systemctl restart xauex-shadow-report.timer
 systemctl restart xauex-start.timer
 systemctl restart xauex-stop.timer
 systemctl restart xauex-trade-journal.timer
@@ -218,6 +215,6 @@ echo "Installed services from $REPO_ROOT"
 echo "  xauex:   systemctl status xauex.service"
 echo "  signal:  systemctl status xauex-window-signal@morning.timer xauex-window-signal@midday.timer xauex-window-signal@us_open.timer"
 echo "  confirm: systemctl status xauex-window-confirm@morning.timer xauex-window-confirm@midday.timer xauex-window-confirm@us_open.timer"
-echo "  shadow:  systemctl status xauex-shadow-compare.timer xauex-shadow-evaluate.timer xauex-shadow-report.timer"
+echo "  shadow:  systemctl status xauex-shadow-compare.timer xauex-shadow-evaluate.timer"
 echo "  web:     systemctl status xauex-web.service"
 echo "  xauex timers: systemctl status xauex-start.timer xauex-stop.timer xauex-trade-journal.timer xauex-weekly-review.timer"

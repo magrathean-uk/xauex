@@ -1,24 +1,24 @@
 # Rebuild Guide
 
-This guide recreates XAUEX on a fresh Linux host.
+This guide rebuilds XAUEX v1.0 on a fresh Debian/Ubuntu-style host.
 
-Read [CODEX_DISCOVERY.md](CODEX_DISCOVERY.md) after rebuild if you need a current codebase map.
+Read `CODEX_DISCOVERY.md` after the rebuild if you need a codebase map.
 
 ## 1. Prerequisites
 
-- Ubuntu 22.04+ or similar Debian-based system
-- Python 3.11+
-- passwordless `sudo` or root access
-- outbound HTTPS access
-- a cTrader demo account
-- if this host also runs Pi-hole, move the Pi-hole admin UI to `:8081` before you install XAUEX so the standard web ports remain free for the host's own reverse-proxy setup
-- if this host exposes a public relay, keep that relay separate from the XAUEX dashboard; XAUEX expects VPN-only HTTPS on the 10.8.0.1 and 10.9.0.1 interfaces
-- use [../ops/Caddyfile.root.example](../ops/Caddyfile.root.example) and [../ops/pihole-compose.override.example.yml](../ops/pihole-compose.override.example.yml) as the repo-owned starting point for that host layout
+- Debian/Ubuntu-style Linux host.
+- Python 3.11+.
+- `git`, `curl`, `systemd`, and root/sudo access.
+- Outbound HTTPS access.
+- cTrader demo credentials.
+- Optional but expected on the live host: Caddy, Monit, and sendmail-compatible local mail delivery.
+- If Pi-hole runs on this host, keep its admin UI off the dashboard ports. The reference mapping is `../ops/pihole-compose.override.example.yml`.
+- If a public relay runs on this host, keep it separate from XAUEX. XAUEX dashboard ingress is VPN-only.
 
 ## 2. Clone The Repo
 
 ```bash
-git clone <your-github-url> xauex
+git clone https://github.com/magrathean-uk/xauex.git
 cd xauex
 ```
 
@@ -40,17 +40,9 @@ cp .env.example .env
 cp xauex/.env.example xauex/.env
 ```
 
-### Root `.env`
+Root `.env` is used by the signal/dashboard support code. Fill in the LLM/API settings required by the deployment.
 
-This file is used by the XAUEX runtime and dashboard support code.
-
-Fill in the API key, base URL, model name, and any optional memory settings required by your deployment.
-
-### `xauex/.env`
-
-This file is used by the XAUEX execution bot and service wrappers.
-
-At minimum, provide the cTrader credentials and execution settings. Keep the live demo endpoint unless your broker instructs otherwise:
+`xauex/.env` is used by the cTrader bot and service wrappers. Minimum live-demo shape:
 
 ```dotenv
 CTRADER_HOST=demo-uk-eqx-01.p.c-trader.com
@@ -62,26 +54,32 @@ LOG_FILE_PATH=/var/log/xauex/xauex.log
 STATE_FILE_PATH=/var/lib/xauex/state.json
 ```
 
-## 5. Install Services
+Use `OBSERVE_ONLY=true` for a non-executing rebuild validation.
 
-Install the systemd units, journald cap, and log rotation:
+## 5. Install Services
 
 ```bash
 sudo bash ops/install_systemd.sh
 ```
 
-This installs:
+The installer creates runtime directories, installs wrappers, installs units, reloads systemd, installs Monit XAUEX checks, applies Caddy dashboard ingress if Caddy exists, and validates the host layout.
+
+Installed systemd units:
 
 - `xauex-web.service`
-- `xauex-signal.service`
-- `xauex-signal.timer`
 - `xauex.service`
+- `xauex-signal.service`
+- `xauex-signal.timer` for manual/legacy one-shot support, disabled by default
+- `xauex-window-signal@morning.timer`
+- `xauex-window-signal@midday.timer`
+- `xauex-window-signal@us_open.timer`
+- `xauex-window-confirm@morning.timer`
+- `xauex-window-confirm@midday.timer`
+- `xauex-window-confirm@us_open.timer`
 - `xauex-shadow-compare.service`
 - `xauex-shadow-compare.timer`
 - `xauex-shadow-evaluate.service`
 - `xauex-shadow-evaluate.timer`
-- `xauex-shadow-report.service`
-- `xauex-shadow-report.timer`
 - `xauex-start.timer`
 - `xauex-stop.service`
 - `xauex-stop.timer`
@@ -89,70 +87,101 @@ This installs:
 - `xauex-trade-journal.timer`
 - `xauex-weekly-review.service`
 - `xauex-weekly-review.timer`
+
+Installed monitoring files:
+
+- `/etc/monit/conf-enabled/45-xauex-notify.monit`
+- `/usr/local/lib/monitoring/check_xauex_runtime.sh`
+- `/usr/local/lib/monitoring/check_xauex_morning_summary.py`
+- `/usr/local/lib/monitoring/check_xauex_trade_alerts.py`
+
+Retired files removed by the installer if present:
+
 - `/etc/cron.d/xauex-daily-report`
-- the shadow compare weekly report timer, which emails the last 7 days of baseline-vs-debate results each Wednesday at 20:00 London time after at least 6 days of completed shadow history exists
-- the VPN-only Caddy snippet that redirects dashboard HTTP to HTTPS on the VPN interfaces and reverse-proxies to `127.0.0.1:8089`
-- a VPN-only compatibility redirect for old `http://10.x:8089` bookmarks so they land on the HTTPS dashboard instead of failing
-- `/usr/local/bin/xauex-check-host-layout`, which validates the Caddy/Pi-hole host layout and causes the install to fail if the host still conflicts with XAUEX's VPN HTTPS model
+- `/etc/systemd/system/xauex-shadow-report.service`
+- `/etc/systemd/system/xauex-shadow-report.timer`
+- `/usr/local/bin/xauex-run-daily-report`
+- `/usr/local/bin/xauex-run-shadow-report`
 
-It also installs:
-
-- logrotate policy for app logs
-- journald retention cap
-- log-budget enforcement script
+There is no scheduled daily status email and no scheduled weekly shadow report email in v1.0.
 
 ## 6. Verify Runtime
 
-Check services:
+Check service state:
 
 ```bash
+systemctl --failed --no-pager
 systemctl status xauex-web.service --no-pager
-systemctl status xauex-signal.timer --no-pager
-systemctl status xauex-start.timer xauex-stop.timer --no-pager
 systemctl status xauex.service --no-pager
+systemctl status xauex-window-signal@morning.timer xauex-window-signal@midday.timer xauex-window-signal@us_open.timer --no-pager
+systemctl status xauex-window-confirm@morning.timer xauex-window-confirm@midday.timer xauex-window-confirm@us_open.timer --no-pager
+systemctl status xauex-shadow-compare.timer xauex-shadow-evaluate.timer --no-pager
+systemctl status xauex-start.timer xauex-stop.timer xauex-trade-journal.timer xauex-weekly-review.timer --no-pager
 ```
 
-Confirm the dashboard ingress model:
+Check dashboard and bot APIs:
+
+```bash
+curl -fsS http://127.0.0.1:8051/health
+curl -fsS http://127.0.0.1:8089/api/dashboard
+```
+
+Check VPN ingress:
 
 ```bash
 curl -I http://10.8.0.1/
 curl -I http://10.8.0.1:8089/
-curl -Ik https://10.8.0.1/
+curl -Ik https://10.8.0.1/api/dashboard
+curl -Ik https://10.9.0.1/api/dashboard
 ```
 
-Check the repo helper:
+Check monitoring:
+
+```bash
+monit summary
+```
+
+Run the repo helper:
 
 ```bash
 bash status.sh
 ```
 
-Check logs:
+## 7. Validate Tests
+
+Targeted post-rebuild checks:
 
 ```bash
-tail -f /var/log/xauex/xauex.log
-tail -f logs/xauex-signal.log
-tail -f logs/xauex-signal-error.log
-tail -f logs/xauex-shadow-compare.log
-tail -f logs/xauex-shadow-evaluate.log
+python3 -m pytest tests/test_xauex_trade_alerts.py tests/test_xauex_runtime_monitor.py tests/dashboard/test_manual_controls.py tests/bridge/test_signal_writer.py -q
+python3 -m pytest xauex/tests/test_session_manager.py xauex/tests/test_xauex_signal_policy.py xauex/tests/test_trailing_integration.py -q
 ```
 
-## 7. What Is Not In Git
+Full suite:
 
-These are intentionally excluded:
+```bash
+python3 -m pytest
+```
+
+## 8. Runtime Files Not In Git
+
+These must be recreated or generated on the host:
 
 - `.env`
 - `xauex/.env`
 - `.venv`
 - `logs/`
-- local caches and compiled artifacts
+- `/var/lib/xauex/*`
+- `/var/log/xauex/*`
 
-## 8. Recovery Checklist
+These are intentionally excluded from git.
 
-If moving to a new machine:
+## 9. Recovery Checklist
 
-1. clone the repo
-2. create `.env`
-3. create `xauex/.env`
-4. create `.venv`
-5. `pip install -r requirements.txt`
-6. `sudo bash ops/install_systemd.sh`
+1. Clone `https://github.com/magrathean-uk/xauex.git`.
+2. Recreate `.env`.
+3. Recreate `xauex/.env`.
+4. Build `.venv`.
+5. Install dependencies.
+6. Run `sudo bash ops/install_systemd.sh`.
+7. Verify dashboard, bot health, timers, Monit, and logs.
+8. Keep `OBSERVE_ONLY=true` until credentials and dashboard state look correct.

@@ -1,81 +1,78 @@
 # XAUEX Runbook
 
-This repository is the live runtime folder. Do not use an obsolete sibling checkout for production operation.
+This repository is the production runtime folder for XAUEX. Do not operate an obsolete sibling checkout.
 
-For repo orientation and edit paths, read [../docs/CODEX_DISCOVERY.md](../docs/CODEX_DISCOVERY.md).
-
-## Layout
-
-- Repo root: `<repo-root>`
-- Root config: `<repo-root>/.env`
-- XAUEX config: `<repo-root>/xauex/.env`
-- Runtime state and IPC: `/var/lib/xauex`
-- XAUEX trade log: `/var/log/xauex/xauex.log`
+For repo orientation before editing code, read `../docs/CODEX_DISCOVERY.md`.
 
 ## Host Model
 
-- XAUEX dashboard HTTP on the VPN addresses redirects to HTTPS.
-- XAUEX dashboard HTTPS is only exposed on `10.8.0.1` and `10.9.0.1`.
-- The dashboard app itself listens on loopback only at `127.0.0.1:8089`.
-- Legacy bookmarks that still use `http://10.x:8089` are redirected to the VPN HTTPS entrypoint by Caddy.
-- The public relay, if present, remains public and is not managed by the XAUEX Caddy snippet.
-- If Pi-hole is installed on the host, its admin UI must be moved to `:8081` before XAUEX install so the host reverse-proxy layout matches the documented model.
-- Use [Caddyfile.root.example](Caddyfile.root.example) and [pihole-compose.override.example.yml](pihole-compose.override.example.yml) as the repo-owned reference for that split.
+- Repo root: `/home/bolyki/mirofish-gold-oracle` on the live host.
+- Root config: `<repo-root>/.env`.
+- Bot config: `<repo-root>/xauex/.env`.
+- Runtime state and IPC: `/var/lib/xauex`.
+- Bot log: `/var/log/xauex/xauex.log`.
+- Wrapper logs: `<repo-root>/logs`.
+- Dashboard app: `127.0.0.1:8089` only.
+- Dashboard ingress: Caddy on VPN addresses `10.8.0.1` and `10.9.0.1`.
+- VPN HTTP redirects to HTTPS.
+- The public relay, if present, is separate from XAUEX.
+- Pi-hole admin, if installed, must stay off the dashboard ports. Use `pihole-compose.override.example.yml` as the reference split.
 
-## Services
+## Active Services And Timers
 
-- `xauex-web.service`: operator dashboard on port `8089`
-- HTTPS dashboard over VPN: `https://10.8.0.1/` and `https://10.9.0.1/`
-- `xauex-window-signal@*.timer`: triggers per-window signal generation 5 minutes before each live window opens
-- `xauex-window-confirm@*.timer`: triggers the lightweight per-window confirm pass 1 minute before each live entry window
-- `xauex-signal.service`: manual one-shot signal generation job
-- `xauex.service`: weekday execution bot
-- `xauex-start.timer`: starts `xauex.service` before the morning session
-- `xauex-stop.service`: stops `xauex.service` at the Friday force-flat boundary
-- `xauex-stop.timer`: schedules the stop boundary
-- `xauex-trade-journal.timer`: writes the post-session trade journal
-- `xauex-weekly-review.timer`: writes the weekly review
-- `xauex-daily-report` cron: emails a daily GMT status summary at 20:00
-- `xauex-shadow-compare.timer`: runs the shadow baseline-vs-debate compare at `08:10` and `11:40` London time, plus `08:40` New York time for the US-open lane
-- `xauex-shadow-evaluate.timer`: resolves each shadow trial at the 2-hour mark using broker M1 bars, including the US-open lane
-- `xauex-shadow-report.timer`: emails the 7-day shadow-trial summary each Wednesday at 20:00 London time, and skips email until at least 6 days of completed shadow history exists
-- `xauex-morning-summary` Monit check: sends a once-per-morning email with the live `BUY`/`SELL`/`HOLD` decision and whether a trade was actually opened
+Core runtime:
 
-The signal generator writes the latest command bundle to `/var/lib/xauex/cmd.json`. XAUEX polls that file and executes only the retained XAUEX live path.
+- `xauex-web.service`: Flask/waitress dashboard and API.
+- `xauex.service`: cTrader bot and execution loop.
+- `xauex-start.timer`: starts `xauex.service` before the weekday session.
+- `xauex-stop.timer`: triggers the Friday stop/force-flat boundary.
+- `xauex-stop.service`: executes the Friday stop/force-flat boundary.
 
-Manual dashboard trades, when used, remain separate from XAUEX-owned positions and do not count toward the XAUEX trade/session limits.
+Signal windows:
 
-The dashboard app itself listens on loopback only. VPN HTTPS is terminated by Caddy on the VPN interfaces and proxied to `127.0.0.1:8089`.
-HTTP requests to the VPN dashboard hosts are redirected to HTTPS with a 308 response.
+- `xauex-window-signal@morning.timer`: `07:55 Europe/London`.
+- `xauex-window-confirm@morning.timer`: `07:59 Europe/London`.
+- `xauex-window-signal@midday.timer`: `11:25 Europe/London`.
+- `xauex-window-confirm@midday.timer`: `11:29 Europe/London`.
+- `xauex-window-signal@us_open.timer`: `08:25 America/New_York`.
+- `xauex-window-confirm@us_open.timer`: `08:29 America/New_York`.
 
-## Important Files
+Post-session and shadow jobs:
 
-- `/var/lib/xauex/cmd.json`
-- `/var/lib/xauex/latest_signal_brief.md`
-- `/var/lib/xauex/latest_signal_evidence.json`
-- `/var/lib/xauex/trade_journal.json`
-- `/var/lib/xauex/weekly_review.json`
-- `/var/lib/xauex/weekly_review.md`
-- `/var/lib/xauex/signal_runs/`
-- `/var/lib/xauex/shadow_trials/`
+- `xauex-trade-journal.timer`: post-session trade journal at `15:07 Europe/London`.
+- `xauex-weekly-review.timer`: Friday weekly review at `15:15 Europe/London`.
+- `xauex-shadow-compare.timer`: baseline-vs-debate compare after each window.
+- `xauex-shadow-evaluate.timer`: resolves shadow trials after the evaluation horizon.
 
-## Install
+Alerting:
+
+- Monit handles alert emails.
+- `xauex-morning-summary`: one morning decision email.
+- `xauex-trade-alerts`: trade-open emails.
+- Service failure emails use the host `systemd-email-alert@...` wiring where units declare `OnFailure=`.
+
+Retired:
+
+- No `/etc/cron.d/xauex-daily-report`.
+- No `xauex-shadow-report.timer`.
+- No scheduled daily status report or weekly shadow report email.
+
+## Install Or Reinstall
 
 ```bash
-cd <repo-root>
+cd /home/bolyki/mirofish-gold-oracle
 chmod +x ops/*.sh
 sudo bash ops/install_systemd.sh
 ```
 
-Before running the install script, confirm any host-owned services that use web ports have already been moved out of the way, especially Pi-hole admin on `:8081`.
+The installer:
 
-The installer also runs:
-
-```bash
-xauex-check-host-layout --strict
-```
-
-If that fails, fix the host web-port layout before trusting the dashboard ingress again.
+- installs systemd units and wrapper scripts;
+- installs Monit XAUEX notification checks;
+- installs the VPN-only Caddy snippet if Caddy exists;
+- removes retired daily-report and shadow-report units/scripts if they are still on the host;
+- validates the host layout with `xauex-check-host-layout --strict`;
+- restarts dashboard/timers and starts the bot only if the current London schedule says it should be running.
 
 ## Start
 
@@ -89,11 +86,16 @@ sudo systemctl start xauex-window-confirm@midday.timer
 sudo systemctl start xauex-window-confirm@us_open.timer
 sudo systemctl start xauex-shadow-compare.timer
 sudo systemctl start xauex-shadow-evaluate.timer
-sudo systemctl start xauex-shadow-report.timer
 sudo systemctl start xauex-start.timer
 sudo systemctl start xauex-stop.timer
 sudo systemctl start xauex-trade-journal.timer
 sudo systemctl start xauex-weekly-review.timer
+```
+
+Start the bot directly only when you intentionally need it outside the timer schedule:
+
+```bash
+sudo systemctl start xauex.service
 ```
 
 ## Stop
@@ -103,7 +105,6 @@ sudo systemctl stop xauex-weekly-review.timer
 sudo systemctl stop xauex-trade-journal.timer
 sudo systemctl stop xauex-stop.timer
 sudo systemctl stop xauex-start.timer
-sudo systemctl stop xauex-shadow-report.timer
 sudo systemctl stop xauex-shadow-evaluate.timer
 sudo systemctl stop xauex-shadow-compare.timer
 sudo systemctl stop xauex-window-confirm@us_open.timer
@@ -116,7 +117,9 @@ sudo systemctl stop xauex.service
 sudo systemctl stop xauex-web.service
 ```
 
-## Restart After Changes
+## Restart After Repo Changes
+
+For normal code/config changes:
 
 ```bash
 sudo systemctl restart xauex-web.service
@@ -128,82 +131,134 @@ sudo systemctl restart xauex-window-confirm@midday.timer
 sudo systemctl restart xauex-window-confirm@us_open.timer
 sudo systemctl restart xauex-shadow-compare.timer
 sudo systemctl restart xauex-shadow-evaluate.timer
-sudo systemctl restart xauex-shadow-report.timer
 sudo systemctl restart xauex-start.timer
 sudo systemctl restart xauex-stop.timer
 sudo systemctl restart xauex-trade-journal.timer
 sudo systemctl restart xauex-weekly-review.timer
 ```
 
+Restart `xauex.service` only if you changed bot runtime code or config and are prepared to interrupt the active session:
+
+```bash
+sudo systemctl restart xauex.service
+```
+
 ## Status
 
 ```bash
+bash /home/bolyki/mirofish-gold-oracle/status.sh
+systemctl --failed --no-pager
 systemctl status xauex-web.service --no-pager
 systemctl status xauex.service --no-pager
 systemctl status xauex-window-signal@morning.timer xauex-window-signal@midday.timer xauex-window-signal@us_open.timer --no-pager
 systemctl status xauex-window-confirm@morning.timer xauex-window-confirm@midday.timer xauex-window-confirm@us_open.timer --no-pager
-systemctl status xauex-shadow-compare.timer xauex-shadow-evaluate.timer xauex-shadow-report.timer --no-pager
+systemctl status xauex-shadow-compare.timer xauex-shadow-evaluate.timer --no-pager
 systemctl status xauex-start.timer xauex-stop.timer xauex-trade-journal.timer xauex-weekly-review.timer --no-pager
-bash <repo-root>/status.sh
+monit summary
 ```
+
+## Dashboard Checks
+
+Local checks:
+
+```bash
+curl -fsS http://127.0.0.1:8051/health
+curl -fsS http://127.0.0.1:8089/api/dashboard
+```
+
+VPN ingress checks from the host:
+
+```bash
+curl -I http://10.8.0.1/
+curl -I http://10.8.0.1:8089/
+curl -Ik https://10.8.0.1/api/dashboard
+curl -Ik https://10.9.0.1/api/dashboard
+```
+
+Expected model:
+
+- `http://10.x.0.1/` redirects to HTTPS.
+- `http://10.x.0.1:8089/` is compatibility redirect traffic.
+- `https://10.x.0.1/api/dashboard` returns JSON.
+- Caddy uses an internal CA; VPN clients need that CA installed to avoid browser warnings.
 
 ## Logs
 
 ```bash
 journalctl -u xauex-web.service -f
-journalctl -u caddy -f
 journalctl -u xauex.service -f
-journalctl -u xauex-signal.service -f
+journalctl -u xauex-window-signal@morning.service -u xauex-window-signal@midday.service -u xauex-window-signal@us_open.service -f
+journalctl -u xauex-window-confirm@morning.service -u xauex-window-confirm@midday.service -u xauex-window-confirm@us_open.service -f
 journalctl -u xauex-trade-journal.service -f
 journalctl -u xauex-weekly-review.service -f
+journalctl -u caddy -f
 tail -f /var/log/xauex/xauex.log
-tail -f <repo-root>/logs/xauex-signal.log
-tail -f <repo-root>/logs/xauex-web.log
-tail -f /var/log/xauex/xauex-daily-report.log
-tail -f <repo-root>/logs/xauex-shadow-compare.log
-tail -f <repo-root>/logs/xauex-shadow-evaluate.log
-tail -f <repo-root>/logs/xauex-shadow-report.log
+tail -f logs/xauex-web.log
+tail -f logs/xauex-signal-morning.log
+tail -f logs/xauex-confirm-morning.log
+tail -f logs/xauex-shadow-compare.log
+tail -f logs/xauex-shadow-evaluate.log
 ```
 
-## HTTPS Notes
+## Runtime State Files
 
-- Caddy terminates HTTPS only on the VPN addresses and proxies to `127.0.0.1:8089`.
-- HTTP on the VPN addresses is redirected to HTTPS.
-- HTTP on `10.8.0.1:8089` and `10.9.0.1:8089` is redirect-only compatibility traffic, not a direct app listener.
-- The certificate is issued by Caddy's internal CA, not a public CA.
-- Browsers on VPN clients will trust it only after the Caddy local root CA is installed on the client device.
-- The public relay, if used, is separate and remains public-facing; this repo does not place the dashboard behind it.
+- `/var/lib/xauex/cmd.json`: latest command bundle consumed by the bot.
+- `/var/lib/xauex/state.json`: dashboard/runtime snapshot.
+- `/var/lib/xauex/risk_state.json`: daily/weekly risk counters and slot usage.
+- `/var/lib/xauex/latest_signal_brief.md`: latest operator brief.
+- `/var/lib/xauex/latest_signal_evidence.json`: latest evidence payload.
+- `/var/lib/xauex/signal_runs/`: archived signal runs.
+- `/var/lib/xauex/shadow_trials/`: shadow compare/evaluate artifacts.
+- `/var/lib/xauex/trade_journal.json`: closed-trade journal.
+- `/var/lib/xauex/weekly_review.json`: weekly review data.
+- `/var/lib/xauex/weekly_review.md`: weekly review markdown.
 
 ## Trading Mode
 
-This machine is intended to keep trading on demo. Confirm these values in `xauex/.env`:
+Confirm these values in `xauex/.env` before trusting live demo execution:
 
 ```dotenv
 CTRADER_HOST=demo-uk-eqx-01.p.c-trader.com
 CTRADER_TLS_SERVER_NAME=connect.spotware.com
 OBSERVE_ONLY=false
 XAUEX_MODE=true
-RISK_PERCENT=1.5
-XAUEX_ENTRY_START_LONDON=08:00
-XAUEX_ENTRY_END_LONDON=08:05
-XAUEX_ENTRY_SECOND_START_LONDON=11:30
-XAUEX_ENTRY_SECOND_END_LONDON=11:35
-XAUEX_FORCE_FLAT_LONDON=15:00
+CMD_FILE_PATH=/var/lib/xauex/cmd.json
+LOG_FILE_PATH=/var/log/xauex/xauex.log
+STATE_FILE_PATH=/var/lib/xauex/state.json
 XAUEX_MAX_TRADES_PER_DAY=3
 XAUEX_CASH_TAKE_PROFIT_GBP=50
 XAUEX_CASH_STOP_LOSS_GBP=50
-CMD_FILE_PATH=/var/lib/xauex/cmd.json
-LOG_FILE_PATH=/var/log/xauex/xauex.log
 ```
+
+Use `OBSERVE_ONLY=true` for non-executing validation.
 
 ## Manual Signal Refresh
 
 ```bash
-cd <repo-root>
+cd /home/bolyki/mirofish-gold-oracle
 ./.venv/bin/python -m xauex.signal.run --asset XAUUSD --auto-context
 ```
 
-## Notes
+## Manual Confirm Refresh
 
-- The supported interactive run paths are the XAUEX modules and scripts in `ops/`.
-- The signal service runs non-interactively as a module because that import path is stable.
+```bash
+cd /home/bolyki/mirofish-gold-oracle
+./.venv/bin/python -m xauex.signal.confirm --window-label morning
+```
+
+Use `midday` or `us_open` for other windows.
+
+## Validation
+
+Targeted checks:
+
+```bash
+python3 -m pytest tests/test_xauex_trade_alerts.py tests/test_xauex_runtime_monitor.py tests/dashboard/test_manual_controls.py tests/bridge/test_signal_writer.py -q
+python3 -m pytest xauex/tests/test_session_manager.py xauex/tests/test_xauex_signal_policy.py xauex/tests/test_trailing_integration.py -q
+```
+
+Full suite:
+
+```bash
+python3 -m pytest
+```

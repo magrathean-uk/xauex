@@ -4,10 +4,10 @@
 - `xauex/main.py` and `xauex/bot/` are the live cTrader execution runtime.
 - `xauex/app/` contains the Flask dashboard and operator API.
 - `xauex/signal/` contains context building, signal generation, evidence writing, and command-file output.
-- `xauex/analyst/` contains the journal, weekly review, and morning brief jobs.
+- `xauex/analyst/` contains the journal, weekly review, and morning brief helpers.
 - `xauex/shared/` contains shared diagnostics helpers.
 - `tests/` and `xauex/tests/` hold pytest suites. `tests/bridge/` is still the signal test area even though the old `bridge/` package is gone.
-- `ops/` contains systemd units, cron wiring, deployment scripts, and the live runbook.
+- `ops/` contains systemd units, Monit checks, deployment scripts, host ingress snippets, and the live runbook.
 - `docs/` stores rebuild, discovery, and operational documentation.
 - `config.py`, `auth.py`, and `bot/__init__.py` at repo root are compatibility shims for legacy absolute imports. Prefer `xauex.*` imports in new code.
 
@@ -37,6 +37,7 @@
 - Recent commits are short, imperative, and prefix-free, for example `Add diagnostics panels to terminal dashboards`.
 - PRs should explain the change, list the verification commands you ran, and link any related issue or design note.
 - Call out any config, state-file, or ops impact explicitly.
+- The scheduled daily report and weekly shadow report are retired. Do not reintroduce `/etc/cron.d/xauex-daily-report` or `xauex-shadow-report.timer`; Monit handles actionable alert emails.
 
 ## Security & Configuration Tips
 - Do not commit `.env`, `xauex/.env`, virtualenvs, logs, or generated frontend builds.

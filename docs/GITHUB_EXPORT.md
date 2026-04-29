@@ -1,6 +1,6 @@
 # GitHub Export Notes
 
-This directory is designed to become its own standalone git repository.
+This directory is now published as the standalone GitHub repository `magrathean-uk/xauex`.
 
 ## Why A Separate Repo Is Needed
 
@@ -27,21 +27,18 @@ Excluded:
 
 ## Recommended Publish Steps
 
+Current HTTPS remote:
+
 ```bash
-cd /path/to/xauex
-git init
-git add .
-git commit -m "Initial XAUEX import"
-git branch -M main
-git remote add origin git@github.com:<user>/xauex.git
+git remote set-url origin https://github.com/magrathean-uk/xauex.git
 git push -u origin main
 ```
 
-If using HTTPS with a PAT:
+Version tags are pushed explicitly:
 
 ```bash
-git remote add origin https://github.com/<user>/xauex.git
-git push -u origin main
+git tag -a v1.0 -m "XAUEX v1.0"
+git push origin v1.0
 ```
 
 ## Before Pushing
@@ -59,3 +56,9 @@ Make sure no live credentials appear in:
 - committed `xauex/.env.example`
 - scripts in `ops/`
 - documentation
+
+Also verify retired report paths are not staged accidentally:
+
+```bash
+git status --short | grep -E 'daily-report|shadow-report' || true
+```
