@@ -32,11 +32,13 @@ _FRED_SERIES: dict[str, dict[str, str]] = {
         'series_id': 'DTWEXBGS',
         'label': 'Trade-weighted USD broad index',
         'category': 'usd',
+        'stale_blocks_live_window': 'false',
     },
     'usd_major_index': {
         'series_id': 'DTWEXAFEGS',
         'label': 'Trade-weighted USD major-currencies index',
         'category': 'usd',
+        'stale_blocks_live_window': 'false',
     },
     'us2y_yield': {
         'series_id': 'DGS2',
@@ -72,6 +74,7 @@ _FRED_SERIES: dict[str, dict[str, str]] = {
         'series_id': 'DCOILWTICO',
         'label': 'WTI crude oil spot',
         'category': 'commodity',
+        'stale_blocks_live_window': 'false',
     },
     'btc_usd': {
         'series_id': 'CBBTCUSD',
@@ -161,7 +164,8 @@ def build_market_snapshot(
                 missing_series.append(key)
                 continue
             ages.append(latest['age_seconds'])
-            if latest['age_seconds'] >= _MARKET_SNAPSHOT_BLOCK_AGE_SECONDS:
+            stale_blocks_live_window = result_meta.get('stale_blocks_live_window', 'true') != 'false'
+            if latest['age_seconds'] >= _MARKET_SNAPSHOT_BLOCK_AGE_SECONDS and stale_blocks_live_window:
                 block_stale_series_count += 1
             series_payload[key] = {
                 'label': result_meta['label'],

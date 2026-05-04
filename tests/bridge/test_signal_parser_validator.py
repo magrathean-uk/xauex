@@ -7,6 +7,7 @@ from xauex.signal.signal_parser import (
     _enrich_decision_packet_with_debate,
     _model_completion_options,
     _request_json_completion,
+    _validator_system_prompt,
 )
 
 
@@ -135,6 +136,15 @@ def test_validator_hard_blocker_forces_hold():
     assert merged["stop_loss_distance"] == 0.0
     assert merged["take_profit_distance"] == 0.0
     assert merged["consensus_state"] == "blocked"
+
+
+def test_validator_prompt_reserves_disagreement_for_direct_contradictions():
+    prompt = _validator_system_prompt(resolve_asset("XAUUSD"))
+
+    assert "prefer ALIGNED" in prompt
+    assert "Reserve DISAGREE for direct contradictions" in prompt
+    assert "prefer DISAGREE over ALIGNED" not in prompt
+    assert "only when the same setup is being repeated" in prompt
 
 
 def test_gpt_oss_models_use_low_reasoning_and_larger_visible_output_budget():

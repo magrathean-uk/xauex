@@ -455,11 +455,11 @@ Rules:
 Weakness detection (return DISAGREE with negative adjustment when ANY of these apply):
 - Confidence above 0.60 but the reasoning hedges with words like "mixed", "uncertain", "conflicting", "could go either way", or "thin evidence".
 - The trade direction contradicts the dominant macro driver (e.g. BUY gold while DXY is rallying with no offsetting safe-haven flow).
-- Recent trade memory shows 2+ losses in the same direction with no regime change cited.
+- Recent trade memory shows 2+ losses in the same direction only when the same setup is being repeated and no regime change or fresh driver is cited.
 - Price action is mid-range with weak momentum and no clear breakout catalyst.
 - The reasoning relies on a single weak signal (one keyword, one indicator) without corroboration.
 
-When in doubt about strength, prefer DISAGREE over ALIGNED. A trimmed confidence is cheaper than a forced trade."""
+If the evidence is directional but imperfect, prefer ALIGNED with a small or zero adjustment over DISAGREE. Reserve DISAGREE for direct contradictions, not normal uncertainty."""
 
 
 def _parser_user_prompt(asset: AssetProfile, packet: dict[str, Any]) -> str:

@@ -545,7 +545,7 @@ def test_build_market_snapshot_warns_when_only_one_series_is_long_stale(monkeypa
             "previous_value": 121.3,
             "change_1d": -0.3,
             "date_utc": "2026-04-10T00:00:00Z",
-            "age_seconds": float(9 * 24 * 3600),
+            "age_seconds": float(2 * 24 * 3600),
         },
         "DTWEXAFEGS": {
             "value": 105.5,
@@ -558,8 +558,8 @@ def test_build_market_snapshot_warns_when_only_one_series_is_long_stale(monkeypa
             "value": 3.8,
             "previous_value": 3.85,
             "change_1d": -0.05,
-            "date_utc": "2026-04-16T00:00:00Z",
-            "age_seconds": float(2 * 24 * 3600),
+            "date_utc": "2026-04-10T00:00:00Z",
+            "age_seconds": float(9 * 24 * 3600),
         },
         "DGS10": {
             "value": 4.2,
@@ -650,3 +650,62 @@ def test_build_market_snapshot_warns_when_only_one_series_is_long_stale(monkeypa
     assert snapshot["input_freshness"]["market_snapshot_state"] == "warning"
     assert snapshot["input_freshness"]["hard_blocker"] is False
     assert snapshot["input_freshness"]["stale_block_series_count"] == 1
+
+
+def test_build_market_snapshot_warns_when_only_lagging_reference_series_are_stale(monkeypatch):
+    monkeypatch.setenv("XAUEX_SIGNAL_LLM_API_KEY", "test-key")
+    cfg = SignalConfig.from_env()
+
+    stale_age = float(9 * 24 * 3600)
+    fresh_age = float(24 * 3600)
+    fake_rows = {
+        "DTWEXBGS": {"value": 121.0, "previous_value": 121.3, "change_1d": -0.3, "date_utc": "2026-04-10T00:00:00Z", "age_seconds": stale_age},
+        "DTWEXAFEGS": {"value": 105.5, "previous_value": 105.8, "change_1d": -0.3, "date_utc": "2026-04-10T00:00:00Z", "age_seconds": stale_age},
+        "DGS2": {"value": 3.8, "previous_value": 3.85, "change_1d": -0.05, "date_utc": "2026-04-18T00:00:00Z", "age_seconds": fresh_age},
+        "DGS10": {"value": 4.2, "previous_value": 4.28, "change_1d": -0.08, "date_utc": "2026-04-18T00:00:00Z", "age_seconds": fresh_age},
+        "DFII10": {"value": 1.9, "previous_value": 1.95, "change_1d": -0.05, "date_utc": "2026-04-18T00:00:00Z", "age_seconds": fresh_age},
+        "T5YIE": {"value": 2.4, "previous_value": 2.35, "change_1d": 0.05, "date_utc": "2026-04-18T00:00:00Z", "age_seconds": fresh_age},
+        "T10YIE": {"value": 2.5, "previous_value": 2.46, "change_1d": 0.04, "date_utc": "2026-04-18T00:00:00Z", "age_seconds": fresh_age},
+        "VIXCLS": {"value": 18.2, "previous_value": 17.5, "change_1d": 0.7, "date_utc": "2026-04-18T00:00:00Z", "age_seconds": fresh_age},
+        "DCOILWTICO": {"value": 82.5, "previous_value": 81.0, "change_1d": 1.5, "date_utc": "2026-04-10T00:00:00Z", "age_seconds": stale_age},
+        "CBBTCUSD": {"value": 65000.0, "previous_value": 64200.0, "change_1d": 800.0, "date_utc": "2026-04-18T00:00:00Z", "age_seconds": fresh_age},
+    }
+
+    monkeypatch.setattr(
+        "xauex.signal.market_snapshot._fetch_fred_series",
+        lambda client, series_id: fake_rows[series_id],
+    )
+    monkeypatch.setattr(
+        "xauex.signal.market_snapshot.fetch_policy_context",
+        lambda config: {
+            "status": "available",
+            "available": True,
+            "summary": "Official Fed policy context available for 2026-05-05.",
+            "source": "fed_fomc_calendar+fred",
+            "next_fomc_date": "2026-05-05",
+        },
+    )
+    monkeypatch.setattr(
+        "xauex.signal.market_snapshot.fetch_fedwatch_snapshot",
+        lambda config: {
+            "status": "available",
+            "available": True,
+            "summary": "FedWatch available.",
+            "bias": "NEUTRAL",
+        },
+    )
+    monkeypatch.setattr(
+        "xauex.signal.market_snapshot.fetch_cot_snapshot",
+        lambda config: {"status": "unavailable", "available": False, "summary": ""},
+    )
+
+    snapshot = build_market_snapshot(
+        asset=resolve_asset("XAUUSD"),
+        config=replace(cfg, source_timeout_seconds=1.0),
+        context_items=[],
+        window_label="morning",
+    )
+
+    assert snapshot["input_freshness"]["market_snapshot_state"] == "warning"
+    assert snapshot["input_freshness"]["hard_blocker"] is False
+    assert snapshot["input_freshness"]["stale_block_series_count"] == 0

@@ -236,6 +236,75 @@ def test_assurance_profile_blocks_low_confidence_validator_disagreement():
     assert profile.reason == "LOW_ASSURANCE_VALIDATOR_DISAGREEMENT"
 
 
+def test_assurance_profile_allows_confirmed_low_confidence_signal_at_reduced_risk():
+    cfg = SimpleNamespace(
+        xauex_low_confidence_lot_multiplier=0.25,
+        xauex_session_low_confidence_protect_r=0.7,
+        xauex_session_protect_r=0.85,
+        xauex_session_high_confidence_protect_r=1.0,
+        xauex_session_trail_r=1.35,
+        xauex_session_low_confidence_protect_lock_r=0.35,
+        xauex_session_protect_lock_r=0.30,
+        xauex_session_high_confidence_protect_lock_r=0.25,
+    )
+    signal = {
+        "action": "BUY",
+        "confidence": 0.37,
+        "consensus_state": "disagreed",
+        "validator_status": "reviewed",
+        "validator_summary": "Recent trade memory shows 2+ losses in the same direction.",
+        "confirm_status": "CONFIRMED",
+        "decision_packet": {
+            "input_freshness": {
+                "market_snapshot_state": "warning",
+                "hard_blocker": False,
+            }
+        },
+    }
+
+    profile = build_xauex_assurance_profile(signal, cfg)
+
+    assert profile.allow_trade is True
+    assert profile.bucket == "low"
+    assert profile.reason == "LOW_ASSURANCE_REDUCED_RISK"
+    assert profile.risk_multiplier == 0.25
+    assert profile.target_rr == 1.5
+    assert profile.protect_r == 0.7
+    assert profile.protect_lock_r == 0.35
+
+
+def test_assurance_profile_still_blocks_very_low_confirmed_validator_disagreement():
+    cfg = SimpleNamespace(
+        xauex_low_confidence_lot_multiplier=0.25,
+        xauex_session_low_confidence_protect_r=0.7,
+        xauex_session_protect_r=0.85,
+        xauex_session_high_confidence_protect_r=1.0,
+        xauex_session_trail_r=1.35,
+        xauex_session_low_confidence_protect_lock_r=0.35,
+        xauex_session_protect_lock_r=0.30,
+        xauex_session_high_confidence_protect_lock_r=0.25,
+    )
+    signal = {
+        "action": "BUY",
+        "confidence": 0.25,
+        "consensus_state": "disagreed",
+        "validator_status": "reviewed",
+        "validator_summary": "The proposed BUY signal contradicts the dominant macro driver.",
+        "confirm_status": "CONFIRMED",
+        "decision_packet": {
+            "input_freshness": {
+                "market_snapshot_state": "fresh",
+                "hard_blocker": False,
+            }
+        },
+    }
+
+    profile = build_xauex_assurance_profile(signal, cfg)
+
+    assert profile.allow_trade is False
+    assert profile.reason == "LOW_ASSURANCE_VALIDATOR_DISAGREEMENT"
+
+
 def test_assurance_profile_allows_aligned_high_confidence_with_larger_target():
     cfg = SimpleNamespace(
         xauex_session_low_confidence_protect_r=0.7,

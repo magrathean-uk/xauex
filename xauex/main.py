@@ -307,7 +307,12 @@ def build_xauex_assurance_profile(signal: Dict[str, object], config: Config) -> 
         return _blocked_assurance("INPUT_HARD_BLOCKER")
 
     weak_validator = _validator_summary_is_weak(validator_summary)
-    if confidence < 0.45 and (consensus in {"disagreed", "conflicted", "blocked"} or weak_validator):
+    confirm_status = str(signal.get("confirm_status", "") or "").strip().upper()
+    if (
+        (confidence < 0.30 or confirm_status != "CONFIRMED")
+        and confidence < 0.45
+        and (consensus in {"disagreed", "conflicted", "blocked"} or weak_validator)
+    ):
         return _blocked_assurance("LOW_ASSURANCE_VALIDATOR_DISAGREEMENT")
 
     score = confidence
@@ -376,6 +381,29 @@ def build_xauex_assurance_profile(signal: Dict[str, object], config: Config) -> 
             protect_r=round(normal_protect_r, 2),
             trail_r=round(max(normal_trail_r, normal_protect_r + 0.2), 2),
             protect_lock_r=round(normal_lock_r, 2),
+        )
+    if (
+        confirm_status == "CONFIRMED"
+        and confidence >= 0.35
+        and consensus not in {"blocked"}
+        and validator_status not in {"rejected", "blocked"}
+    ):
+        target_rr = 1.5
+        if loss_memory_gate:
+            target_rr *= 0.5
+        low_protect_r = float(getattr(config, "xauex_session_low_confidence_protect_r", normal_protect_r))
+        low_lock_r = float(getattr(config, "xauex_session_low_confidence_protect_lock_r", normal_lock_r))
+        low_risk_multiplier = float(getattr(config, "xauex_low_confidence_lot_multiplier", 0.25))
+        return XauexAssuranceProfile(
+            bucket="low",
+            score=score,
+            allow_trade=True,
+            reason="LOW_ASSURANCE_REDUCED_RISK" + loss_memory_gate,
+            risk_multiplier=round(max(0.1, min(1.0, low_risk_multiplier)), 2),
+            target_rr=round(target_rr, 2),
+            protect_r=round(low_protect_r, 2),
+            trail_r=round(max(normal_trail_r - 0.15, low_protect_r + 0.2), 2),
+            protect_lock_r=round(low_lock_r, 2),
         )
     return _blocked_assurance("ASSURANCE_TOO_LOW")
 
