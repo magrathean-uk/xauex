@@ -45,6 +45,7 @@ def test_build_shadow_trial_record_captures_signal_and_compare_prices(tmp_path):
     comparison = {
         "baseline": {"action": "SELL", "confidence": 0.44, "estimated_total_cost_usd": 0.0032, "total_tokens": 9000},
         "analyst_debate": {"action": "BUY", "confidence": 0.61, "estimated_total_cost_usd": 0.0045, "total_tokens": 18000},
+        "tradingagents_candidate": {"action": "SELL", "confidence": 0.66, "estimated_total_cost_usd": 0.0051, "total_tokens": 22000},
         "delta": {"action_changed": True},
     }
     archived_signal = {"timestamp_utc": "2026-04-15T07:00:07Z", "symbol": "XAUUSD"}
@@ -67,6 +68,7 @@ def test_build_shadow_trial_record_captures_signal_and_compare_prices(tmp_path):
     assert record["evaluation_due_at_utc"] == "2026-04-15T09:00:07Z"
     assert record["baseline"]["action"] == "SELL"
     assert record["analyst_debate"]["action"] == "BUY"
+    assert record["tradingagents_candidate"]["action"] == "SELL"
     assert record["report_email"] == "bolyki@bolyki.eu"
 
 
@@ -75,6 +77,7 @@ def test_evaluate_shadow_trial_record_marks_correct_variant():
         "signal_mid_price": 4781.30,
         "baseline": {"action": "SELL"},
         "analyst_debate": {"action": "BUY"},
+        "tradingagents_candidate": {"action": "SELL"},
     }
 
     evaluated = evaluate_shadow_trial_record(
@@ -85,10 +88,11 @@ def test_evaluate_shadow_trial_record_marks_correct_variant():
     )
 
     assert evaluated["outcome"]["status"] == "completed"
-    assert evaluated["outcome"]["winner"] == "baseline"
+    assert evaluated["outcome"]["winner"] == "baseline_and_tradingagents_candidate"
     assert evaluated["outcome"]["move_usd"] == -12.5
     assert evaluated["outcome"]["baseline_correct"] is True
     assert evaluated["outcome"]["analyst_debate_correct"] is False
+    assert evaluated["outcome"]["tradingagents_candidate_correct"] is True
 
 
 def test_render_shadow_trial_report_summarizes_completed_trials():
@@ -98,14 +102,16 @@ def test_render_shadow_trial_report_summarizes_completed_trials():
             "signal_timestamp_utc": "2026-04-15T07:00:07Z",
             "baseline": {"action": "SELL", "confidence": 0.44},
             "analyst_debate": {"action": "BUY", "confidence": 0.61},
-            "outcome": {"status": "completed", "winner": "baseline", "move_usd": -12.5},
+            "tradingagents_candidate": {"action": "SELL", "confidence": 0.66},
+            "outcome": {"status": "completed", "winner": "tradingagents_candidate", "move_usd": -12.5},
         },
         {
             "trial_id": "t2",
             "signal_timestamp_utc": "2026-04-15T10:30:07Z",
             "baseline": {"action": "SELL", "confidence": 0.51},
             "analyst_debate": {"action": "SELL", "confidence": 0.55},
-            "outcome": {"status": "completed", "winner": "both", "move_usd": -8.1},
+            "tradingagents_candidate": {"action": "SELL", "confidence": 0.62},
+            "outcome": {"status": "completed", "winner": "all", "move_usd": -8.1},
         },
     ]
 
@@ -113,9 +119,12 @@ def test_render_shadow_trial_report_summarizes_completed_trials():
 
     assert "XAUEX shadow trial results" in subject
     assert "Completed trials: 2" in body
-    assert "Baseline wins: 1" in body
+    assert "Baseline wins: 0" in body
     assert "Debate wins: 0" in body
-    assert "Both correct: 1" in body
+    assert "Candidate wins: 1" in body
+    assert "Both correct: 0" in body
+    assert "All correct: 1" in body
+    assert "candidate=SELL" in body
 
 
 def test_shadow_trial_report_defaults_to_one_week_lookback():

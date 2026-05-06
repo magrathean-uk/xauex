@@ -429,6 +429,82 @@ def test_confirm_decision_skips_when_microstructure_conflicts_with_signal():
     assert decision["reason"] == "MICROSTRUCTURE_CONFLICT"
 
 
+def test_confirm_decision_defers_strong_aligned_signal_for_first_microstructure_conflict():
+    cfg = SimpleNamespace(
+        xauex_signal_max_age_seconds=300,
+        xauex_confirm_spread_max_dollars=1.0,
+    )
+    decision = build_xauex_confirm_decision(
+        signal={
+            "action": "BUY",
+            "timestamp_utc": "2026-04-15T07:55:10Z",
+            "confidence": 0.62,
+            "consensus_state": "aligned",
+            "validator_status": "reviewed",
+            "decision_packet": {
+                "input_freshness": {
+                    "hard_blocker": False,
+                    "market_snapshot_state": "fresh",
+                }
+            },
+        },
+        now_utc=datetime(2026, 4, 15, 7, 59, 0, tzinfo=timezone.utc),
+        latest_quote={
+            "bid": 4782.2,
+            "ask": 4782.7,
+            "updated_at_utc": "2026-04-15T07:58:58Z",
+        },
+        news_gate={"clear": True, "reason": ""},
+        trend_snapshot={"alignment": "BEARISH"},
+        shadow_signal={"action": "SELL"},
+        config=cfg,
+    )
+
+    assert decision["status"] == "PENDING"
+    assert decision["reason"] == "MICROSTRUCTURE_DEFERRED"
+    assert decision["microstructure_policy"] == "defer"
+    assert decision["microstructure_deferred"] is True
+    assert decision["microstructure_defer_count"] == 1
+
+
+def test_confirm_decision_soft_confirms_strong_aligned_signal_after_defer():
+    cfg = SimpleNamespace(
+        xauex_signal_max_age_seconds=300,
+        xauex_confirm_spread_max_dollars=1.0,
+    )
+    decision = build_xauex_confirm_decision(
+        signal={
+            "action": "BUY",
+            "timestamp_utc": "2026-04-15T07:55:10Z",
+            "confidence": 0.62,
+            "consensus_state": "aligned",
+            "validator_status": "reviewed",
+            "microstructure_deferred": True,
+            "microstructure_defer_count": 1,
+            "decision_packet": {
+                "input_freshness": {
+                    "hard_blocker": False,
+                    "market_snapshot_state": "fresh",
+                }
+            },
+        },
+        now_utc=datetime(2026, 4, 15, 7, 59, 0, tzinfo=timezone.utc),
+        latest_quote={
+            "bid": 4782.2,
+            "ask": 4782.7,
+            "updated_at_utc": "2026-04-15T07:58:58Z",
+        },
+        news_gate={"clear": True, "reason": ""},
+        trend_snapshot={"alignment": "BEARISH"},
+        shadow_signal={"action": "SELL"},
+        config=cfg,
+    )
+
+    assert decision["status"] == "CONFIRMED"
+    assert decision["reason"] == "MICROSTRUCTURE_SOFT_CONFIRMED"
+    assert decision["microstructure_soft_confirmed"] is True
+
+
 def _counter_signal_config() -> SimpleNamespace:
     return SimpleNamespace(
         xauex_signal_max_age_seconds=300,
@@ -487,6 +563,36 @@ def test_counter_signal_candidate_flips_microstructure_veto_to_reduced_risk_sell
     profile = build_xauex_assurance_profile(candidate, cfg)
     assert profile.allow_trade is True
     assert profile.bucket == "medium"
+
+
+def test_counter_signal_candidate_skips_strong_aligned_microstructure_veto():
+    cfg = _counter_signal_config()
+    original_signal = {
+        "action": "BUY",
+        "confidence": 0.62,
+        "timestamp_utc": "2026-04-15T07:55:10Z",
+        "consensus_state": "aligned",
+        "validator_status": "reviewed",
+        "decision_packet": {
+            "input_freshness": {
+                "hard_blocker": False,
+                "market_snapshot_state": "fresh",
+            }
+        },
+    }
+
+    candidate = build_xauex_counter_signal_candidate(
+        signal=original_signal,
+        original_confirm={"status": "SKIP", "reason": "MICROSTRUCTURE_CONFLICT"},
+        now_utc=datetime(2026, 4, 15, 7, 59, 0, tzinfo=timezone.utc),
+        latest_quote={"bid": 4782.2, "ask": 4782.7},
+        news_gate={"clear": True, "reason": ""},
+        trend_snapshot={"alignment": "BEARISH"},
+        shadow_signal={"action": "SELL"},
+        config=cfg,
+    )
+
+    assert candidate is None
 
 
 def test_counter_signal_candidate_ignores_non_microstructure_veto():

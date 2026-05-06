@@ -1,6 +1,7 @@
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+import pytest
 
 from xauex.signal.config import SignalConfig
 from xauex.signal.qdrant_memory import QdrantMemoryConfig
@@ -74,6 +75,23 @@ def test_signal_config_exposes_validator_and_budget_defaults(monkeypatch):
     assert cfg.debate_analyst_model == "llama-3.1-8b-instant"
     assert cfg.archive_dir == "/var/lib/xauex/signal_runs"
     assert cfg.daily_cost_cap_usd > 0
+
+
+def test_signal_config_accepts_tradingagents_candidate_mode(monkeypatch):
+    monkeypatch.setenv("XAUEX_SIGNAL_LLM_API_KEY", "test-key")
+    monkeypatch.setenv("XAUEX_SIGNAL_DECISION_MODE", "tradingagents_candidate")
+
+    cfg = SignalConfig.from_env()
+
+    assert cfg.decision_mode == "tradingagents_candidate"
+
+
+def test_signal_config_rejects_unknown_decision_mode(monkeypatch):
+    monkeypatch.setenv("XAUEX_SIGNAL_LLM_API_KEY", "test-key")
+    monkeypatch.setenv("XAUEX_SIGNAL_DECISION_MODE", "fully_autonomous")
+
+    with pytest.raises(ValueError, match="baseline, analyst_debate, or tradingagents_candidate"):
+        SignalConfig.from_env()
 
 
 def test_signal_config_exposes_optional_fedwatch_api_settings(monkeypatch):

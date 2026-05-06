@@ -65,8 +65,8 @@ class SignalConfig:
             os.getenv('XAUEX_SIGNAL_DECISION_MODE')
             or 'baseline'
         ).strip().lower()
-        if decision_mode not in {'baseline', 'analyst_debate'}:
-            raise ValueError('XAUEX_SIGNAL_DECISION_MODE must be baseline or analyst_debate')
+        if decision_mode not in {'baseline', 'analyst_debate', 'tradingagents_candidate'}:
+            raise ValueError('XAUEX_SIGNAL_DECISION_MODE must be baseline, analyst_debate, or tradingagents_candidate')
         parser_llm_api_key = (
             os.getenv('XAUEX_SIGNAL_PARSER_LLM_API_KEY')
             or llm_api_key

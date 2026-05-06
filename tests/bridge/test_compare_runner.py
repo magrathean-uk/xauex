@@ -37,6 +37,16 @@ def test_run_variant_comparison_writes_isolated_outputs(monkeypatch, tmp_path):
     parse_calls = []
 
     def fake_parse_signal(*, asset, actions, report_markdown, config, prediction_payload, window_label, decision_mode=None):
+        actions_by_mode = {
+            "baseline": "SELL",
+            "analyst_debate": "BUY",
+            "tradingagents_candidate": "SELL",
+        }
+        confidence_by_mode = {
+            "baseline": 0.52,
+            "analyst_debate": 0.61,
+            "tradingagents_candidate": 0.66,
+        }
         parse_calls.append(
             {
                 "mode": decision_mode,
@@ -50,8 +60,8 @@ def test_run_variant_comparison_writes_isolated_outputs(monkeypatch, tmp_path):
             "schema_version": 2,
             "symbol": asset.symbol,
             "asset_class": asset.asset_class,
-            "action": "SELL" if decision_mode == "baseline" else "BUY",
-            "confidence": 0.52 if decision_mode == "baseline" else 0.61,
+            "action": actions_by_mode[decision_mode],
+            "confidence": confidence_by_mode[decision_mode],
             "reasoning": f"{decision_mode} reasoning",
             "stop_loss_distance": 12.0,
             "take_profit_distance": 24.0,
@@ -72,9 +82,20 @@ def test_run_variant_comparison_writes_isolated_outputs(monkeypatch, tmp_path):
                 if decision_mode == "analyst_debate"
                 else None
             ),
+            "candidate_graph": (
+                {
+                    "mode": "tradingagents_candidate",
+                    "degraded": False,
+                    "summary": "Candidate complete.",
+                    "scratchpad_path": str(tmp_path / "compare" / "candidate_scratchpad.jsonl"),
+                    "final_decision": {"action": "SELL", "confidence": 0.66},
+                }
+                if decision_mode == "tradingagents_candidate"
+                else None
+            ),
             "llm_usage": {
-                "estimated_total_cost_usd": 0.001 if decision_mode == "baseline" else 0.0018,
-                "total_tokens": 1000 if decision_mode == "baseline" else 1800,
+                "estimated_total_cost_usd": {"baseline": 0.001, "analyst_debate": 0.0018, "tradingagents_candidate": 0.0021}[decision_mode],
+                "total_tokens": {"baseline": 1000, "analyst_debate": 1800, "tradingagents_candidate": 2200}[decision_mode],
                 "stages": {
                     "parser": {"model": "openai/gpt-oss-120b", "prompt_tokens": 500, "completion_tokens": 50, "total_tokens": 550, "estimated_cost_usd": 0.0007},
                 },
@@ -112,16 +133,24 @@ def test_run_variant_comparison_writes_isolated_outputs(monkeypatch, tmp_path):
         window_label="morning",
     )
 
-    assert [call["mode"] for call in parse_calls] == ["baseline", "analyst_debate"]
+    assert [call["mode"] for call in parse_calls] == ["baseline", "analyst_debate", "tradingagents_candidate"]
     assert parse_calls[0]["payload"] == payload
     assert parse_calls[1]["payload"] == payload
+    assert parse_calls[2]["payload"] == payload
     assert comparison["delta"]["action_changed"] is True
+    assert comparison["deltas"]["tradingagents_candidate"]["action_changed"] is False
+    assert comparison["deltas"]["tradingagents_candidate"]["confidence_delta"] == 0.14
     assert comparison["baseline"]["action"] == "SELL"
     assert comparison["analyst_debate"]["action"] == "BUY"
+    assert comparison["tradingagents_candidate"]["action"] == "SELL"
+    assert comparison["tradingagents_candidate"]["candidate_graph"]["summary"] == "Candidate complete."
     assert (tmp_path / "compare" / "baseline_signal.json").exists()
     assert (tmp_path / "compare" / "debate_signal.json").exists()
+    assert (tmp_path / "compare" / "candidate_signal.json").exists()
     assert (tmp_path / "compare" / "baseline_brief.md").exists()
     assert (tmp_path / "compare" / "debate_brief.md").exists()
+    assert (tmp_path / "compare" / "candidate_brief.md").exists()
+    assert (tmp_path / "compare" / "candidate_evidence.json").exists()
     assert (tmp_path / "compare" / "comparison.json").exists()
 
 

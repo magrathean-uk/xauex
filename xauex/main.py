@@ -58,6 +58,8 @@ _DAILY_BAR_LOOKBACK = 120
 _SCALP_BAR_LOOKBACK = 2500
 _EMA_PULLBACK_BAR_LOOKBACK = 260
 _XAUEX_SLOT_RETRY_BACKOFF_SECONDS = 45
+_XAUEX_STRONG_SIGNAL_MICROSTRUCTURE_CONFIDENCE = 0.60
+_XAUEX_MICROSTRUCTURE_SOFT_RISK_MULTIPLIER = 0.5
 _XAUEX_CLOSE_REQUEST_TTL_SECONDS = 180
 _XAUEX_REPEATED_LOG_INTERVAL_SECONDS = 300
 
@@ -86,6 +88,59 @@ def calculate_xauex_remaining_daily_loss_budget(
     realized_loss = max(0.0, -float(realized_daily_pnl or 0.0))
     reserved_risk = max(0.0, float(open_reserved_risk or 0.0))
     return round(max(0.0, daily_limit - realized_loss - reserved_risk), 2)
+
+
+def calculate_xauex_assurance_cash_risk(
+    *,
+    cash_risk_budget: float,
+    assurance_risk_multiplier: float,
+    cooldown_multiplier: float,
+    session_slot_multiplier: float,
+    counter_signal_risk_multiplier: float,
+    microstructure_risk_multiplier: float,
+    minimum_executable_risk: float = 0.0,
+) -> float:
+    budget = max(0.0, float(cash_risk_budget))
+    reduced_risk = round(
+        float(cash_risk_budget)
+        * float(assurance_risk_multiplier)
+        * float(cooldown_multiplier)
+        * float(session_slot_multiplier)
+        * float(counter_signal_risk_multiplier)
+        * float(microstructure_risk_multiplier),
+        2,
+    )
+    min_executable = round(max(0.0, float(minimum_executable_risk or 0.0)), 2)
+    if 0.0 < reduced_risk < min_executable <= budget:
+        return min_executable
+    return reduced_risk
+
+
+def _is_strong_aligned_signal(*, signal: Dict[str, object]) -> bool:
+    action = str(signal.get("action", "HOLD") or "HOLD").upper()
+    if action not in {"BUY", "SELL"}:
+        return False
+
+    signal_timestamp = str(signal.get("timestamp_utc", "") or "").strip()
+    if not signal_timestamp:
+        return False
+
+    decision_packet = signal.get("decision_packet")
+    input_freshness = {}
+    if isinstance(decision_packet, dict):
+        input_freshness = (
+            decision_packet.get("input_freshness") if isinstance(decision_packet.get("input_freshness"), dict) else {}
+        )
+    if bool(input_freshness.get("hard_blocker")):
+        return False
+
+    confidence = _safe_signal_float(signal.get("confidence"), 0.0)
+    if confidence < _XAUEX_STRONG_SIGNAL_MICROSTRUCTURE_CONFIDENCE:
+        return False
+
+    consensus = str(signal.get("consensus_state", "") or "").strip().lower()
+    validator_status = str(signal.get("validator_status", "") or "").strip().lower()
+    return consensus in {"aligned", "confirmed"} and validator_status == "reviewed"
 
 
 def build_xauex_confirm_decision(
@@ -157,6 +212,10 @@ def build_xauex_confirm_decision(
 
     trend_alignment = str((trend_snapshot or {}).get("alignment", "") or "").upper()
     shadow_action = str((shadow_signal or {}).get("action", "") or "").upper()
+    strong_aligned = _is_strong_aligned_signal(signal=signal)
+    was_microstructure_deferred = bool(signal.get("microstructure_deferred", False))
+    microstructure_defer_count = int(signal.get("microstructure_defer_count") or 0)
+
     if action == "BUY":
         opposing_trend = trend_alignment in {"BEARISH", "SHORT"}
         opposing_shadow = shadow_action == "SELL"
@@ -164,11 +223,30 @@ def build_xauex_confirm_decision(
         opposing_trend = trend_alignment in {"BULLISH", "LONG"}
         opposing_shadow = shadow_action == "BUY"
     if opposing_trend or opposing_shadow:
+        if strong_aligned and (was_microstructure_deferred or microstructure_defer_count > 0):
+            result["status"] = "CONFIRMED"
+            result["reason"] = "MICROSTRUCTURE_SOFT_CONFIRMED"
+            result["microstructure_policy"] = "soft_confirmed"
+            result["microstructure_deferred"] = True
+            result["microstructure_soft_confirmed"] = True
+            result["microstructure_defer_count"] = microstructure_defer_count or 1
+            return result
+        if strong_aligned:
+            result["status"] = "PENDING"
+            result["reason"] = "MICROSTRUCTURE_DEFERRED"
+            result["microstructure_policy"] = "defer"
+            result["microstructure_deferred"] = True
+            result["microstructure_defer_count"] = 1
+            return result
         result["reason"] = "MICROSTRUCTURE_CONFLICT"
         return result
 
     result["status"] = "CONFIRMED"
     result["reason"] = "CONFIRMED"
+    if strong_aligned and was_microstructure_deferred:
+        result["microstructure_policy"] = "deferred_cleared"
+        result["microstructure_deferred"] = True
+        result["microstructure_defer_count"] = microstructure_defer_count
     return result
 
 
@@ -189,6 +267,8 @@ def build_xauex_counter_signal_candidate(
 
     source_action = str(signal.get("action", "HOLD") or "HOLD").upper()
     if source_action not in {"BUY", "SELL"}:
+        return None
+    if _is_strong_aligned_signal(signal=signal):
         return None
 
     original_status = str(original_confirm.get("status", "SKIP") or "SKIP").upper()
@@ -2386,6 +2466,14 @@ class BotOrchestrator:
         updated_signal["confirm_status"] = confirm["status"]
         updated_signal["confirm_reason"] = confirm["reason"]
         updated_signal["confirm_timestamp_utc"] = confirm["timestamp_utc"]
+        for key in (
+            "microstructure_policy",
+            "microstructure_defer_count",
+            "microstructure_deferred",
+            "microstructure_soft_confirmed",
+        ):
+            if key in confirm:
+                updated_signal[key] = confirm[key]
         command_payload["xauex_signal"] = updated_signal
         try:
             with open(self.config.xauex_signal_path, "w", encoding="utf-8") as handle:
@@ -2910,6 +2998,10 @@ class BotOrchestrator:
                     "confidence": confidence,
                     "confirm_status": confirm_status,
                     "confirm_reason": confirm_reason,
+                    "microstructure_policy": str(sig.get("microstructure_policy") or ""),
+                    "microstructure_defer_count": sig.get("microstructure_defer_count"),
+                    "trend_alignment": str((self._trend_snapshot or {}).get("alignment", "") or ""),
+                    "shadow_action": str((self._shadow_last_signal or {}).get("action", "") or ""),
                 },
                 correlation_id=signal_id,
             )
@@ -3089,6 +3181,28 @@ class BotOrchestrator:
                         signal=sig,
                         confirm=confirm,
                     )
+
+                if confirm_status == "PENDING" and confirm_reason == "MICROSTRUCTURE_DEFERRED":
+                    logger.info(
+                        "[XAUEX] Microstructure conflict deferred for %s; retrying in %ds.",
+                        signal_id,
+                        _XAUEX_SLOT_RETRY_BACKOFF_SECONDS,
+                    )
+                    self._mark_slot_used(
+                        slot=slot,
+                        signal_id=signal_id,
+                        reason=confirm_reason,
+                        signal_time=now_utc,
+                        signal_action=action,
+                        signal_confidence=confidence,
+                        window_label=window_label,
+                        confirm_status=confirm_status,
+                        confirm_reason=confirm_reason,
+                        confirm_timestamp_utc=confirm_timestamp_utc,
+                        terminal=False,
+                    )
+                    await self.write_state()
+                    continue
 
                 if confirm_status != "CONFIRMED":
                     counter_candidate = build_xauex_counter_signal_candidate(
@@ -3408,13 +3522,26 @@ class BotOrchestrator:
                         "[XAUEX] Counter-signal risk multiplier %.2fx applied.",
                         counter_signal_risk_multiplier,
                     )
-                assurance_cash_risk = round(
-                    cash_risk_budget
-                    * assurance.risk_multiplier
-                    * cooldown
-                    * session_slot_multiplier
-                    * counter_signal_risk_multiplier,
+                microstructure_soft_confirmed = str(sig.get("confirm_reason", "")).upper() == "MICROSTRUCTURE_SOFT_CONFIRMED"
+                microstructure_risk_multiplier = 1.0
+                if microstructure_soft_confirmed:
+                    microstructure_risk_multiplier = _XAUEX_MICROSTRUCTURE_SOFT_RISK_MULTIPLIER
+                    logger.info(
+                        "[XAUEX] Microstructure soft-confirm risk multiplier %.2fx applied.",
+                        microstructure_risk_multiplier,
+                    )
+                minimum_executable_risk = round(
+                    float(self.symbol_spec.volume_min) * float(self.symbol_spec.lot_size) * sl_distance,
                     2,
+                )
+                assurance_cash_risk = calculate_xauex_assurance_cash_risk(
+                    cash_risk_budget=cash_risk_budget,
+                    assurance_risk_multiplier=assurance.risk_multiplier,
+                    cooldown_multiplier=cooldown,
+                    session_slot_multiplier=session_slot_multiplier,
+                    counter_signal_risk_multiplier=counter_signal_risk_multiplier,
+                    microstructure_risk_multiplier=microstructure_risk_multiplier,
+                    minimum_executable_risk=minimum_executable_risk,
                 )
                 lot = calculate_xauex_lot_size_from_cash_risk(
                     cash_risk=assurance_cash_risk,

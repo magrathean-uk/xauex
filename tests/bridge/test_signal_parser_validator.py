@@ -8,6 +8,7 @@ from xauex.signal.signal_parser import (
     _model_completion_options,
     _request_json_completion,
     _validator_system_prompt,
+    parse_signal,
 )
 
 
@@ -390,3 +391,239 @@ def test_degraded_analyst_debate_does_not_modify_parser_packet():
     )
 
     assert "debate" not in enriched
+
+
+def _client_factory_for_parser_tests(*, parser_action="SELL", validator_decision="ALIGNED"):
+    class _Usage:
+        prompt_tokens = 120
+        completion_tokens = 25
+        total_tokens = 145
+
+    class _Message:
+        def __init__(self, content):
+            self.content = content
+
+    class _Choice:
+        def __init__(self, content):
+            self.message = _Message(content)
+
+    class _Response:
+        def __init__(self, content):
+            self.choices = [_Choice(content)]
+            self.usage = _Usage()
+
+    class _Completions:
+        def __init__(self):
+            self.calls = []
+
+        def create(self, **kwargs):
+            self.calls.append(kwargs)
+            system_prompt = str(kwargs.get("messages", [{}])[0].get("content", ""))
+            if "risk-aware validator" in system_prompt:
+                if validator_decision == "BLOCK":
+                    return _Response(
+                        '{"decision":"BLOCK","confidence_adjustment":-0.3,'
+                        '"reasoning":"Freshness blocker remains active.","hard_blocker":true}'
+                    )
+                return _Response(
+                    '{"decision":"ALIGNED","confidence_adjustment":0.0,'
+                    '"reasoning":"Validator agrees with the proposed trade.","hard_blocker":false}'
+                )
+            return _Response(
+                '{"action":"%s","confidence":0.55,"reasoning":"Baseline parser remains directional.",'
+                '"stop_loss_distance":12.0,"take_profit_distance":24.0}' % parser_action
+            )
+
+    class _Client:
+        def __init__(self):
+            self.chat = type("Chat", (), {"completions": _Completions()})()
+
+    clients = []
+
+    def _factory(**kwargs):
+        client = _Client()
+        clients.append(client)
+        return client
+
+    _factory.clients = clients
+    return _factory
+
+
+def _candidate_graph_result(*, degraded=False, action="BUY"):
+    return {
+        "mode": "tradingagents_candidate",
+        "degraded": degraded,
+        "stages": [
+            "market_analyst",
+            "bull_case",
+            "bear_case",
+            "trader_proposal",
+            "risk_reviewer",
+            "portfolio_decision",
+        ],
+        "summary": "Candidate graph completed." if not degraded else "Candidate graph degraded.",
+        "scratchpad_path": "/tmp/candidate_scratchpad.jsonl",
+        "final_decision": {
+            "action": action,
+            "confidence": 0.63,
+            "reasoning": "Candidate portfolio decision favors the stronger side.",
+            "stop_loss_distance": 12.0,
+            "take_profit_distance": 24.0,
+        },
+    }
+
+
+def test_parse_signal_tradingagents_candidate_enriches_packet_and_stores_graph(monkeypatch):
+    monkeypatch.setenv("XAUEX_SIGNAL_LLM_API_KEY", "test-key")
+    cfg = SignalConfig.from_env()
+    asset = resolve_asset("XAUUSD")
+    client_factory = _client_factory_for_parser_tests()
+    candidate_calls = []
+
+    def fake_candidate(**kwargs):
+        candidate_calls.append(kwargs)
+        return _candidate_graph_result(action="BUY"), [
+            {"stage": "portfolio_decision", "model": "candidate", "prompt_tokens": 40, "completion_tokens": 20, "total_tokens": 60, "estimated_cost_usd": 0.0}
+        ]
+
+    monkeypatch.setattr("xauex.signal.signal_parser.create_chat_client", client_factory)
+    monkeypatch.setattr("xauex.signal.signal_parser.run_tradingagents_candidate", fake_candidate)
+
+    signal = parse_signal(
+        asset=asset,
+        actions=[{"agent_name": "price_structure", "action_type": "BUY", "content": "gold broke higher"}],
+        report_markdown="# Report\nGold bid as yields soften and the dollar fades.",
+        config=cfg,
+        prediction_payload={
+            "price_features": {"price_bias": "BUY"},
+            "memory_summary": {},
+            "market_snapshot": {"series": {}},
+            "event_flags": {},
+            "input_freshness": {"market_snapshot_state": "fresh"},
+            "context_items": [],
+        },
+        window_label="morning",
+        decision_mode="tradingagents_candidate",
+    )
+
+    assert signal["action"] == "BUY"
+    assert signal["decision_mode"] == "tradingagents_candidate"
+    assert signal["candidate_graph"]["mode"] == "tradingagents_candidate"
+    assert signal["candidate_graph"]["stages"][-1] == "portfolio_decision"
+    assert signal["decision_packet"]["candidate_graph"]["summary"] == "Candidate graph completed."
+    assert candidate_calls[0]["asset"] == asset
+
+
+def test_parse_signal_degraded_candidate_falls_back_to_baseline_parser(monkeypatch):
+    monkeypatch.setenv("XAUEX_SIGNAL_LLM_API_KEY", "test-key")
+    cfg = SignalConfig.from_env()
+    asset = resolve_asset("XAUUSD")
+    client_factory = _client_factory_for_parser_tests(parser_action="SELL")
+
+    monkeypatch.setattr("xauex.signal.signal_parser.create_chat_client", client_factory)
+    monkeypatch.setattr(
+        "xauex.signal.signal_parser.run_tradingagents_candidate",
+        lambda **kwargs: (_candidate_graph_result(degraded=True, action="BUY"), []),
+    )
+
+    signal = parse_signal(
+        asset=asset,
+        actions=[{"agent_name": "price_structure", "action_type": "SELL", "content": "negative momentum"}],
+        report_markdown="# Report\nGold pressured by a firmer dollar and higher yields.",
+        config=cfg,
+        prediction_payload={
+            "price_features": {"price_bias": "SELL"},
+            "memory_summary": {},
+            "market_snapshot": {"series": {}},
+            "event_flags": {},
+            "input_freshness": {"market_snapshot_state": "fresh"},
+            "context_items": [],
+        },
+        window_label="morning",
+        decision_mode="tradingagents_candidate",
+    )
+
+    assert signal["action"] == "SELL"
+    assert signal["candidate_graph"]["degraded"] is True
+    assert "candidate_graph" not in signal["decision_packet"]
+
+
+def test_parse_signal_validator_can_block_candidate_output(monkeypatch):
+    monkeypatch.setenv("XAUEX_SIGNAL_LLM_API_KEY", "test-key")
+    cfg = SignalConfig.from_env()
+    asset = resolve_asset("XAUUSD")
+    client_factory = _client_factory_for_parser_tests(validator_decision="BLOCK")
+
+    monkeypatch.setattr("xauex.signal.signal_parser.create_chat_client", client_factory)
+    monkeypatch.setattr(
+        "xauex.signal.signal_parser.run_tradingagents_candidate",
+        lambda **kwargs: (_candidate_graph_result(degraded=False, action="BUY"), []),
+    )
+
+    signal = parse_signal(
+        asset=asset,
+        actions=[{"agent_name": "price_structure", "action_type": "BUY", "content": "gold broke higher"}],
+        report_markdown="# Report\nGold bid as yields soften.",
+        config=cfg,
+        prediction_payload={
+            "price_features": {"price_bias": "BUY"},
+            "memory_summary": {},
+            "market_snapshot": {"series": {}},
+            "event_flags": {},
+            "input_freshness": {"market_snapshot_state": "fresh"},
+            "context_items": [],
+        },
+        window_label="morning",
+        decision_mode="tradingagents_candidate",
+    )
+
+    assert signal["action"] == "HOLD"
+    assert signal["confidence"] == 0.0
+    assert signal["consensus_state"] == "blocked"
+    assert signal["candidate_graph"]["final_decision"]["action"] == "BUY"
+
+
+def test_parse_signal_preserves_candidate_hold_without_directional_fallback(monkeypatch):
+    monkeypatch.setenv("XAUEX_SIGNAL_LLM_API_KEY", "test-key")
+    cfg = SignalConfig.from_env()
+    asset = resolve_asset("XAUUSD")
+    client_factory = _client_factory_for_parser_tests()
+
+    monkeypatch.setattr("xauex.signal.signal_parser.create_chat_client", client_factory)
+    monkeypatch.setattr(
+        "xauex.signal.signal_parser.run_tradingagents_candidate",
+        lambda **kwargs: (
+            _candidate_graph_result(degraded=False, action="HOLD")
+            | {
+                "final_decision": {
+                    "action": "HOLD",
+                    "confidence": 0.0,
+                    "reasoning": "Candidate portfolio manager stays flat for this window.",
+                    "stop_loss_distance": 0.0,
+                    "take_profit_distance": 0.0,
+                }
+            },
+            [],
+        ),
+    )
+
+    signal = parse_signal(
+        asset=asset,
+        actions=[{"agent_name": "price_structure", "action_type": "BUY", "content": "gold broke higher"}],
+        report_markdown="# Report\nGold bid as yields soften and buyers press upside.",
+        config=cfg,
+        prediction_payload={
+            "price_features": {"price_bias": "BUY"},
+            "memory_summary": {},
+            "market_snapshot": {"series": {}},
+            "event_flags": {},
+            "input_freshness": {"market_snapshot_state": "fresh"},
+            "context_items": [],
+        },
+        window_label="morning",
+        decision_mode="tradingagents_candidate",
+    )
+
+    assert signal["action"] == "HOLD"
+    assert signal["confidence"] == 0.0
+    assert signal["candidate_graph"]["final_decision"]["action"] == "HOLD"

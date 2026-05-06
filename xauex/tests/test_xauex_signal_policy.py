@@ -24,6 +24,7 @@ from xauex.signal.assets import resolve_asset
 from xauex.signal.signal_parser import _fallback_direction, _normalize_signal
 
 BotOrchestrator = _MODULE.BotOrchestrator
+calculate_xauex_assurance_cash_risk = _MODULE.calculate_xauex_assurance_cash_risk
 
 
 def test_parser_fallback_converts_soft_hold_to_directional_trade():
@@ -182,3 +183,44 @@ def test_confidence_scales_lot_size_without_skipping_trade():
     assert low == 0.03
     assert full == 0.12
     assert floored == 0.01
+
+
+def test_assurance_cash_risk_multiplies_all_reducers_without_execution_exception():
+    cash_risk = calculate_xauex_assurance_cash_risk(
+        cash_risk_budget=29.41,
+        assurance_risk_multiplier=1.0,
+        cooldown_multiplier=1.0,
+        session_slot_multiplier=0.75,
+        counter_signal_risk_multiplier=1.0,
+        microstructure_risk_multiplier=0.5,
+    )
+
+    assert cash_risk == 11.03
+
+
+def test_assurance_cash_risk_lifts_approved_trade_to_broker_minimum_when_budget_allows():
+    cash_risk = calculate_xauex_assurance_cash_risk(
+        cash_risk_budget=29.41,
+        assurance_risk_multiplier=1.0,
+        cooldown_multiplier=1.0,
+        session_slot_multiplier=0.85,
+        counter_signal_risk_multiplier=1.0,
+        microstructure_risk_multiplier=0.5,
+        minimum_executable_risk=25.0,
+    )
+
+    assert cash_risk == 25.0
+
+
+def test_assurance_cash_risk_does_not_lift_to_minimum_when_budget_cannot_cover_it():
+    cash_risk = calculate_xauex_assurance_cash_risk(
+        cash_risk_budget=20.0,
+        assurance_risk_multiplier=1.0,
+        cooldown_multiplier=1.0,
+        session_slot_multiplier=0.85,
+        counter_signal_risk_multiplier=1.0,
+        microstructure_risk_multiplier=0.5,
+        minimum_executable_risk=25.0,
+    )
+
+    assert cash_risk == 8.5

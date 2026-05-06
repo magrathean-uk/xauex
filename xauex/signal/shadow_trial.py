@@ -97,7 +97,9 @@ def build_shadow_trial_record(
         'compare_quote_updated_at_utc': str(compare_quote.get('updated_at_utc') or ''),
         'baseline': dict(comparison.get('baseline') or {}),
         'analyst_debate': dict(comparison.get('analyst_debate') or {}),
+        'tradingagents_candidate': dict(comparison.get('tradingagents_candidate') or {}),
         'delta': dict(comparison.get('delta') or {}),
+        'deltas': dict(comparison.get('deltas') or {}),
         'outcome': {'status': 'pending'},
     }
 
@@ -113,18 +115,18 @@ def evaluate_shadow_trial_record(
     move_usd = round(float(evaluation_price) - signal_price, 2)
     baseline_action = str((record.get('baseline') or {}).get('action') or '').upper()
     debate_action = str((record.get('analyst_debate') or {}).get('action') or '').upper()
+    candidate = record.get('tradingagents_candidate') or {}
+    candidate_action = str(candidate.get('action') or '').upper()
     baseline_correct = _action_is_correct(baseline_action, move_usd, hold_band_usd)
     debate_correct = _action_is_correct(debate_action, move_usd, hold_band_usd)
-    if baseline_correct and debate_correct:
-        winner = 'both'
-    elif baseline_correct:
-        winner = 'baseline'
-    elif debate_correct:
-        winner = 'analyst_debate'
-    else:
-        winner = 'neither'
+    candidate_correct = _action_is_correct(candidate_action, move_usd, hold_band_usd) if candidate else None
+    winner = _shadow_winner(
+        baseline_correct=baseline_correct,
+        debate_correct=debate_correct,
+        candidate_correct=candidate_correct,
+    )
     updated = dict(record)
-    updated['outcome'] = {
+    outcome = {
         'status': 'completed',
         'evaluation_price': round(float(evaluation_price), 2),
         'evaluation_price_timestamp_utc': evaluation_price_timestamp_utc,
@@ -133,6 +135,9 @@ def evaluate_shadow_trial_record(
         'analyst_debate_correct': debate_correct,
         'winner': winner,
     }
+    if candidate_correct is not None:
+        outcome['tradingagents_candidate_correct'] = candidate_correct
+    updated['outcome'] = outcome
     return updated
 
 
@@ -140,7 +145,9 @@ def render_shadow_trial_report(rows: list[dict[str, Any]], *, recipient: str) ->
     completed = [row for row in rows if str((row.get('outcome') or {}).get('status') or '') == 'completed']
     baseline_wins = sum(1 for row in completed if (row.get('outcome') or {}).get('winner') == 'baseline')
     debate_wins = sum(1 for row in completed if (row.get('outcome') or {}).get('winner') == 'analyst_debate')
-    both_correct = sum(1 for row in completed if (row.get('outcome') or {}).get('winner') == 'both')
+    candidate_wins = sum(1 for row in completed if (row.get('outcome') or {}).get('winner') == 'tradingagents_candidate')
+    both_correct = sum(1 for row in completed if _winner_is_two_correct(str((row.get('outcome') or {}).get('winner') or '')))
+    all_correct = sum(1 for row in completed if (row.get('outcome') or {}).get('winner') == 'all')
     neither_correct = sum(1 for row in completed if (row.get('outcome') or {}).get('winner') == 'neither')
     lines = [
         'XAUEX shadow trial results',
@@ -149,16 +156,22 @@ def render_shadow_trial_report(rows: list[dict[str, Any]], *, recipient: str) ->
         f'Completed trials: {len(completed)}',
         f'Baseline wins: {baseline_wins}',
         f'Debate wins: {debate_wins}',
+        f'Candidate wins: {candidate_wins}',
         f'Both correct: {both_correct}',
+        f'All correct: {all_correct}',
         f'Neither correct: {neither_correct}',
         '',
         'Trials:',
     ]
     for row in completed:
         outcome = row.get('outcome') or {}
+        candidate_text = ''
+        if row.get('tradingagents_candidate'):
+            candidate_text = f" candidate={row.get('tradingagents_candidate', {}).get('action')}"
         lines.append(
             f"- {row.get('signal_timestamp_utc')} baseline={row.get('baseline', {}).get('action')} "
-            f"debate={row.get('analyst_debate', {}).get('action')} move={outcome.get('move_usd')} winner={outcome.get('winner')}"
+            f"debate={row.get('analyst_debate', {}).get('action')}{candidate_text} "
+            f"move={outcome.get('move_usd')} winner={outcome.get('winner')}"
         )
     subject = f'XAUEX shadow trial results ({len(completed)} completed)'
     return subject, '\n'.join(lines)
@@ -332,6 +345,43 @@ def _action_is_correct(action: str, move_usd: float, hold_band_usd: float) -> bo
     if action == 'HOLD':
         return abs(move_usd) <= hold_band_usd
     return False
+
+
+def _shadow_winner(
+    *,
+    baseline_correct: bool,
+    debate_correct: bool,
+    candidate_correct: bool | None,
+) -> str:
+    if candidate_correct is None:
+        if baseline_correct and debate_correct:
+            return 'both'
+        if baseline_correct:
+            return 'baseline'
+        if debate_correct:
+            return 'analyst_debate'
+        return 'neither'
+
+    correct = []
+    if baseline_correct:
+        correct.append('baseline')
+    if debate_correct:
+        correct.append('analyst_debate')
+    if candidate_correct:
+        correct.append('tradingagents_candidate')
+    if len(correct) == 3:
+        return 'all'
+    if len(correct) == 2:
+        return '_and_'.join(correct)
+    if len(correct) == 1:
+        return correct[0]
+    return 'neither'
+
+
+def _winner_is_two_correct(winner: str) -> bool:
+    if winner == 'both':
+        return True
+    return '_and_' in winner and winner != 'all'
 
 
 def _parse_utc(value: str) -> datetime:

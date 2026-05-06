@@ -1,10 +1,11 @@
-"""Run isolated baseline vs analyst-debate XAUEX signal comparisons."""
+"""Run isolated XAUEX signal variant comparisons."""
 
 from __future__ import annotations
 
 import argparse
 import hashlib
 import json
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -20,7 +21,7 @@ from xauex.signal.signal_parser import parse_signal
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description='Compare XAUEX baseline vs analyst-debate signal modes')
+    parser = argparse.ArgumentParser(description='Compare XAUEX baseline, analyst-debate, and candidate signal modes')
     parser.add_argument('--asset', default='XAUUSD')
     parser.add_argument('--news', type=str, help='Path to a text/markdown file with market news')
     parser.add_argument('--news-text', type=str, help='Inline market context text')
@@ -30,7 +31,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument('--max-items-per-source', type=int, default=4)
     parser.add_argument('--archive-run', type=str, help='Replay from a frozen archived baseline run directory')
     parser.add_argument('--output-dir', type=str, help='Directory for isolated comparison artifacts')
-    parser.add_argument('--full-run', action='store_true', help='Write signal, brief, and evidence artifacts for both variants')
+    parser.add_argument('--full-run', action='store_true', help='Write signal, brief, and evidence artifacts for all variants')
     return parser.parse_args()
 
 
@@ -75,6 +76,15 @@ def run_variant_comparison(
         output_dir=output_dir,
         full_run=full_run,
     )
+    candidate_signal = _run_variant(
+        mode='tradingagents_candidate',
+        config=replace(config, archive_dir=str(output_dir)),
+        asset=asset,
+        payload=payload,
+        results=results,
+        output_dir=output_dir,
+        full_run=full_run,
+    )
     comparison = _build_comparison(
         asset_symbol=asset.symbol,
         context_markdown=context_markdown,
@@ -82,6 +92,7 @@ def run_variant_comparison(
         window_label=window_label,
         baseline_signal=baseline_signal,
         debate_signal=debate_signal,
+        candidate_signal=candidate_signal,
     )
     (output_dir / 'comparison.json').write_text(json.dumps(comparison, indent=2), encoding='utf-8')
     return comparison
@@ -114,7 +125,7 @@ def _run_variant(
         'reason': results.get('fallback_reason', ''),
     }
 
-    prefix = 'baseline' if mode == 'baseline' else 'debate'
+    prefix = _variant_prefix(mode)
     signal_path = output_dir / f'{prefix}_signal.json'
 
     if full_run:
@@ -161,9 +172,17 @@ def _build_comparison(
     window_label: str,
     baseline_signal: dict[str, Any],
     debate_signal: dict[str, Any],
+    candidate_signal: dict[str, Any],
 ) -> dict[str, Any]:
     baseline_usage = baseline_signal.get('llm_usage') or {}
     debate_usage = debate_signal.get('llm_usage') or {}
+    candidate_usage = candidate_signal.get('llm_usage') or {}
+    debate_delta = _variant_delta(baseline_signal, debate_signal)
+    candidate_delta = _variant_delta(baseline_signal, candidate_signal)
+    debate_delta['total_tokens_delta'] = int((debate_usage.get('total_tokens') or 0) - (baseline_usage.get('total_tokens') or 0))
+    debate_delta['estimated_total_cost_usd_delta'] = _cost_delta(baseline_usage, debate_usage)
+    candidate_delta['total_tokens_delta'] = int((candidate_usage.get('total_tokens') or 0) - (baseline_usage.get('total_tokens') or 0))
+    candidate_delta['estimated_total_cost_usd_delta'] = _cost_delta(baseline_usage, candidate_usage)
     comparison = {
         'generated_at_utc': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
         'input_identity': {
@@ -174,20 +193,12 @@ def _build_comparison(
         },
         'baseline': _signal_summary(baseline_signal),
         'analyst_debate': _signal_summary(debate_signal),
-        'delta': {
-            'action_changed': baseline_signal.get('action') != debate_signal.get('action'),
-            'confidence_delta': round(float((debate_signal.get('confidence') or 0.0)) - float((baseline_signal.get('confidence') or 0.0)), 4),
-            'stop_loss_delta': round(float((debate_signal.get('stop_loss_distance') or 0.0)) - float((baseline_signal.get('stop_loss_distance') or 0.0)), 4),
-            'take_profit_delta': round(float((debate_signal.get('take_profit_distance') or 0.0)) - float((baseline_signal.get('take_profit_distance') or 0.0)), 4),
-            'consensus_state_changed': baseline_signal.get('consensus_state') != debate_signal.get('consensus_state'),
-            'validator_status_changed': baseline_signal.get('validator_status') != debate_signal.get('validator_status'),
-            'total_tokens_delta': int((debate_usage.get('total_tokens') or 0) - (baseline_usage.get('total_tokens') or 0)),
-            'estimated_total_cost_usd_delta': round(
-                float((debate_usage.get('estimated_total_cost_usd') or debate_usage.get('estimated_cost_usd') or 0.0))
-                - float((baseline_usage.get('estimated_total_cost_usd') or baseline_usage.get('estimated_cost_usd') or 0.0)),
-                8,
-            ),
+        'tradingagents_candidate': _signal_summary(candidate_signal),
+        'deltas': {
+            'analyst_debate': debate_delta,
+            'tradingagents_candidate': candidate_delta,
         },
+        'delta': debate_delta,
     }
     return comparison
 
@@ -208,7 +219,37 @@ def _signal_summary(signal: dict[str, Any]) -> dict[str, Any]:
         'total_tokens': usage.get('total_tokens'),
         'stages': usage.get('stages', {}),
         'debate': signal.get('debate'),
+        'candidate_graph': signal.get('candidate_graph'),
     }
+
+
+def _variant_prefix(mode: str) -> str:
+    if mode == 'baseline':
+        return 'baseline'
+    if mode == 'analyst_debate':
+        return 'debate'
+    if mode == 'tradingagents_candidate':
+        return 'candidate'
+    return mode.replace('-', '_')
+
+
+def _variant_delta(baseline_signal: dict[str, Any], variant_signal: dict[str, Any]) -> dict[str, Any]:
+    return {
+        'action_changed': baseline_signal.get('action') != variant_signal.get('action'),
+        'confidence_delta': round(float((variant_signal.get('confidence') or 0.0)) - float((baseline_signal.get('confidence') or 0.0)), 4),
+        'stop_loss_delta': round(float((variant_signal.get('stop_loss_distance') or 0.0)) - float((baseline_signal.get('stop_loss_distance') or 0.0)), 4),
+        'take_profit_delta': round(float((variant_signal.get('take_profit_distance') or 0.0)) - float((baseline_signal.get('take_profit_distance') or 0.0)), 4),
+        'consensus_state_changed': baseline_signal.get('consensus_state') != variant_signal.get('consensus_state'),
+        'validator_status_changed': baseline_signal.get('validator_status') != variant_signal.get('validator_status'),
+    }
+
+
+def _cost_delta(baseline_usage: dict[str, Any], variant_usage: dict[str, Any]) -> float:
+    return round(
+        float((variant_usage.get('estimated_total_cost_usd') or variant_usage.get('estimated_cost_usd') or 0.0))
+        - float((baseline_usage.get('estimated_total_cost_usd') or baseline_usage.get('estimated_cost_usd') or 0.0)),
+        8,
+    )
 
 
 def _sha256_text(value: str) -> str:

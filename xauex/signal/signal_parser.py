@@ -10,6 +10,7 @@ from math import exp
 from typing import Any
 
 from xauex.signal.assets import AssetProfile
+from xauex.signal.candidate_graph import run_tradingagents_candidate
 from xauex.signal.config import SignalConfig
 from xauex.live_windows import get_live_window
 from xauex.shared.llm_client import create_chat_client
@@ -74,6 +75,8 @@ def parse_signal(
 
     debate_usage: list[dict[str, Any]] = []
     debate: dict[str, Any] | None = None
+    candidate_usage: list[dict[str, Any]] = []
+    candidate_graph: dict[str, Any] | None = None
     if decision_mode == 'analyst_debate':
         debate, debate_usage = _build_analyst_debate(
             asset=asset,
@@ -81,21 +84,60 @@ def parse_signal(
             config=config,
         )
         decision_packet = _enrich_decision_packet_with_debate(decision_packet, debate)
+    elif decision_mode == 'tradingagents_candidate':
+        try:
+            candidate_graph, candidate_usage = run_tradingagents_candidate(
+                asset=asset,
+                decision_packet=decision_packet,
+                config=config,
+            )
+        except Exception as exc:  # pragma: no cover - graph catches provider failures internally
+            logger.warning('[CANDIDATE] Candidate graph unavailable for %s: %s', asset.symbol, exc)
+            candidate_graph = {
+                'mode': 'tradingagents_candidate',
+                'degraded': True,
+                'stages': [],
+                'summary': 'Candidate graph unavailable; baseline parser remains authoritative.',
+                'scratchpad_path': '',
+                'final_decision': {'action': 'HOLD', 'confidence': 0.0, 'reasoning': str(exc), 'stop_loss_distance': 0.0, 'take_profit_distance': 0.0},
+            }
+            candidate_usage = []
+        if candidate_graph is not None and not bool(candidate_graph.get('degraded')):
+            decision_packet = _enrich_decision_packet_with_candidate(decision_packet, candidate_graph)
 
-    response, parsed, parser_mode = _request_json_completion(
-        client=parser_client,
-        model=config.parser_llm_model,
-        messages=[
-            {'role': 'system', 'content': _system_prompt(asset)},
-            {'role': 'user', 'content': _parser_user_prompt(asset, decision_packet)},
-        ],
-        temperature=0.1,
-        max_tokens=350,
-        response_schema=_signal_response_schema(asset),
-    )
-    if parsed is None or response is None:
-        logger.error('[PARSER] Invalid JSON from model for %s', asset.symbol)
-        return _hold_signal(asset, 'LLM returned invalid JSON')
+    parser_usage: dict[str, Any] | None = None
+    response: Any | None = None
+    parsed: dict[str, Any] | None = None
+    if candidate_graph is not None and not bool(candidate_graph.get('degraded')):
+        response = None
+        parsed = dict(candidate_graph.get('final_decision') or {})
+        parser_mode = 'candidate_graph'
+    else:
+        response, parsed, parser_mode = _request_json_completion(
+            client=parser_client,
+            model=config.parser_llm_model,
+            messages=[
+                {'role': 'system', 'content': _system_prompt(asset)},
+                {'role': 'user', 'content': _parser_user_prompt(asset, decision_packet)},
+            ],
+            temperature=0.1,
+            max_tokens=350,
+            response_schema=_signal_response_schema(asset),
+        )
+        if parsed is None or response is None:
+            logger.error('[PARSER] Invalid JSON from model for %s', asset.symbol)
+            signal = _hold_signal(asset, 'LLM returned invalid JSON')
+            signal['decision_mode'] = decision_mode
+            if candidate_graph is not None:
+                signal['candidate_graph'] = candidate_graph
+            return signal
+        parser_usage = _extract_usage(
+            response,
+            provider=config.parser_llm_base_url,
+            model=config.parser_llm_model,
+            stage='parser',
+        )
+        parser_usage['response_mode'] = parser_mode
 
     fallback = _fallback_direction(actions, report_markdown, parsed.get('reasoning'))
     # Hard-blocker freshness is handled above (line 58) and returns HOLD before
@@ -115,17 +157,17 @@ def parse_signal(
                 f"market snapshot state={freshness_state}."
             ).strip(),
         }
-    signal = _normalize_signal(asset, parsed, fallback=fallback)
+    signal = _normalize_signal(
+        asset,
+        parsed,
+        fallback=fallback,
+        allow_directional_fallback=parser_mode != 'candidate_graph',
+    )
     signal['decision_mode'] = decision_mode
     if debate is not None:
         signal['debate'] = debate
-    parser_usage = _extract_usage(
-        response,
-        provider=config.parser_llm_base_url,
-        model=config.parser_llm_model,
-        stage='parser',
-    )
-    parser_usage['response_mode'] = parser_mode
+    if candidate_graph is not None:
+        signal['candidate_graph'] = candidate_graph
 
     validator_usage: dict[str, Any] | None = None
     validator_result: dict[str, Any] | None = None
@@ -162,10 +204,15 @@ def parse_signal(
         signal['validator_status'] = 'unavailable'
         signal['validator_summary'] = 'Validator unavailable.'
         signal['consensus_state'] = 'unreviewed'
+    signal['decision_mode'] = decision_mode
+    if debate is not None:
+        signal['debate'] = debate
+    if candidate_graph is not None:
+        signal['candidate_graph'] = candidate_graph
 
     signal['llm_usage'] = _combine_usage(
         provider=config.parser_llm_base_url,
-        stages=[stage for stage in [*debate_usage, parser_usage, validator_usage] if stage],
+        stages=[stage for stage in [*debate_usage, *candidate_usage, parser_usage, validator_usage] if stage],
     )
     signal['decision_packet'] = {
         'decision_mode': decision_mode,
@@ -176,10 +223,18 @@ def parse_signal(
     }
     if debate is not None:
         signal['decision_packet']['debate'] = debate
+    if candidate_graph is not None and not bool(candidate_graph.get('degraded')):
+        signal['decision_packet']['candidate_graph'] = _compact_candidate_graph_for_packet(candidate_graph)
     return signal
 
 
-def _normalize_signal(asset: AssetProfile, parsed: dict, *, fallback: dict[str, Any]) -> dict:
+def _normalize_signal(
+    asset: AssetProfile,
+    parsed: dict,
+    *,
+    fallback: dict[str, Any],
+    allow_directional_fallback: bool = True,
+) -> dict:
     action = str(parsed.get('action', 'HOLD')).upper()
     if action not in {'BUY', 'SELL', 'HOLD'}:
         action = fallback['action']
@@ -191,7 +246,7 @@ def _normalize_signal(asset: AssetProfile, parsed: dict, *, fallback: dict[str, 
     confidence = max(0.0, min(1.0, confidence))
     reasoning = str(parsed.get('reasoning', 'No reasoning provided'))[:500]
 
-    if action == 'HOLD' and not _reasoning_hard_blocker(reasoning):
+    if allow_directional_fallback and action == 'HOLD' and not _reasoning_hard_blocker(reasoning):
         action = fallback['action']
         confidence = max(confidence, fallback['confidence'])
         reasoning = (
@@ -672,6 +727,28 @@ def _enrich_decision_packet_with_debate(
     enriched = dict(packet)
     enriched['debate'] = debate
     return enriched
+
+
+def _enrich_decision_packet_with_candidate(
+    packet: dict[str, Any],
+    candidate_graph: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if not candidate_graph or bool(candidate_graph.get('degraded')):
+        return dict(packet)
+    enriched = dict(packet)
+    enriched['candidate_graph'] = _compact_candidate_graph_for_packet(candidate_graph)
+    return enriched
+
+
+def _compact_candidate_graph_for_packet(candidate_graph: dict[str, Any]) -> dict[str, Any]:
+    return {
+        'mode': candidate_graph.get('mode'),
+        'degraded': bool(candidate_graph.get('degraded')),
+        'stages': list(candidate_graph.get('stages') or []),
+        'summary': candidate_graph.get('summary'),
+        'scratchpad_path': candidate_graph.get('scratchpad_path'),
+        'final_decision': candidate_graph.get('final_decision'),
+    }
 
 
 def _analyst_case_system_prompt(*, asset: AssetProfile, stance: str) -> str:
