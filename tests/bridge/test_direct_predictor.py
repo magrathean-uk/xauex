@@ -120,6 +120,52 @@ def test_build_prediction_payload_includes_market_snapshot_and_input_freshness()
     assert "FedWatch Snapshot" in report
 
 
+def test_prediction_payload_weights_and_surfaces_polymarket_context():
+    asset = resolve_asset("XAUUSD")
+    payload = build_prediction_payload(
+        asset=asset,
+        context_markdown="# Context\nPrediction markets are leaning bullish.",
+        recent_runs=[],
+        state_snapshot={"recent_h1_closes": [10, 11, 12, 13], "levels": {"daily": {"low": 9, "high": 15}}},
+        market_snapshot={
+            "polymarket": {
+                "status": "available",
+                "available": True,
+                "weight": 0.25,
+                "overall_bias": "BUY",
+                "summary": "Polymarket money-weighted bias is BUY.",
+                "money_weighted_score": 0.08,
+                "markets": [
+                    {
+                        "question": "Will Gold (XAUUSD) hit (HIGH) $4,800 in May?",
+                        "yes_midpoint": 0.69,
+                        "best_bid": 0.66,
+                        "best_ask": 0.72,
+                        "spread": 0.06,
+                        "bias": "BUY",
+                        "volume": 28071.95,
+                        "liquidity": 1639.11,
+                    }
+                ],
+            }
+        },
+    )
+
+    assert payload["weights"]["prediction_markets"] == 0.25
+    assert payload["weights"]["price_action"] == 0.3375
+    assert payload["weights"]["macro_news"] == 0.2625
+    report = render_direct_report(payload)
+    actions = build_recent_actions(payload)
+    polymarket_actions = [action for action in actions if action["agent_name"] == "polymarket"]
+
+    assert "Prediction markets / Polymarket: 25%" in report
+    assert "Polymarket Prediction Markets" in report
+    assert "Will Gold (XAUUSD) hit (HIGH) $4,800 in May?" in report
+    assert polymarket_actions
+    assert polymarket_actions[0]["action_type"] == "BUY"
+    assert "money_weighted_score=0.08" in polymarket_actions[0]["content"]
+
+
 def test_build_prediction_payload_includes_latest_quote_snapshot():
     asset = resolve_asset("XAUUSD")
     payload = build_prediction_payload(

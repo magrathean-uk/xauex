@@ -85,6 +85,7 @@ def test_build_market_snapshot_maps_gold_driver_biases(monkeypatch):
 def test_falling_breakevens_signal_sell_bias_for_gold(monkeypatch):
     """Falling inflation expectations should bias gold to SELL."""
     monkeypatch.setenv("XAUEX_SIGNAL_LLM_API_KEY", "test-key")
+    monkeypatch.setenv("XAUEX_SIGNAL_POLYMARKET_CONTEXT_ENABLED", "false")
     cfg = SignalConfig.from_env()
 
     falling_breakeven_rows = {
@@ -129,6 +130,7 @@ def test_falling_breakevens_signal_sell_bias_for_gold(monkeypatch):
 def test_extreme_cot_long_positioning_adds_sell_bias(monkeypatch):
     """When Managed Money net long is extreme high, COT contributes SELL bias."""
     monkeypatch.setenv("XAUEX_SIGNAL_LLM_API_KEY", "test-key")
+    monkeypatch.setenv("XAUEX_SIGNAL_POLYMARKET_CONTEXT_ENABLED", "false")
     cfg = SignalConfig.from_env()
 
     neutral_rows = {sid: {"value": 1.0, "previous_value": 1.0, "change_1d": 0.0, "date_utc": "2026-04-14T00:00:00Z", "age_seconds": 3600.0} for sid in (
@@ -299,6 +301,79 @@ def test_build_market_snapshot_includes_fedwatch_snapshot(monkeypatch):
     assert snapshot["fedwatch"]["status"] == "available"
     assert snapshot["fedwatch"]["bias"] == "BUY"
     assert snapshot["input_freshness"]["fedwatch_state"] == "available"
+
+
+def test_build_market_snapshot_includes_polymarket_snapshot_when_enabled(monkeypatch):
+    monkeypatch.setenv("XAUEX_SIGNAL_LLM_API_KEY", "test-key")
+    monkeypatch.setenv("XAUEX_SIGNAL_POLYMARKET_CONTEXT_ENABLED", "1")
+    cfg = SignalConfig.from_env()
+
+    fake_rows = {
+        "DTWEXBGS": {"value": 121.0, "previous_value": 121.3, "change_1d": -0.3, "date_utc": "2026-04-14T00:00:00Z", "age_seconds": 3600.0},
+        "DTWEXAFEGS": {"value": 105.5, "previous_value": 105.8, "change_1d": -0.3, "date_utc": "2026-04-14T00:00:00Z", "age_seconds": 3600.0},
+        "DGS2": {"value": 3.8, "previous_value": 3.85, "change_1d": -0.05, "date_utc": "2026-04-14T00:00:00Z", "age_seconds": 3600.0},
+        "DGS10": {"value": 4.2, "previous_value": 4.28, "change_1d": -0.08, "date_utc": "2026-04-14T00:00:00Z", "age_seconds": 3600.0},
+        "DFII10": {"value": 1.9, "previous_value": 1.95, "change_1d": -0.05, "date_utc": "2026-04-14T00:00:00Z", "age_seconds": 3600.0},
+        "T5YIE": {"value": 2.4, "previous_value": 2.35, "change_1d": 0.05, "date_utc": "2026-04-14T00:00:00Z", "age_seconds": 3600.0},
+        "T10YIE": {"value": 2.5, "previous_value": 2.46, "change_1d": 0.04, "date_utc": "2026-04-14T00:00:00Z", "age_seconds": 3600.0},
+        "VIXCLS": {"value": 18.2, "previous_value": 17.5, "change_1d": 0.7, "date_utc": "2026-04-14T00:00:00Z", "age_seconds": 3600.0},
+        "DCOILWTICO": {"value": 82.5, "previous_value": 81.0, "change_1d": 1.5, "date_utc": "2026-04-14T00:00:00Z", "age_seconds": 3600.0},
+        "CBBTCUSD": {"value": 65000.0, "previous_value": 64200.0, "change_1d": 800.0, "date_utc": "2026-04-14T00:00:00Z", "age_seconds": 3600.0},
+    }
+
+    monkeypatch.setattr(
+        "xauex.signal.market_snapshot._fetch_fred_series",
+        lambda client, series_id: fake_rows[series_id],
+    )
+    monkeypatch.setattr(
+        "xauex.signal.market_snapshot.fetch_policy_context",
+        lambda config: {
+            "status": "available",
+            "available": True,
+            "summary": "Official Fed policy context available.",
+        },
+    )
+    monkeypatch.setattr(
+        "xauex.signal.market_snapshot.fetch_fedwatch_snapshot",
+        lambda config: {
+            "status": "available",
+            "available": True,
+            "summary": "FedWatch available.",
+            "bias": "NEUTRAL",
+        },
+    )
+    monkeypatch.setattr(
+        "xauex.signal.market_snapshot.fetch_cot_snapshot",
+        lambda config: {
+            "status": "available",
+            "available": True,
+            "summary": "Managed Money net long mid-range.",
+            "bias": "NEUTRAL",
+            "extreme_positioning": False,
+        },
+    )
+    monkeypatch.setattr(
+        "xauex.signal.market_snapshot.fetch_polymarket_snapshot",
+        lambda config, asset: {
+            "status": "available",
+            "available": True,
+            "weight": 0.25,
+            "overall_bias": "BUY",
+            "summary": "Polymarket money-weighted bias is BUY.",
+            "markets": [],
+        },
+    )
+
+    snapshot = build_market_snapshot(
+        asset=resolve_asset("XAUUSD"),
+        config=replace(cfg, source_timeout_seconds=1.0),
+        context_items=[],
+    )
+
+    assert snapshot["polymarket"]["status"] == "available"
+    assert snapshot["polymarket"]["overall_bias"] == "BUY"
+    assert snapshot["input_freshness"]["polymarket_state"] == "available"
+    assert snapshot["input_freshness"]["polymarket_summary"] == "Polymarket money-weighted bias is BUY."
 
 
 def test_build_market_snapshot_includes_policy_context_and_freshness(monkeypatch):

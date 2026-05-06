@@ -7,6 +7,12 @@ from typing import Any
 
 from xauex.signal.assets import AssetProfile
 
+_BASE_WEIGHTS = {
+    'price_action': 0.45,
+    'macro_news': 0.35,
+    'recent_memory': 0.20,
+}
+
 
 def build_prediction_payload(
     *,
@@ -27,11 +33,7 @@ def build_prediction_payload(
     return {
         'asset': asset.symbol,
         'asset_class': asset.asset_class,
-        'weights': {
-            'price_action': 0.45,
-            'macro_news': 0.35,
-            'recent_memory': 0.20,
-        },
+        'weights': _weighting_model(market),
         'context_excerpt': context_excerpt,
         'recent_runs': recent_runs[-8:],
         'price_features': price_features,
@@ -56,9 +58,13 @@ def render_direct_report(payload: dict[str, Any]) -> str:
         'Produce a single London-session XAUUSD trade bias using a weighted blend of fresh macro context, price structure, and recent trade memory.',
         '',
         '## Weighting Model',
-        f"- Price action / market structure: {int(weights['price_action'] * 100)}%",
-        f"- Macro / news sentiment: {int(weights['macro_news'] * 100)}%",
-        f"- Recent oracle / trade memory: {int(weights['recent_memory'] * 100)}%",
+        f"- Price action / market structure: {int(round(float(weights.get('price_action', 0.0)) * 100))}%",
+        f"- Macro / news sentiment: {int(round(float(weights.get('macro_news', 0.0)) * 100))}%",
+        f"- Recent oracle / trade memory: {int(round(float(weights.get('recent_memory', 0.0)) * 100))}%",
+    ]
+    if float(weights.get('prediction_markets', 0.0) or 0.0) > 0:
+        lines.append(f"- Prediction markets / Polymarket: {int(round(float(weights['prediction_markets']) * 100))}%")
+    lines.extend([
         '',
         '## Price Structure Snapshot',
         f"- Recent H1 close count: {price['h1_count']}",
@@ -77,7 +83,7 @@ def render_direct_report(payload: dict[str, Any]) -> str:
         f"- Losing trades: {memory['losses']}",
         '',
         '## Retrieved Similar Memory',
-    ]
+    ])
     if payload.get('retrieved_memory'):
         for snippet in payload['retrieved_memory'][:4]:
             score = snippet.get('score', 0.0)
@@ -154,6 +160,26 @@ def render_direct_report(payload: dict[str, Any]) -> str:
         lines.append(f"- bias: {cot.get('bias')}")
         if cot.get('summary'):
             lines.append(f"- summary: {cot.get('summary')}")
+    polymarket = market_snapshot.get('polymarket') or {}
+    polymarket_status = str(polymarket.get('status', '') or '').lower()
+    if _is_surfaceable_status(polymarket_status) and _has_polymarket_details(polymarket):
+        lines.append('')
+        lines.append('## Polymarket Prediction Markets')
+        lines.append(f"- status: {polymarket.get('status')}")
+        lines.append(f"- weight: {polymarket.get('weight')}")
+        lines.append(f"- overall_bias: {polymarket.get('overall_bias')}")
+        lines.append(f"- money_weighted_score: {polymarket.get('money_weighted_score')}")
+        if polymarket.get('summary'):
+            lines.append(f"- summary: {polymarket.get('summary')}")
+        for row in (polymarket.get('markets') or [])[:5]:
+            lines.append(
+                "- market: "
+                f"{row.get('question')} "
+                f"yes_midpoint={row.get('yes_midpoint')} "
+                f"bid={row.get('best_bid')} ask={row.get('best_ask')} "
+                f"bias={row.get('bias')} "
+                f"volume={row.get('volume')} liquidity={row.get('liquidity')}"
+            )
     event_flags = payload.get('event_flags') or {}
     if event_flags:
         lines.append('')
@@ -232,6 +258,14 @@ def build_recent_actions(payload: dict[str, Any]) -> list[dict[str, Any]]:
             'agent_name': 'cftc_cot',
             'action_type': cot_action,
             'content': _format_cot(cot),
+        })
+    polymarket = market.get('polymarket') or {}
+    polymarket_status = str(polymarket.get('status', '') or '').lower()
+    if _is_surfaceable_status(polymarket_status) and _has_polymarket_details(polymarket):
+        actions.append({
+            'agent_name': 'polymarket',
+            'action_type': str(polymarket.get('overall_bias', 'NEUTRAL') or 'NEUTRAL').upper(),
+            'content': _format_polymarket(polymarket),
         })
     return actions
 
@@ -383,6 +417,22 @@ def _compact_context_items(context_items: list[dict[str, Any]]) -> list[dict[str
     return compact
 
 
+def _weighting_model(market_snapshot: dict[str, Any]) -> dict[str, float]:
+    polymarket = market_snapshot.get('polymarket') or {}
+    if not polymarket.get('available'):
+        return dict(_BASE_WEIGHTS)
+    prediction_weight = max(0.0, min(0.40, float(polymarket.get('weight', 0.0) or 0.0)))
+    if prediction_weight <= 0:
+        return dict(_BASE_WEIGHTS)
+    base_total = 1.0 - prediction_weight
+    return {
+        'price_action': round(_BASE_WEIGHTS['price_action'] * base_total, 4),
+        'macro_news': round(_BASE_WEIGHTS['macro_news'] * base_total, 4),
+        'recent_memory': round(_BASE_WEIGHTS['recent_memory'] * base_total, 4),
+        'prediction_markets': round(prediction_weight, 4),
+    }
+
+
 def _format_market_snapshot(market_snapshot: dict[str, Any]) -> str:
     parts: list[str] = []
     for key, row in (market_snapshot.get('series') or {}).items():
@@ -417,6 +467,15 @@ def _has_policy_context_details(policy_context: dict[str, Any]) -> bool:
         or policy_context.get('days_to_fomc') is not None
         or policy_context.get('fomc_window_state')
         or policy_context.get('summary')
+    )
+
+
+def _has_polymarket_details(polymarket: dict[str, Any]) -> bool:
+    return bool(
+        polymarket.get('summary')
+        or polymarket.get('overall_bias')
+        or polymarket.get('money_weighted_score') is not None
+        or polymarket.get('markets')
     )
 
 
@@ -485,3 +544,28 @@ def _format_fedwatch(fedwatch: dict[str, Any]) -> str:
     if summary:
         parts.append(f"summary={summary}")
     return ' | '.join(parts)[:260]
+
+
+def _format_polymarket(polymarket: dict[str, Any]) -> str:
+    parts: list[str] = []
+    bias = str(polymarket.get('overall_bias', '') or '').strip()
+    if bias:
+        parts.append(f"bias={bias}")
+    score = polymarket.get('money_weighted_score')
+    if score is not None:
+        parts.append(f"money_weighted_score={score}")
+    weight = polymarket.get('weight')
+    if weight is not None:
+        parts.append(f"weight={weight}")
+    summary = str(polymarket.get('summary', '') or '').strip()
+    if summary:
+        parts.append(f"summary={summary}")
+    markets = polymarket.get('markets') or []
+    if markets:
+        first = markets[0]
+        parts.append(
+            f"top_market={first.get('question')} "
+            f"yes_midpoint={first.get('yes_midpoint')} "
+            f"bid={first.get('best_bid')} ask={first.get('best_ask')}"
+        )
+    return ' | '.join(parts)[:360]

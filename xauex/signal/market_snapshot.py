@@ -17,6 +17,7 @@ from xauex.signal.cftc_cot import fetch_cot_snapshot
 from xauex.signal.config import SignalConfig
 from xauex.signal.fedwatch import fetch_fedwatch_snapshot
 from xauex.signal.policy_context import fetch_policy_context
+from xauex.signal.polymarket import fetch_polymarket_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -127,6 +128,12 @@ def build_market_snapshot(
                 'available': False,
                 'summary': 'CFTC COT positioning is only evaluated for XAUUSD.',
             },
+            'polymarket': {
+                'status': 'unsupported',
+                'available': False,
+                'source': 'polymarket_gamma+clob',
+                'summary': 'Polymarket prediction-market context is only evaluated for XAUUSD.',
+            },
             'event_flags': _event_flags(context_items or []),
             'input_freshness': freshness,
             'overall_bias': 'NEUTRAL',
@@ -134,10 +141,11 @@ def build_market_snapshot(
             'policy_context': policy_context,
         }
 
-    with ThreadPoolExecutor(max_workers=len(_FRED_SERIES) + 3) as executor:
+    with ThreadPoolExecutor(max_workers=len(_FRED_SERIES) + 4) as executor:
         policy_context_future = executor.submit(fetch_policy_context, config=config)
         fedwatch_future = executor.submit(fetch_fedwatch_snapshot, config=config)
         cot_future = executor.submit(fetch_cot_snapshot, config=config)
+        polymarket_future = executor.submit(fetch_polymarket_snapshot, config=config, asset=asset)
         series_futures = {
             executor.submit(_fetch_fred_series_payload, config, key, meta): key
             for key, meta in _FRED_SERIES.items()
@@ -181,6 +189,7 @@ def build_market_snapshot(
         fedwatch = fedwatch_future.result()
         policy_context = policy_context_future.result()
         cot = cot_future.result()
+        polymarket = polymarket_future.result()
     freshness = _assess_market_snapshot_freshness(
         market_snapshot_age_seconds=int(max(ages)) if ages else None,
         missing_series_count=len(missing_series),
@@ -191,6 +200,8 @@ def build_market_snapshot(
     freshness['fedwatch_summary'] = str(fedwatch.get('summary', '') or '')
     freshness['policy_context_state'] = str(policy_context.get('status', 'unknown') or 'unknown')
     freshness['policy_context_summary'] = str(policy_context.get('summary', '') or '')
+    freshness['polymarket_state'] = str(polymarket.get('status', 'unknown') or 'unknown')
+    freshness['polymarket_summary'] = str(polymarket.get('summary', '') or '')
 
     # FOMC decision-day blackout. Gold reacts violently to Fed statements, dots,
     # and press conferences. Even when the London morning is hours before the
@@ -216,9 +227,10 @@ def build_market_snapshot(
         'series': series_payload,
         'fedwatch': fedwatch,
         'cot': cot,
+        'polymarket': polymarket,
         'event_flags': event_flags,
         'input_freshness': freshness,
-        'overall_bias': _overall_bias(series_payload, cot=cot),
+        'overall_bias': _overall_bias(series_payload, cot=cot, polymarket=polymarket),
         'missing_series': missing_series,
         'policy_context': policy_context,
     }
@@ -383,6 +395,7 @@ def _overall_bias(
     series_payload: dict[str, dict[str, Any]],
     *,
     cot: dict[str, Any] | None = None,
+    polymarket: dict[str, Any] | None = None,
 ) -> str:
     score = 0
     for row in series_payload.values():
@@ -397,6 +410,12 @@ def _overall_bias(
             score += 1
         elif cot_bias == 'SELL':
             score -= 1
+    if polymarket and polymarket.get('available'):
+        polymarket_bias = str(polymarket.get('overall_bias', 'NEUTRAL')).upper()
+        if polymarket_bias == 'BUY':
+            score += 2
+        elif polymarket_bias == 'SELL':
+            score -= 2
     if score > 0:
         return 'BUY'
     if score < 0:

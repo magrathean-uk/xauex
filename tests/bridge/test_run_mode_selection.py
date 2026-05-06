@@ -107,6 +107,21 @@ def test_signal_config_exposes_optional_fedwatch_api_settings(monkeypatch):
     assert cfg.cme_fedwatch_api_key_header == "X-API-Key"
 
 
+def test_signal_config_exposes_optional_polymarket_settings(monkeypatch):
+    monkeypatch.setenv("XAUEX_SIGNAL_LLM_API_KEY", "test-key")
+    monkeypatch.setenv("XAUEX_SIGNAL_POLYMARKET_CONTEXT_ENABLED", "1")
+    monkeypatch.setenv("XAUEX_SIGNAL_POLYMARKET_WEIGHT", "0.30")
+    monkeypatch.setenv("XAUEX_SIGNAL_POLYMARKET_SEARCH_QUERIES", "gold,Fed decision")
+    monkeypatch.setenv("XAUEX_SIGNAL_POLYMARKET_MAX_MARKETS", "6")
+
+    cfg = SignalConfig.from_env()
+
+    assert cfg.polymarket_context_enabled is True
+    assert cfg.polymarket_weight == 0.30
+    assert cfg.polymarket_search_queries == ("gold", "Fed decision")
+    assert cfg.polymarket_max_markets == 6
+
+
 def test_build_direct_prediction_artifacts_uses_qdrant_memory(monkeypatch):
     monkeypatch.setenv("XAUEX_SIGNAL_LLM_API_KEY", "test-key")
     cfg = SignalConfig.from_env()

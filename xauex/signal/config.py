@@ -40,6 +40,12 @@ class SignalConfig:
     cme_fedwatch_api_url: str | None
     cme_fedwatch_api_key: str | None
     cme_fedwatch_api_key_header: str
+    polymarket_context_enabled: bool
+    polymarket_weight: float
+    polymarket_search_queries: tuple[str, ...]
+    polymarket_max_markets: int
+    polymarket_gamma_base_url: str
+    polymarket_clob_base_url: str
     qdrant_memory: QdrantMemoryConfig
 
     @classmethod
@@ -142,5 +148,36 @@ class SignalConfig:
             cme_fedwatch_api_url=os.getenv('XAUEX_SIGNAL_CME_FEDWATCH_API_URL') or None,
             cme_fedwatch_api_key=os.getenv('XAUEX_SIGNAL_CME_FEDWATCH_API_KEY') or None,
             cme_fedwatch_api_key_header=os.getenv('XAUEX_SIGNAL_CME_FEDWATCH_API_KEY_HEADER', 'Authorization'),
+            polymarket_context_enabled=_env_bool('XAUEX_SIGNAL_POLYMARKET_CONTEXT_ENABLED', default=False),
+            polymarket_weight=_bounded_float(os.getenv('XAUEX_SIGNAL_POLYMARKET_WEIGHT', '0.25'), default=0.25, lower=0.0, upper=0.40),
+            polymarket_search_queries=_split_csv_env(
+                os.getenv('XAUEX_SIGNAL_POLYMARKET_SEARCH_QUERIES'),
+                default=('gold', 'Fed decision'),
+            ),
+            polymarket_max_markets=max(1, int(os.getenv('XAUEX_SIGNAL_POLYMARKET_MAX_MARKETS', '8') or '8')),
+            polymarket_gamma_base_url=os.getenv('XAUEX_SIGNAL_POLYMARKET_GAMMA_BASE_URL', 'https://gamma-api.polymarket.com').rstrip('/'),
+            polymarket_clob_base_url=os.getenv('XAUEX_SIGNAL_POLYMARKET_CLOB_BASE_URL', 'https://clob.polymarket.com').rstrip('/'),
             qdrant_memory=load_qdrant_memory_config(),
         )
+
+
+def _env_bool(name: str, *, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+def _bounded_float(raw: str | None, *, default: float, lower: float, upper: float) -> float:
+    try:
+        value = float(raw if raw is not None else default)
+    except (TypeError, ValueError):
+        value = default
+    return max(lower, min(upper, value))
+
+
+def _split_csv_env(raw: str | None, *, default: tuple[str, ...]) -> tuple[str, ...]:
+    if not raw:
+        return default
+    values = tuple(part.strip() for part in raw.split(',') if part.strip())
+    return values or default
