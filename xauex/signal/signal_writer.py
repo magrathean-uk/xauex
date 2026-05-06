@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import json
 import logging
-import os
 from datetime import datetime, timezone
+
+from xauex.shared.safe_io import JsonLoadError, atomic_write_json, safe_load_json
 
 logger = logging.getLogger(__name__)
 
@@ -15,10 +15,10 @@ def write_signal(signal: dict, output_path: str) -> None:
     kill_switch = False
     existing: dict = {}
     try:
-        with open(output_path, 'r', encoding='utf-8') as handle:
-            existing = json.load(handle)
-            kill_switch = bool(existing.get('kill_switch', False))
-    except (FileNotFoundError, json.JSONDecodeError):
+        loaded = safe_load_json(output_path, default={}, max_bytes=512 * 1024)
+        existing = loaded if isinstance(loaded, dict) else {}
+        kill_switch = bool(existing.get('kill_switch', False))
+    except JsonLoadError:
         existing = {}
 
     cmd = {
@@ -30,11 +30,7 @@ def write_signal(signal: dict, output_path: str) -> None:
     if 'notes' in existing:
         cmd['notes'] = existing['notes']
 
-    tmp_path = output_path + '.tmp'
-    os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
-    with open(tmp_path, 'w', encoding='utf-8') as handle:
-        json.dump(cmd, handle, indent=2)
-    os.replace(tmp_path, output_path)
+    atomic_write_json(output_path, cmd, mode=0o600)
 
     logger.info(
         '[WRITER] Signal written to %s: %s %s confidence=%.2f',

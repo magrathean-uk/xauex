@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Any
 
 from xauex.shared.event_journal import safe_append_event, utc_timestamp
+from xauex.shared.replay_guard import CommandReplayGuard, ReplayLedgerError
+from xauex.shared.safe_io import safe_read_text
 
 MANUAL_COMMAND_SCHEMA_VERSION = 1
 DEFAULT_MANUAL_COMMAND_TTL_SECONDS = 180
@@ -101,10 +103,11 @@ def consume_manual_command_file(
     seen_command_ids: set[str] | None = None,
     now_utc: datetime | None = None,
     journal_path: str | Path | None = None,
+    replay_guard: CommandReplayGuard | None = None,
 ) -> ManualCommandConsumeResult:
     target = Path(path)
     try:
-        raw = target.read_text(encoding="utf-8")
+        raw = safe_read_text(target, max_bytes=512 * 1024)
     except FileNotFoundError:
         return ManualCommandConsumeResult(None, None, None, False)
     except OSError:
@@ -135,6 +138,14 @@ def consume_manual_command_file(
         seen_command_ids=seen_command_ids,
         now_utc=now_utc,
     )
+    if result.payload is not None and replay_guard is not None:
+        try:
+            if replay_guard.contains(result.command_id):
+                result = ManualCommandConsumeResult(None, "DUPLICATE_COMMAND", result.command_id, True)
+            elif result.command_id:
+                replay_guard.remember(result.command_id)
+        except ReplayLedgerError:
+            result = ManualCommandConsumeResult(None, "REPLAY_LEDGER_ERROR", result.command_id, True)
     _journal_consume_result(result, journal_path)
     return result
 

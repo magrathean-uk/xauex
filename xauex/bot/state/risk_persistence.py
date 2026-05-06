@@ -13,15 +13,14 @@ Persistence strategy:
 """
 
 import asyncio
-import json
 import logging
 import os
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
 from bot.risk.gates import RiskState
+from xauex.shared.safe_io import JsonLoadError, atomic_write_json, safe_load_json
 
 logger = logging.getLogger(__name__)
 
@@ -48,17 +47,10 @@ def _save_risk_state_sync(state: RiskState, state_file_path: str) -> None:
     data["_saved_at_utc"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     try:
-        fd, tmp = tempfile.mkstemp(dir=parent, suffix=".tmp")
-        with os.fdopen(fd, "w") as f:
-            json.dump(data, f, indent=2)
-        os.replace(tmp, path)
+        atomic_write_json(path, data, mode=0o600)
         logger.debug("[RISK PERSIST] Saved risk state to %s", path)
     except OSError as exc:
         logger.error("[RISK PERSIST] Failed to save risk state: %s", exc)
-        try:
-            os.unlink(tmp)
-        except Exception:
-            pass
 
 
 async def load_risk_state(state_file_path: str) -> Optional[RiskState]:
@@ -71,8 +63,10 @@ async def load_risk_state(state_file_path: str) -> Optional[RiskState]:
 def _load_risk_state_sync(state_file_path: str) -> Optional[RiskState]:
     path = _risk_state_path(state_file_path)
     try:
-        with open(path, "r") as f:
-            data = json.load(f)
+        loaded = safe_load_json(path, allow_missing=False)
+        if not isinstance(loaded, dict):
+            raise TypeError("risk_state.json root must be an object")
+        data = dict(loaded)
         # Remove our metadata key before feeding to from_dict
         data.pop("_saved_at_utc", None)
         state = RiskState.from_dict(data)
@@ -88,6 +82,6 @@ def _load_risk_state_sync(state_file_path: str) -> Optional[RiskState]:
     except FileNotFoundError:
         logger.info("[RISK PERSIST] No risk_state.json found — starting fresh.")
         return None
-    except (json.JSONDecodeError, KeyError, TypeError) as exc:
+    except (JsonLoadError, KeyError, TypeError) as exc:
         logger.warning("[RISK PERSIST] Corrupted risk_state.json (%s) — starting fresh.", exc)
         return None

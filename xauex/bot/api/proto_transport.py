@@ -19,6 +19,7 @@ from ctrader_open_api.messages.OpenApiCommonMessages_pb2 import (
     ProtoMessage,
     ProtoHeartbeatEvent,
 )
+from bot.api.transport_guards import DEFAULT_MAX_FRAME_BYTES, parse_frame_length
 
 logger = logging.getLogger(__name__)
 
@@ -59,10 +60,17 @@ class CTraderTransport:
         await transport.close()
     """
 
-    def __init__(self, host: str, port: int, tls_server_name: Optional[str] = None):
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        tls_server_name: Optional[str] = None,
+        max_frame_bytes: int = DEFAULT_MAX_FRAME_BYTES,
+    ):
         self._host = host
         self._port = port
         self._tls_server_name = tls_server_name or None
+        self._max_frame_bytes = int(max_frame_bytes)
         self._reader: Optional[asyncio.StreamReader] = None
         self._writer: Optional[asyncio.StreamWriter] = None
         self._connected = False
@@ -140,7 +148,7 @@ class CTraderTransport:
     async def _read_frame(self) -> bytes:
         """Read exactly one length-prefixed frame from the stream."""
         header = await self._reader.readexactly(4)
-        (length,) = _FRAME_HEADER.unpack(header)
+        length = parse_frame_length(header, max_frame_bytes=self._max_frame_bytes)
         return await self._reader.readexactly(length)
 
     async def _recv_loop(self) -> None:

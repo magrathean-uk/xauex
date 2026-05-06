@@ -1,4 +1,5 @@
 import json
+import stat
 
 from xauex.signal.signal_writer import write_signal as xauex_write_signal
 from xauex.signal.signal_writer import write_signal
@@ -30,3 +31,21 @@ def test_write_signal_uses_xauex_signal_key_and_preserves_notes(tmp_path):
 
 def test_signal_writer_import_resolves_to_xauex_implementation():
     assert xauex_write_signal is write_signal
+
+
+def test_write_signal_recovers_from_malformed_cmd_and_writes_private_file(tmp_path):
+    output_path = tmp_path / "cmd.json"
+    output_path.write_text("{broken", encoding="utf-8")
+
+    write_signal(
+        {
+            "symbol": "XAUUSD",
+            "action": "HOLD",
+            "confidence": 0.25,
+        },
+        str(output_path),
+    )
+
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    assert payload["xauex_signal"]["action"] == "HOLD"
+    assert stat.S_IMODE(output_path.stat().st_mode) == 0o600

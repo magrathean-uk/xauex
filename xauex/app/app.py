@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 import hmac
 from datetime import datetime, timezone
@@ -9,10 +8,13 @@ from typing import Any
 
 from flask import Flask, Response, abort, jsonify, render_template, request
 
+from xauex.app.runtime_store import RuntimeFileStore
+from xauex.app.security import install_dashboard_security
 from xauex.live_windows import all_live_windows, london_trade_day
 from xauex.shared.diagnostics import build_diagnostics_snapshot, count_london_signal_runs
 from xauex.shared.event_journal import safe_append_event
 from xauex.shared.manual_commands import create_signed_manual_command
+from xauex.shared.safe_io import atomic_write_json
 
 
 STATE_PATH = Path(os.getenv("STATE_FILE_PATH", "/var/lib/xauex/state.json"))
@@ -29,14 +31,11 @@ XAUEX_API_URL = os.getenv("XAUEX_API_URL", "http://10.8.0.1:8088").rstrip("/")
 MAX_SIGNAL_HISTORY = 12
 MAX_CHART_POINTS = 20
 MAX_SIGNAL_RUN_SLOTS = 3
+RUNTIME_STORE = RuntimeFileStore()
 
 
 def _load_json(path: Path, default: Any) -> Any:
-    try:
-        with path.open("r", encoding="utf-8") as handle:
-            return json.load(handle)
-    except Exception:
-        return default
+    return RUNTIME_STORE.load_json(path, default)
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -249,19 +248,12 @@ def _build_window_statuses(risk: dict[str, Any], signal: dict[str, Any]) -> list
 
 
 def _load_text(path: Path, default: str = "") -> str:
-    try:
-        return path.read_text(encoding="utf-8")
-    except Exception:
-        return default
+    return RUNTIME_STORE.load_text(path, default)
 
 
 def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(path.suffix + ".tmp")
-    with tmp_path.open("w", encoding="utf-8") as handle:
-        json.dump(payload, handle, indent=2)
-        handle.write("\n")
-    tmp_path.replace(path)
+    atomic_write_json(path, payload, mode=0o600)
+    RUNTIME_STORE.invalidate(path)
 
 
 def _parse_numeric(value: Any) -> float | None:
@@ -563,6 +555,7 @@ def _build_payload() -> dict[str, Any]:
 
 def create_app() -> Flask:
     app = Flask(__name__, template_folder="templates")
+    install_dashboard_security(app)
 
     @app.get("/")
     def index() -> str:

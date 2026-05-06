@@ -14,6 +14,7 @@ Message handling notes (from official docs):
 """
 
 import asyncio
+import contextlib
 import logging
 import os
 import tempfile
@@ -27,6 +28,7 @@ from dotenv import dotenv_values
 from config import Config
 from bot.api.models import Account, Position, SymbolSpec
 from bot.api.proto_transport import CTraderTransport
+from bot.api.transport_guards import DropOldestAsyncQueue
 
 logger = logging.getLogger(__name__)
 
@@ -131,8 +133,10 @@ class ApiClient:
         self._message_futures: dict[str, asyncio.Future] = {}
 
         # Queues for unsolicited events
-        self._tick_event_queue: asyncio.Queue = asyncio.Queue()
-        self._execution_event_queue: asyncio.Queue = asyncio.Queue()
+        self._tick_event_queue = DropOldestAsyncQueue(maxsize=2048)
+        self._execution_event_queue = DropOldestAsyncQueue(maxsize=1024)
+        self._tick_dispatch_task: Optional[asyncio.Task] = None
+        self._execution_dispatch_task: Optional[asyncio.Task] = None
 
         # Last known bid/ask (spot events may carry partial updates)
         self._last_bid: Optional[float] = None
@@ -150,6 +154,8 @@ class ApiClient:
     async def connect(self) -> None:
         """Connect to cTrader, run startup auth, subscribe to account."""
         self._message_futures = {}
+        self._tick_event_queue = DropOldestAsyncQueue(maxsize=2048)
+        self._execution_event_queue = DropOldestAsyncQueue(maxsize=1024)
         self._transport = CTraderTransport(
             self.config.ctrader_host,
             self.config.ctrader_port,
@@ -169,6 +175,11 @@ class ApiClient:
 
     async def disconnect(self) -> None:
         """Close the transport."""
+        await self._cancel_dispatch_tasks()
+        for fut in list(self._message_futures.values()):
+            if not fut.done():
+                fut.cancel()
+        self._message_futures.clear()
         if self._transport:
             await self._transport.close()
         self._connected = False
@@ -176,6 +187,13 @@ class ApiClient:
 
     def _on_disconnect(self, reason: str) -> None:
         self._connected = False
+        for fut in list(self._message_futures.values()):
+            if not fut.done():
+                fut.cancel()
+        self._message_futures.clear()
+        for task in (self._tick_dispatch_task, self._execution_dispatch_task):
+            if task and not task.done():
+                task.cancel()
         logger.warning("[API] Disconnected: %s", reason)
 
     def is_connected(self) -> bool:
@@ -200,15 +218,9 @@ class ApiClient:
         # Route unsolicited events
         pt = getattr(envelope, 'payloadType', None)
         if pt == _PT_SPOT_EVENT:
-            try:
-                self._tick_event_queue.put_nowait(envelope)
-            except asyncio.QueueFull:
-                pass
+            self._tick_event_queue.put_nowait(envelope)
         elif pt == _PT_EXECUTION_EVENT:
-            try:
-                self._execution_event_queue.put_nowait(envelope)
-            except asyncio.QueueFull:
-                pass
+            self._execution_event_queue.put_nowait(envelope)
         elif pt == _PT_ACCOUNT_DISCONNECT:
             logger.warning("[API] Account disconnected by server — will re-authenticate")
         elif pt == _PT_ERROR_RES:
@@ -229,13 +241,18 @@ class ApiClient:
 
     async def _send_and_wait(self, message, timeout: float = 10.0):
         """Send a message and await the deserialized response."""
+        if self._transport is None:
+            raise ConnectionError("Not connected")
         loop = asyncio.get_running_loop()
         msg_id = str(uuid.uuid4())[:8]
         fut: asyncio.Future = loop.create_future()
         self._message_futures[msg_id] = fut
 
-        await self._transport.send(message, client_msg_id=msg_id)
-        return await asyncio.wait_for(asyncio.shield(fut), timeout=timeout)
+        try:
+            await self._transport.send(message, client_msg_id=msg_id)
+            return await asyncio.wait_for(asyncio.shield(fut), timeout=timeout)
+        finally:
+            self._message_futures.pop(msg_id, None)
 
     # ──────────────────────────────────────────────────────────────────────────
     # Authentication
@@ -604,8 +621,10 @@ class ApiClient:
         req.symbolId.append(self._symbol_id)
         await self._send_and_wait(req)
 
-        asyncio.create_task(self._dispatch_ticks())
-        asyncio.create_task(self._dispatch_executions())
+        if self._tick_dispatch_task is None or self._tick_dispatch_task.done():
+            self._tick_dispatch_task = asyncio.create_task(self._dispatch_ticks())
+        if self._execution_dispatch_task is None or self._execution_dispatch_task.done():
+            self._execution_dispatch_task = asyncio.create_task(self._dispatch_executions())
         logger.info("[API] Subscribed to XAUUSD tick stream.")
 
     async def subscribe_ticks(self, symbol: str, callback: Callable) -> None:
@@ -626,7 +645,7 @@ class ApiClient:
         """Drain tick queue and invoke callback with mid price."""
         from ctrader_open_api import Protobuf
 
-        while True:
+        while self._connected:
             raw_msg = await self._tick_event_queue.get()
             try:
                 event = Protobuf.extract(raw_msg)
@@ -643,6 +662,8 @@ class ApiClient:
                 ts  = _ts_to_utc(event.timestamp) if event.timestamp else datetime.now(timezone.utc)
                 if self._tick_callback:
                     await self._tick_callback(mid, ts)
+            except asyncio.CancelledError:
+                raise
             except Exception as exc:
                 logger.error("[API] Tick dispatch error: %s", exc)
 
@@ -650,14 +671,25 @@ class ApiClient:
         """Drain execution event queue and invoke callback for unsolicited fills/closes."""
         from ctrader_open_api import Protobuf
 
-        while True:
+        while self._connected:
             raw_msg = await self._execution_event_queue.get()
             try:
                 event = Protobuf.extract(raw_msg)
                 if self._execution_callback:
                     await self._execution_callback(event)
+            except asyncio.CancelledError:
+                raise
             except Exception as exc:
                 logger.error("[API] Execution dispatch error: %s", exc)
+
+    async def _cancel_dispatch_tasks(self) -> None:
+        for task in (self._tick_dispatch_task, self._execution_dispatch_task):
+            if task and not task.done():
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+        self._tick_dispatch_task = None
+        self._execution_dispatch_task = None
 
     def set_execution_callback(self, callback: Callable) -> None:
         """Register callback for unsolicited execution events (e.g. SL hit by server)."""

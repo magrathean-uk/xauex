@@ -50,6 +50,7 @@ from xauex.shared.manual_commands import (
     ManualCommandConsumeResult,
     consume_manual_command_file,
 )
+from xauex.shared.replay_guard import CommandReplayGuard
 
 logger = logging.getLogger(__name__)
 
@@ -701,6 +702,7 @@ def consume_manual_trade_command(
     seen_command_ids: set[str] | None = None,
     now_utc: datetime | None = None,
     journal_path: str | Path | None = None,
+    replay_guard: CommandReplayGuard | None = None,
 ) -> ManualCommandConsumeResult:
     """Load, verify, and atomically consume a signed manual command envelope."""
     return consume_manual_command_file(
@@ -709,6 +711,7 @@ def consume_manual_trade_command(
         seen_command_ids=seen_command_ids,
         now_utc=now_utc,
         journal_path=journal_path,
+        replay_guard=replay_guard,
     )
 
 
@@ -719,6 +722,7 @@ def load_manual_trade_command(
     seen_command_ids: set[str] | None = None,
     now_utc: datetime | None = None,
     journal_path: str | Path | None = None,
+    replay_guard: CommandReplayGuard | None = None,
 ) -> Optional[Dict[str, object]]:
     """Backward-compatible payload-only loader for signed manual commands."""
     return consume_manual_trade_command(
@@ -727,6 +731,7 @@ def load_manual_trade_command(
         seen_command_ids=seen_command_ids,
         now_utc=now_utc,
         journal_path=journal_path,
+        replay_guard=replay_guard,
     ).payload
 
 
@@ -838,6 +843,7 @@ class BotOrchestrator:
         self._last_xauex_gate_log_at: dict[str, float] = {}
         self._xauex_close_requested: dict[str, datetime] = {}
         self._manual_command_ids: set[str] = set()
+        self._manual_replay_guard = CommandReplayGuard(self.config.xauex_manual_command_ledger_path)
         self._manual_trade_status: Dict[str, object] = {}
         self._latest_quote: Dict[str, object] = {}
         self._candidate_signal_history: deque = deque(maxlen=24)
@@ -3864,6 +3870,7 @@ class BotOrchestrator:
                 secret=self.config.xauex_manual_command_secret,
                 seen_command_ids=self._manual_command_ids,
                 journal_path=self.config.xauex_event_journal_path,
+                replay_guard=self._manual_replay_guard,
             )
             if not command_result.file_found:
                 continue

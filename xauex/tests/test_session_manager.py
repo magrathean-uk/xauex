@@ -70,6 +70,7 @@ def test_load_config_includes_xauex_session_manager_settings(monkeypatch):
     assert cfg.xauex_session_high_confidence_protect_lock_r == 0.25
     assert cfg.xauex_manual_command_path == "/tmp/manual_trade_cmd.json"
     assert cfg.xauex_manual_command_secret == ""
+    assert cfg.xauex_manual_command_ledger_path == "/var/lib/xauex/manual_command_ids.json"
     assert cfg.xauex_event_journal_path == "/var/lib/xauex/events.jsonl"
     assert cfg.xauex_counter_signal_enabled is False
     assert cfg.xauex_counter_signal_confidence == 0.58

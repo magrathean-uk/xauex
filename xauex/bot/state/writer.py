@@ -3,11 +3,8 @@
 # ruff: noqa: E402
 
 import asyncio
-import json
 import logging
-import os
 import sys
-import tempfile
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
 from pathlib import Path
@@ -19,6 +16,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from xauex.shared.diagnostics import build_diagnostics_snapshot
+from xauex.shared.safe_io import atomic_write_json
 
 logger = logging.getLogger(__name__)
 
@@ -224,20 +222,7 @@ class StateWriter:
 
     def _atomic_write(self, state: Dict) -> None:
         """Write state to a temp file, then atomically rename over the live path."""
-        state_path = self.config.state_file_path
-        state_dir = os.path.dirname(state_path)
-
-        if state_dir:
-            os.makedirs(state_dir, exist_ok=True)
-
         try:
-            fd, tmp_path = tempfile.mkstemp(dir=state_dir or ".", suffix=".tmp")
-            with os.fdopen(fd, "w") as f:
-                json.dump(state, f, indent=2)
-            os.replace(tmp_path, state_path)
+            atomic_write_json(self.config.state_file_path, state, mode=0o600)
         except OSError as exc:
             logger.error("[STATE] Failed to write state file: %s", exc)
-            try:
-                os.unlink(tmp_path)
-            except Exception:
-                pass
