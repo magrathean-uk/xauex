@@ -184,6 +184,86 @@ def test_parse_signal_hard_holds_when_market_snapshot_is_too_stale(monkeypatch):
     assert signal["decision_packet"]["input_freshness"]["market_snapshot_age_seconds"] == stale_age
 
 
+def test_parse_signal_blocks_low_confidence_directional_flip_via_persistence(monkeypatch, tmp_path):
+    """The May 8 incident showed MIDDAY=BUY 0.68 → US_OPEN=SELL 0.48 — three
+    direction flips inside one trading day. With persistence wired through,
+    a low-confidence flip against the locked direction must downgrade to
+    HOLD."""
+    monkeypatch.setenv("XAUEX_SIGNAL_LLM_API_KEY", "test-key")
+    state_path = tmp_path / "directional_state.json"
+    monkeypatch.setenv("XAUEX_SIGNAL_DIRECTIONAL_STATE_PATH", str(state_path))
+
+    # Pre-populate today's directional state to BUY (mimicking a prior MIDDAY lock).
+    from datetime import datetime as _datetime
+    from zoneinfo import ZoneInfo
+    today_london = _datetime.now(ZoneInfo("Europe/London")).strftime("%Y-%m-%d")
+    state_path.write_text(
+        '{'
+        f'"date_london": "{today_london}", '
+        '"primary_direction": "BUY", '
+        '"set_at_utc": "2026-05-08T10:30:08Z", '
+        '"set_by_window": "midday", '
+        '"confidence": 0.68, '
+        '"macro_signature": {"dxy_sign": -1, "yields_sign": -1}'
+        '}'
+    )
+
+    cfg = SignalConfig.from_env()
+    asset = resolve_asset("XAUUSD")
+
+    class _Usage:
+        prompt_tokens = 50
+        completion_tokens = 25
+        total_tokens = 75
+
+    class _Response:
+        def __init__(self, content):
+            self.choices = [type("C", (), {"message": type("M", (), {"content": content})()})]
+            self.usage = _Usage()
+
+    parser_responses = iter([
+        _Response('{"action":"SELL","confidence":0.48,"reasoning":"r","stop_loss_distance":12,"take_profit_distance":24}'),
+        _Response('{"decision":"ALIGNED","confidence_adjustment":0.0,"reasoning":"ok","hard_blocker":false}'),
+    ])
+
+    class _Client:
+        def __init__(self):
+            self.chat = type("Chat", (), {"completions": type("Completions", (), {"create": staticmethod(lambda **kwargs: next(parser_responses))})})()
+
+    monkeypatch.setattr("xauex.signal.signal_parser.create_chat_client", lambda **kwargs: _Client())
+
+    signal = parse_signal(
+        asset=asset,
+        actions=[{"agent_name": "price_structure", "action_type": "SELL", "content": "neg"}],
+        report_markdown="# Report\nGold pressured.",
+        config=cfg,
+        prediction_payload={
+            "price_features": {"price_bias": "SELL"},
+            "memory_summary": {},
+            "market_snapshot": {
+                "series": {
+                    # Macro signature unchanged — DXY and yields still down (gold-supportive)
+                    "usd_broad_index": {"value": 118.0, "change_1d": -0.3, "bias": "BUY"},
+                    "us10y_yield": {"value": 4.1, "change_1d": -0.05, "bias": "BUY"},
+                },
+            },
+            "event_flags": {},
+            "input_freshness": {"market_snapshot_state": "fresh", "market_snapshot_age_seconds": 600},
+            "context_items": [],
+        },
+        window_label="us_open",
+        decision_mode="baseline",
+    )
+
+    # The persistence layer must downgrade SELL 0.48 → HOLD because the BUY
+    # lock is in place and the new confidence is below the flip threshold.
+    assert signal["action"] == "HOLD"
+    assert signal["confidence"] == 0.0
+    assert signal["consensus_state"] == "blocked"
+    persistence = signal["decision_packet"]["directional_persistence"]
+    assert persistence["policy"] == "FLIP_BLOCKED_LOW_CONFIDENCE"
+
+
 def test_parse_signal_does_not_hard_hold_when_snapshot_is_fresh_enough(monkeypatch):
     """The hard-stale guard must not interfere with normal fresh-snapshot
     operation. Use age below the threshold."""
@@ -265,7 +345,37 @@ def test_validator_prompt_reserves_disagreement_for_direct_contradictions():
     assert "prefer ALIGNED" in prompt
     assert "Reserve DISAGREE for direct contradictions" in prompt
     assert "prefer DISAGREE over ALIGNED" not in prompt
-    assert "only when the same setup is being repeated" in prompt
+
+
+def test_validator_prompt_softens_default_to_aligned_and_uses_explicit_streak_field():
+    """The legacy validator returned DISAGREE on any 'mixed/uncertain/conflicting'
+    reasoning, which is the default state of any non-trending market. New
+    contract: default to ALIGNED unless ≥2 macro drivers point opposite, and
+    use the explicit consecutive_loss_direction streak field instead of
+    inferring loss correlation from sparse aggregate counts."""
+    prompt = _validator_system_prompt(resolve_asset("XAUUSD"))
+    # Hedge-word detection has been dropped — those words are normal market
+    # uncertainty, not direct contradictions.
+    assert "hedges with words like" not in prompt
+    assert '"mixed"' not in prompt
+    assert '"uncertain"' not in prompt
+    # Adjustment range narrowed from [-0.30, +0.10] to [-0.15, +0.10]
+    assert "-0.15 to 0.10" in prompt
+    # Direction-aware memory must be referenced explicitly.
+    assert "consecutive_loss_direction" in prompt
+    # 2+ macro drivers requirement, not single-driver opposition.
+    assert "2+ macro drivers" in prompt or "two or more macro drivers" in prompt
+
+
+def test_validator_schema_clamps_confidence_adjustment_to_softer_range():
+    """The validator response schema must reflect the softer adjustment
+    range so the LLM cannot return values outside [-0.15, +0.10]."""
+    from xauex.signal.signal_parser import _validator_response_schema
+
+    schema = _validator_response_schema()
+    confidence_adjustment_field = schema["schema"]["properties"]["confidence_adjustment"]
+    assert confidence_adjustment_field["minimum"] == -0.15
+    assert confidence_adjustment_field["maximum"] == 0.10
 
 
 def test_gpt_oss_models_use_low_reasoning_and_larger_visible_output_budget():

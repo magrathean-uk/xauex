@@ -37,6 +37,7 @@ class SignalConfig:
     daily_cost_cap_usd: float
     cost_ledger_path: str
     archive_dir: str
+    directional_state_path: str
     cme_fedwatch_api_url: str | None
     cme_fedwatch_api_key: str | None
     cme_fedwatch_api_key_header: str
@@ -145,6 +146,7 @@ class SignalConfig:
             daily_cost_cap_usd=float(os.getenv('XAUEX_SIGNAL_DAILY_COST_CAP_USD', '0.20')),
             cost_ledger_path=os.getenv('XAUEX_SIGNAL_COST_LEDGER_PATH', '/var/lib/xauex/signal_costs.jsonl'),
             archive_dir=os.getenv('XAUEX_SIGNAL_ARCHIVE_DIR', '/var/lib/xauex/signal_runs'),
+            directional_state_path=os.getenv('XAUEX_SIGNAL_DIRECTIONAL_STATE_PATH', ''),
             cme_fedwatch_api_url=os.getenv('XAUEX_SIGNAL_CME_FEDWATCH_API_URL') or None,
             cme_fedwatch_api_key=os.getenv('XAUEX_SIGNAL_CME_FEDWATCH_API_KEY') or None,
             cme_fedwatch_api_key_header=os.getenv('XAUEX_SIGNAL_CME_FEDWATCH_API_KEY_HEADER', 'Authorization'),

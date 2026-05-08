@@ -7,7 +7,9 @@ import logging
 import re
 from datetime import datetime, timezone
 from math import exp
+from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from xauex.signal.assets import AssetProfile
 from xauex.signal.candidate_graph import run_tradingagents_candidate
@@ -251,6 +253,14 @@ def parse_signal(
     if candidate_graph is not None:
         signal['candidate_graph'] = candidate_graph
 
+    signal = _apply_directional_persistence(
+        asset=asset,
+        signal=signal,
+        decision_packet=decision_packet,
+        config=config,
+        window_label=window_label,
+    )
+
     signal['llm_usage'] = _combine_usage(
         provider=config.parser_llm_base_url,
         stages=[stage for stage in [*debate_usage, *candidate_usage, parser_usage, validator_usage] if stage],
@@ -266,7 +276,95 @@ def parse_signal(
         signal['decision_packet']['debate'] = debate
     if candidate_graph is not None and not bool(candidate_graph.get('degraded')):
         signal['decision_packet']['candidate_graph'] = _compact_candidate_graph_for_packet(candidate_graph)
+    if 'directional_persistence' in signal:
+        signal['decision_packet']['directional_persistence'] = signal['directional_persistence']
     return signal
+
+
+def _apply_directional_persistence(
+    *,
+    asset: AssetProfile,
+    signal: dict[str, Any],
+    decision_packet: dict[str, Any],
+    config: SignalConfig,
+    window_label: str,
+) -> dict[str, Any]:
+    """Apply the cross-window persistence policy to the freshly-validated signal.
+
+    Loads the persisted directional state for today, runs the policy with the
+    proposed action/confidence and the current macro snapshot, then either
+    leaves the signal unchanged, downgrades it to HOLD when the policy blocks
+    a flip, or updates the persisted state when a new lock is set.
+    """
+    from xauex.signal.directional_persistence import (
+        apply_directional_persistence,
+        load_directional_state,
+        macro_signature_from_market_snapshot,
+        record_directional_state,
+    )
+
+    state_path_raw = getattr(config, 'directional_state_path', '') or ''
+    if not state_path_raw:
+        return signal
+
+    london_date = _london_date_from_packet(decision_packet)
+    if not london_date:
+        return signal
+
+    market_snapshot = decision_packet.get('market_snapshot') or {}
+    proposed_signature = macro_signature_from_market_snapshot(market_snapshot)
+    state_path = Path(state_path_raw)
+    current_state = load_directional_state(state_path)
+
+    decision = apply_directional_persistence(
+        current_state=current_state,
+        proposed_action=str(signal.get('action', 'HOLD')).upper(),
+        proposed_confidence=float(signal.get('confidence', 0.0) or 0.0),
+        proposed_macro_signature=proposed_signature,
+        now_utc=datetime.now(timezone.utc),
+        london_date=london_date,
+        window_label=window_label,
+    )
+
+    annotated = dict(signal)
+    annotated['directional_persistence'] = {
+        'policy': decision.policy,
+        'reason': decision.reason,
+        'previous_state': current_state,
+        'next_state': decision.next_state,
+    }
+    if decision.action != str(signal.get('action', 'HOLD')).upper() or decision.confidence != float(signal.get('confidence', 0.0) or 0.0):
+        annotated['action'] = decision.action
+        annotated['confidence'] = round(decision.confidence, 2)
+        if decision.action == 'HOLD':
+            annotated['stop_loss_distance'] = 0.0
+            annotated['take_profit_distance'] = 0.0
+            if asset.distance_unit == 'usd':
+                annotated['stop_loss_usd'] = 0.0
+                annotated['take_profit_usd'] = 0.0
+            existing_reasoning = str(annotated.get('reasoning') or '').strip()
+            persistence_note = decision.reason
+            annotated['reasoning'] = (f'{existing_reasoning} {persistence_note}'.strip())[:500]
+            annotated['consensus_state'] = 'blocked'
+
+    if decision.next_state is not None:
+        try:
+            record_directional_state(state_path, decision.next_state)
+        except OSError as exc:
+            logger.warning('[DIRECTIONAL_STATE] Failed to persist %s: %s', state_path, exc)
+
+    return annotated
+
+
+def _london_date_from_packet(decision_packet: dict[str, Any]) -> str:
+    profile = decision_packet.get('session_profile') or {}
+    timezone_name = str(profile.get('timezone') or 'Europe/London')
+    try:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo(timezone_name)
+    except Exception:
+        tz = ZoneInfo('Europe/London')
+    return datetime.now(tz).strftime('%Y-%m-%d')
 
 
 def _normalize_signal(
@@ -537,25 +635,23 @@ Respond ONLY with valid JSON and no markdown fencing.
 Use this schema:
 {{
   "decision": "ALIGNED" | "DISAGREE" | "BLOCK",
-  "confidence_adjustment": -0.30 to 0.10,
+  "confidence_adjustment": -0.15 to 0.10,
   "reasoning": "one concise sentence",
   "hard_blocker": true | false
 }}
 
 Rules:
 - BLOCK only for hard blockers such as stale inputs during a live window, missing core tradeable data, or invalid trade geometry.
-- If the thesis is mixed but still directional, return DISAGREE and reduce confidence instead of blocking.
-- Use ALIGNED when the proposed trade is well supported by structured drivers and the narrative context.
-- Keep the response concise and operational.
+- ALIGNED is the default. Markets are mixed by nature — uncertainty alone is not a reason to disagree.
+- Use DISAGREE only when the proposed trade direction is actively contradicted by the data, not when it lacks corroboration.
 
-Weakness detection (return DISAGREE with negative adjustment when ANY of these apply):
-- Confidence above 0.60 but the reasoning hedges with words like "mixed", "uncertain", "conflicting", "could go either way", or "thin evidence".
-- The trade direction contradicts the dominant macro driver (e.g. BUY gold while DXY is rallying with no offsetting safe-haven flow).
-- Recent trade memory shows 2+ losses in the same direction only when the same setup is being repeated and no regime change or fresh driver is cited.
-- Price action is mid-range with weak momentum and no clear breakout catalyst.
-- The reasoning relies on a single weak signal (one keyword, one indicator) without corroboration.
+Direct contradiction detection (return DISAGREE with adjustment up to -0.15 only when ANY of these apply):
+- The trade direction contradicts 2+ macro drivers simultaneously (e.g. proposes BUY gold while BOTH the DXY and the 10Y yield are clearly rising on the day, with no offsetting safe-haven catalyst).
+- The decision_packet's `memory_summary.consecutive_loss_direction` field matches the proposed direction (e.g. consecutive_loss_direction="SELL_3" and the proposed action is SELL) AND no fresh macro driver or regime change has been cited.
+- The proposed action and the price-features `regime_filter` disagree — for example, proposing SELL when `regime_filter`="TREND_ALIGNED_UPPER_THIRD_KEPT_BUY".
+- Trade geometry is unsafe (e.g. a 2.5x risk-reward target proposed inside a flat range with ATR < take-profit/3).
 
-If the evidence is directional but imperfect, prefer ALIGNED with a small or zero adjustment over DISAGREE. Reserve DISAGREE for direct contradictions, not normal uncertainty."""
+Hedged or uncertain reasoning is NOT by itself a direct contradiction — prefer ALIGNED with adjustment 0. Reserve DISAGREE for direct contradictions only."""
 
 
 def _parser_user_prompt(asset: AssetProfile, packet: dict[str, Any]) -> str:
@@ -637,7 +733,7 @@ def _validator_response_schema() -> dict[str, Any]:
                 },
                 'confidence_adjustment': {
                     'type': 'number',
-                    'minimum': -0.30,
+                    'minimum': -0.15,
                     'maximum': 0.10,
                 },
                 'reasoning': {

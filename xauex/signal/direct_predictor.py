@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from statistics import mean
-from typing import Any
+from typing import Any, Optional
 
 from xauex.signal.assets import AssetProfile
 
@@ -76,11 +76,13 @@ def render_direct_report(payload: dict[str, Any]) -> str:
         '',
         '## Recent Trade Memory',
         f"- Recent trade count: {memory['trade_count']}",
-        f"- Net recent PnL: {memory['net_pnl']:.2f}",
-        f"- Buy count: {memory['buy_count']}",
-        f"- Sell count: {memory['sell_count']}",
+        f"- Net recent PnL: {memory.get('net_pnl', 0.0):.2f}",
+        f"- BUY trades: {memory['buy_count']} (PnL {memory.get('buy_pnl', 0.0):+.2f})",
+        f"- SELL trades: {memory['sell_count']} (PnL {memory.get('sell_pnl', 0.0):+.2f})",
         f"- Winning trades: {memory['wins']}",
         f"- Losing trades: {memory['losses']}",
+        f"- Last 3 directions: {', '.join(memory.get('last_3_directions') or []) or 'none'}",
+        f"- Consecutive loss streak: {memory.get('consecutive_loss_direction') or 'none'}",
         '',
         '## Retrieved Similar Memory',
     ])
@@ -295,6 +297,8 @@ def _price_features(state_snapshot: dict[str, Any]) -> dict[str, Any]:
             'momentum_3': 0.0,
             'momentum_6': 0.0,
             'momentum_12': 0.0,
+            'momentum_24': None,
+            'momentum_60': None,
             'range_position': 'UNKNOWN',
             'price_bias': 'NEUTRAL',
             'atr_14': 0.0,
@@ -314,12 +318,36 @@ def _price_features(state_snapshot: dict[str, Any]) -> dict[str, Any]:
         range_position = 'LOWER_THIRD'
     else:
         range_position = 'MIDDLE_THIRD'
+    # Legacy short-window momentum (kept for downstream compatibility).
     momentum_3 = latest - closes[max(0, len(closes) - 4)]
     momentum_6 = latest - closes[max(0, len(closes) - 7)]
     momentum_12 = latest - closes[max(0, len(closes) - 13)]
-    avg_momentum = mean([momentum_3, momentum_6, momentum_12])
+    # Longer-window momentum used for the price_bias decision. The legacy 20h
+    # window over 4720-base gold registered sub-dollar drift as "trending" and
+    # produced spurious SELL signals on flat consolidation. 24h and 60h moves
+    # require a meaningful directional displacement.
+    momentum_24: Optional[float]
+    momentum_60: Optional[float]
+    if len(closes) >= 25:
+        momentum_24 = latest - closes[-25]
+    else:
+        momentum_24 = None
+    if len(closes) >= 61:
+        momentum_60 = latest - closes[-61]
+    else:
+        momentum_60 = None
+    long_window_components: list[float] = [momentum_6]
+    if momentum_24 is not None:
+        long_window_components.append(momentum_24)
+    if momentum_60 is not None:
+        long_window_components.append(momentum_60)
+    avg_momentum = mean(long_window_components)
     atr_14 = _calculate_atr(closes, periods=14)
-    momentum_threshold = atr_14 * 0.4
+    # The legacy ATR*0.4 threshold was too sensitive on a base price of ~4700:
+    # it triggered a directional bias on noise that did not exceed daily ATR.
+    # Require a move at least as large as the 14-period ATR before claiming a
+    # directional momentum bias.
+    momentum_threshold = atr_14 * 1.0
     if avg_momentum > momentum_threshold:
         price_bias = 'BUY'
     elif avg_momentum < -momentum_threshold:
@@ -358,6 +386,8 @@ def _price_features(state_snapshot: dict[str, Any]) -> dict[str, Any]:
         'momentum_3': round(momentum_3, 2),
         'momentum_6': round(momentum_6, 2),
         'momentum_12': round(momentum_12, 2),
+        'momentum_24': round(momentum_24, 2) if momentum_24 is not None else None,
+        'momentum_60': round(momentum_60, 2) if momentum_60 is not None else None,
         'range_position': range_position,
         'price_bias': price_bias,
         'atr_14': round(atr_14, 4),
@@ -385,15 +415,29 @@ def _attach_latest_quote(price_features: dict[str, Any], latest_quote: dict[str,
 
 
 def _memory_summary(recent_runs: list[dict[str, Any]]) -> dict[str, Any]:
-    rows = recent_runs[-8:]
+    # Window extended from 8 → 12 so the direction-aware view captures fuller
+    # streak patterns. The validator's "2+ losses in same direction" rule
+    # needs the streak accumulator built below.
+    rows = recent_runs[-12:]
     notes = [str(item.get('journal', '')).strip() for item in rows if str(item.get('journal', '')).strip()]
     pnls = [float(item.get('pnl', 0.0) or 0.0) for item in rows]
-    buy_count = sum(1 for item in rows if str(item.get('action', '')).upper() == 'BUY')
-    sell_count = sum(1 for item in rows if str(item.get('action', '')).upper() == 'SELL')
+    actions = [str(item.get('action', '')).upper() for item in rows]
+    buy_rows = [item for item in rows if str(item.get('action', '')).upper() == 'BUY']
+    sell_rows = [item for item in rows if str(item.get('action', '')).upper() == 'SELL']
+    buy_count = len(buy_rows)
+    sell_count = len(sell_rows)
+    buy_pnl = round(sum(float(item.get('pnl', 0.0) or 0.0) for item in buy_rows), 2)
+    sell_pnl = round(sum(float(item.get('pnl', 0.0) or 0.0) for item in sell_rows), 2)
     wins = sum(1 for pnl in pnls if pnl > 0)
     losses = sum(1 for pnl in pnls if pnl < 0)
+    last_3_directions = [a for a in actions[-3:] if a]
+    consecutive_loss_direction = _consecutive_loss_streak(rows)
     return {
         'trade_count': len(rows),
+        'buy_pnl': buy_pnl,
+        'sell_pnl': sell_pnl,
+        'last_3_directions': last_3_directions,
+        'consecutive_loss_direction': consecutive_loss_direction,
         'net_pnl': round(sum(pnls), 2),
         'buy_count': buy_count,
         'sell_count': sell_count,
@@ -401,6 +445,36 @@ def _memory_summary(recent_runs: list[dict[str, Any]]) -> dict[str, Any]:
         'losses': losses,
         'notes': notes[:3],
     }
+
+
+def _consecutive_loss_streak(rows: list[dict[str, Any]]) -> str:
+    """Walk backwards from the most recent trade and count an unbroken run of
+    losses in the same direction.
+
+    Returns "" when the most recent trade was a win (no live streak), the
+    direction was neutral, or no rows are available. Otherwise returns a
+    label like "SELL_3" or "BUY_2" so the validator prompt has explicit
+    evidence to bind to.
+    """
+    streak_direction = ''
+    streak_count = 0
+    for item in reversed(rows):
+        pnl = float(item.get('pnl', 0.0) or 0.0)
+        if pnl >= 0:
+            break
+        direction = str(item.get('action', '') or '').upper()
+        if direction not in {'BUY', 'SELL'}:
+            break
+        if streak_direction == '':
+            streak_direction = direction
+            streak_count = 1
+            continue
+        if direction != streak_direction:
+            break
+        streak_count += 1
+    if streak_count == 0 or streak_direction == '':
+        return ''
+    return f'{streak_direction}_{streak_count}'
 
 
 def _compact_retrieved_memory(retrieved_memory: list[dict[str, Any]]) -> list[dict[str, Any]]:

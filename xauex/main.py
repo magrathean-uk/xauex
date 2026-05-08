@@ -887,7 +887,7 @@ class BotOrchestrator:
         }
         self.last_tick_time = time.monotonic()
 
-        self._recent_h1_closes: deque = deque(maxlen=20)
+        self._recent_h1_closes: deque = deque(maxlen=80)
         self._trade_entries_on_chart: List[Dict] = []
         self._last_signal: Optional[Dict] = None
         self._signal_history: deque = deque(maxlen=12)
@@ -1195,7 +1195,7 @@ class BotOrchestrator:
             )
             return
 
-        self._recent_h1_closes = deque([bar["close"] for bar in bars[-20:]], maxlen=20)
+        self._recent_h1_closes = deque([bar["close"] for bar in bars[-80:]], maxlen=80)
 
         if mode == "SCALP_V1":
             daily_closes = await self._fetch_daily_closes()
@@ -1257,7 +1257,7 @@ class BotOrchestrator:
             await self.write_state()
             return
 
-        self._recent_h1_closes = deque([bar["close"] for bar in bars[-20:]], maxlen=20)
+        self._recent_h1_closes = deque([bar["close"] for bar in bars[-80:]], maxlen=80)
 
         try:
             await self.level_manager.refresh_if_needed()
@@ -1482,7 +1482,7 @@ class BotOrchestrator:
             return
 
         if store == "live":
-            self._recent_h1_closes = deque([bar["close"] for bar in bars[-20:]], maxlen=20)
+            self._recent_h1_closes = deque([bar["close"] for bar in bars[-80:]], maxlen=80)
 
         gate_result = await self._environment_gate(apply_risk_gates=apply_risk_gates)
         if gate_result is not None:
@@ -1614,7 +1614,7 @@ class BotOrchestrator:
             return
 
         if store == "live":
-            self._recent_h1_closes = deque([bar["close"] for bar in bars[-20:]], maxlen=20)
+            self._recent_h1_closes = deque([bar["close"] for bar in bars[-80:]], maxlen=80)
 
         gate_result = await self._environment_gate(apply_risk_gates=apply_risk_gates)
         if gate_result is not None:
@@ -1840,8 +1840,8 @@ class BotOrchestrator:
             return
 
         self._recent_h1_closes = deque(
-            [bar["close"] for bar in bars[-20:]],
-            maxlen=20,
+            [bar["close"] for bar in bars[-80:]],
+            maxlen=80,
         )
         if self.active_strategy_mode == "SCALP_V1":
             daily_closes = await self._fetch_daily_closes()

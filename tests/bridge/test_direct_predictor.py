@@ -344,6 +344,141 @@ def test_report_and_actions_surface_cot_positioning():
     assert "mm_net_long=250000" in cot_actions[0]["content"]
 
 
+def test_price_bias_uses_longer_momentum_window_and_higher_threshold():
+    """The legacy 20-bar window with ATR*0.4 threshold registered tiny noise on
+    flat consolidation as 'negative momentum' and triggered SELL bias. With
+    60-bar momentum and ATR*1.0 threshold, a market that drifted ~0.7%
+    (10 dollars over 20 hours) on a 4720-base price now requires a real move
+    above ATR rather than micro-noise."""
+    asset = resolve_asset("XAUUSD")
+    # 80 closes drifting from 4720 → 4710 (very small downside drift over 80h)
+    drift_closes = [4720.0 - i * 0.125 for i in range(80)]
+    payload = build_prediction_payload(
+        asset=asset,
+        context_markdown="# Context",
+        recent_runs=[],
+        state_snapshot={
+            "recent_h1_closes": drift_closes,
+            "levels": {"daily": {"low": 4710.0, "high": 4720.0}},
+            "trend": {"daily_bias": 0, "alignment": "MIXED"},
+        },
+    )
+    features = payload["price_features"]
+    # Long-window momentum fields are computed.
+    assert "momentum_24" in features
+    assert "momentum_60" in features
+    assert features["h1_count"] == 80
+    # The drift is 10 dollars over 80h. ATR_14 on this even drift = 0.125, so
+    # threshold = 0.125. avg_momentum ~= -10 - well past threshold.
+    # But we want to verify the threshold is high enough to suppress micro
+    # noise on a flatter dataset:
+    flat_closes = [4720.0 + (-1) ** i * 0.4 for i in range(80)]  # oscillating 0.4 either side
+    payload_flat = build_prediction_payload(
+        asset=asset,
+        context_markdown="# Context",
+        recent_runs=[],
+        state_snapshot={
+            "recent_h1_closes": flat_closes,
+            "levels": {"daily": {"low": 4719.0, "high": 4721.0}},
+            "trend": {"daily_bias": 1, "alignment": "ALIGNED"},
+        },
+    )
+    flat_features = payload_flat["price_features"]
+    # On pure noise, the new threshold should yield NEUTRAL not BUY/SELL.
+    assert flat_features["price_bias"] == "NEUTRAL"
+    # Threshold reflects the new ATR multiplier.
+    assert flat_features["momentum_threshold"] >= flat_features["atr_14"] * 0.99
+
+
+def test_price_features_omit_long_window_momentum_when_data_insufficient():
+    """When fewer than 60 closes are available, the long-window momentum field
+    is None or absent rather than silently extrapolating from 4 closes."""
+    asset = resolve_asset("XAUUSD")
+    payload = build_prediction_payload(
+        asset=asset,
+        context_markdown="# Context",
+        recent_runs=[],
+        state_snapshot={
+            "recent_h1_closes": [10.0, 11.0, 12.0, 13.0],  # 4 closes only
+            "levels": {"daily": {"low": 9.0, "high": 15.0}},
+        },
+    )
+    features = payload["price_features"]
+    assert features["h1_count"] == 4
+    # When < 25 closes, momentum_24 should be None.
+    assert features["momentum_24"] is None
+    assert features["momentum_60"] is None
+
+
+def test_memory_summary_exposes_direction_pnl_breakdown():
+    """The validator's '2+ losses in same direction' rule needs explicit
+    direction-loss accounting. Aggregate counts alone forced the validator to
+    infer correlation that wasn't actually surfaced."""
+    asset = resolve_asset("XAUUSD")
+    payload = build_prediction_payload(
+        asset=asset,
+        context_markdown="# Context",
+        recent_runs=[
+            {"action": "SELL", "pnl": -18.0, "journal": "stopped"},
+            {"action": "SELL", "pnl": -17.0, "journal": "stopped"},
+            {"action": "SELL", "pnl": 5.3, "journal": "trail tp"},
+            {"action": "BUY", "pnl": 7.0, "journal": "tp1"},
+        ],
+        state_snapshot={"recent_h1_closes": [10, 11, 12, 13], "levels": {"daily": {"low": 9, "high": 15}}},
+    )
+    memory = payload["memory_summary"]
+    assert memory["buy_count"] == 1
+    assert memory["sell_count"] == 3
+    assert memory["buy_pnl"] == 7.0
+    assert memory["sell_pnl"] == -29.7
+    assert memory["last_3_directions"] == ["SELL", "SELL", "BUY"]
+    # Two consecutive SELL losses preceded the recovery win — earlier still in
+    # the run history. The streak counter looks at the freshest losses only;
+    # since the most recent trade was a BUY win, the streak is empty.
+    assert memory["consecutive_loss_direction"] == ""
+
+
+def test_memory_summary_flags_consecutive_loss_streak():
+    """When the most recent trades are all losses in the same direction, the
+    streak field must surface that explicitly so the validator can act."""
+    asset = resolve_asset("XAUUSD")
+    payload = build_prediction_payload(
+        asset=asset,
+        context_markdown="# Context",
+        recent_runs=[
+            {"action": "BUY", "pnl": 8.0, "journal": "win"},
+            {"action": "SELL", "pnl": -18.0, "journal": "stopped"},
+            {"action": "SELL", "pnl": -17.0, "journal": "stopped"},
+            {"action": "SELL", "pnl": -18.0, "journal": "stopped"},
+        ],
+        state_snapshot={"recent_h1_closes": [10, 11, 12, 13], "levels": {"daily": {"low": 9, "high": 15}}},
+    )
+    memory = payload["memory_summary"]
+    assert memory["consecutive_loss_direction"] == "SELL_3"
+
+
+def test_memory_summary_uses_extended_window():
+    """The legacy summary clipped to last 8 trades. Extend to 12 so the
+    direction-loss view captures a fuller pattern."""
+    asset = resolve_asset("XAUUSD")
+    history = [
+        {"action": "BUY", "pnl": 10.0, "journal": "old win"},
+        *[
+            {"action": "SELL", "pnl": -3.0, "journal": "stop"} for _ in range(11)
+        ],
+    ]
+    payload = build_prediction_payload(
+        asset=asset,
+        context_markdown="# Context",
+        recent_runs=history,
+        state_snapshot={"recent_h1_closes": [10, 11, 12, 13], "levels": {"daily": {"low": 9, "high": 15}}},
+    )
+    memory = payload["memory_summary"]
+    assert memory["trade_count"] == 12
+    assert memory["buy_count"] == 1
+    assert memory["sell_count"] == 11
+
+
 def test_close_volatility_is_direction_symmetric():
     uptrend_closes = [float(value) for value in range(100, 115)]
     downtrend_closes = [float(value) for value in range(114, 99, -1)]
