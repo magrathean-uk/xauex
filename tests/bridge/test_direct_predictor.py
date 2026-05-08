@@ -350,3 +350,196 @@ def test_close_volatility_is_direction_symmetric():
 
     assert _calculate_atr(uptrend_closes) == _calculate_atr(downtrend_closes)
     assert _calculate_atr(uptrend_closes) == 1.0
+
+
+def test_market_snapshot_render_uses_gold_perspective_interpretation():
+    """The LLM has been mistaking 'bias=BUY' on DXY for 'USD bullish'. The rendered
+    report must instead say something like 'gold_signal=BULLISH (USD weakened — gold-supportive)'
+    so the LLM cannot confuse asset direction with gold direction.
+    """
+    asset = resolve_asset("XAUUSD")
+    payload = build_prediction_payload(
+        asset=asset,
+        context_markdown="# Context",
+        recent_runs=[],
+        state_snapshot={"recent_h1_closes": [10, 11, 12, 13], "levels": {"daily": {"low": 9, "high": 15}}},
+        market_snapshot={
+            "series": {
+                "usd_broad_index": {
+                    "label": "Trade-weighted USD broad index",
+                    "value": 118.39,
+                    "change_1d": -0.28,
+                    "bias": "BUY",
+                },
+                "us10y_yield": {
+                    "label": "US 10Y Treasury yield",
+                    "value": 4.36,
+                    "change_1d": -0.07,
+                    "bias": "BUY",
+                },
+                "us5y_breakeven_inflation": {
+                    "label": "US 5Y breakeven inflation expectation",
+                    "value": 2.61,
+                    "change_1d": 0.03,
+                    "bias": "BUY",
+                },
+                "vix": {
+                    "label": "CBOE VIX",
+                    "value": 17.39,
+                    "change_1d": 0.01,
+                    "bias": "BUY",
+                },
+                "btc_usd": {
+                    "label": "Bitcoin USD (Coinbase)",
+                    "value": 80047.2,
+                    "change_1d": -1429.31,
+                    "bias": "NEUTRAL",
+                },
+            },
+        },
+    )
+    report = render_direct_report(payload)
+
+    # Each series row must include a gold-perspective interpretation. The LLM
+    # mislabeled DXY as "strengthening USD" when DXY went DOWN; the new
+    # rendering must make the gold direction unambiguous.
+    assert "gold_signal=BULLISH" in report
+    assert "USD weakened" in report
+    assert "10Y yield fell" in report
+    assert "Inflation expectations rose" in report
+    # The ambiguous legacy 'bias=BUY' phrasing on its own should not appear in
+    # the structured market snapshot section. (It can still exist as data; we
+    # check the rendered string here.)
+    snapshot_section = report.split("## Structured Market Snapshot", 1)[1].split("##", 1)[0]
+    assert "bias=BUY" not in snapshot_section
+    assert "bias=SELL" not in snapshot_section
+
+
+def _rising_upper_third_closes() -> list[float]:
+    """Build a 20-close H1 series whose last value sits firmly in the upper
+    third of the daily range and has positive avg momentum > ATR*0.4 threshold.
+
+    Daily range below: low=4700, high=4720, span=20. Upper third starts at pos
+    0.66 → price ≥ 4713.2. Last close 4719.0 sits at pos=0.95 (upper third).
+    Average ATR computed on these closes is 0.6 → threshold is 0.24, well below
+    avg momentum (≈12 over 12 bars). So price_bias triggers BUY before the
+    regime filter runs.
+    """
+    return [4700.0, 4704.0, 4706.0, 4707.0, 4708.0, 4709.0, 4710.0, 4711.0,
+            4712.0, 4713.0, 4714.0, 4715.0, 4715.5, 4716.0, 4716.5, 4717.0,
+            4717.5, 4718.0, 4718.5, 4719.0]
+
+
+def _falling_lower_third_closes() -> list[float]:
+    """Mirror of _rising_upper_third_closes for downtrend testing."""
+    return [4720.0, 4716.0, 4714.0, 4713.0, 4712.0, 4711.0, 4710.0, 4709.0,
+            4708.0, 4707.0, 4706.0, 4705.0, 4704.5, 4704.0, 4703.5, 4703.0,
+            4702.5, 4702.0, 4701.5, 4701.0]
+
+
+def test_price_bias_keeps_buy_in_upper_third_when_daily_trend_is_up():
+    """The anti-trend filter neutralized BUY in upper-third unconditionally,
+    killing trend-continuation in real uptrends. With a bullish daily regime
+    (trend.daily_bias > 0), BUY in upper-third must survive."""
+    asset = resolve_asset("XAUUSD")
+    payload = build_prediction_payload(
+        asset=asset,
+        context_markdown="# Context",
+        recent_runs=[],
+        state_snapshot={
+            "recent_h1_closes": _rising_upper_third_closes(),
+            "levels": {"daily": {"low": 4700.0, "high": 4720.0}},
+            "trend": {"daily_bias": 1, "alignment": "ALIGNED"},
+        },
+    )
+    assert payload["price_features"]["price_bias"] == "BUY"
+    assert payload["price_features"]["range_position"] == "UPPER_THIRD"
+    assert payload["price_features"]["regime_filter"] == "TREND_ALIGNED_UPPER_THIRD_KEPT_BUY"
+
+
+def test_price_bias_neutralizes_buy_in_upper_third_when_daily_trend_is_down():
+    """When the daily trend is bearish but H1 momentum pushes BUY in the upper
+    third, that's a fade-the-bounce setup that historically fails — keep
+    neutralizing it (mean-reversion failure protection)."""
+    asset = resolve_asset("XAUUSD")
+    payload = build_prediction_payload(
+        asset=asset,
+        context_markdown="# Context",
+        recent_runs=[],
+        state_snapshot={
+            "recent_h1_closes": _rising_upper_third_closes(),
+            "levels": {"daily": {"low": 4700.0, "high": 4720.0}},
+            "trend": {"daily_bias": -1, "alignment": "ALIGNED"},
+        },
+    )
+    assert payload["price_features"]["price_bias"] == "NEUTRAL"
+    assert payload["price_features"]["regime_filter"] == "COUNTER_TREND_UPPER_THIRD_NEUTRALIZED_BUY"
+
+
+def test_price_bias_neutralizes_buy_in_upper_third_when_no_trend_signal():
+    """Without a trend signal, fall back to the conservative legacy behavior."""
+    asset = resolve_asset("XAUUSD")
+    payload = build_prediction_payload(
+        asset=asset,
+        context_markdown="# Context",
+        recent_runs=[],
+        state_snapshot={
+            "recent_h1_closes": _rising_upper_third_closes(),
+            "levels": {"daily": {"low": 4700.0, "high": 4720.0}},
+        },
+    )
+    # Conservative default: with no trend evidence, neutralize BUY in upper third.
+    assert payload["price_features"]["price_bias"] == "NEUTRAL"
+    assert payload["price_features"]["regime_filter"] == "NO_TREND_SIGNAL_NEUTRALIZED_BUY"
+
+
+def test_price_bias_keeps_sell_in_lower_third_when_daily_trend_is_down():
+    """Mirror case for shorts: SELL in lower-third with bearish daily trend
+    should be kept (continuation), not neutralized."""
+    asset = resolve_asset("XAUUSD")
+    payload = build_prediction_payload(
+        asset=asset,
+        context_markdown="# Context",
+        recent_runs=[],
+        state_snapshot={
+            "recent_h1_closes": _falling_lower_third_closes(),
+            "levels": {"daily": {"low": 4700.0, "high": 4720.0}},
+            "trend": {"daily_bias": -1, "alignment": "ALIGNED"},
+        },
+    )
+    assert payload["price_features"]["price_bias"] == "SELL"
+    assert payload["price_features"]["range_position"] == "LOWER_THIRD"
+    assert payload["price_features"]["regime_filter"] == "TREND_ALIGNED_LOWER_THIRD_KEPT_SELL"
+
+
+def test_render_direct_report_handles_gold_bearish_inputs():
+    """When DXY rises, the rendering should say 'USD strengthened — gold-pressuring'
+    and gold_signal=BEARISH."""
+    asset = resolve_asset("XAUUSD")
+    payload = build_prediction_payload(
+        asset=asset,
+        context_markdown="# Context",
+        recent_runs=[],
+        state_snapshot={"recent_h1_closes": [10, 11, 12, 13], "levels": {"daily": {"low": 9, "high": 15}}},
+        market_snapshot={
+            "series": {
+                "usd_broad_index": {
+                    "label": "Trade-weighted USD broad index",
+                    "value": 119.5,
+                    "change_1d": 0.4,
+                    "bias": "SELL",
+                },
+                "us10y_yield": {
+                    "label": "US 10Y Treasury yield",
+                    "value": 4.55,
+                    "change_1d": 0.12,
+                    "bias": "SELL",
+                },
+            },
+        },
+    )
+    report = render_direct_report(payload)
+    assert "gold_signal=BEARISH" in report
+    assert "USD strengthened" in report
+    assert "10Y yield rose" in report
+    assert "gold-pressuring" in report

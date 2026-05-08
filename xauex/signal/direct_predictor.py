@@ -105,9 +105,7 @@ def render_direct_report(payload: dict[str, Any]) -> str:
     market_series = (market_snapshot.get('series') or {}) if isinstance(market_snapshot, dict) else {}
     if market_series:
         for key, row in market_series.items():
-            lines.append(
-                f"- {key}: value={row.get('value')} change_1d={row.get('change_1d')} bias={row.get('bias')}"
-            )
+            lines.append(_render_series_line(key, row))
     else:
         lines.append('- No structured market snapshot available.')
     fedwatch = market_snapshot.get('fedwatch') or {}
@@ -285,6 +283,12 @@ def _price_features(state_snapshot: dict[str, Any]) -> dict[str, Any]:
     closes = [float(value) for value in (state_snapshot.get('recent_h1_closes') or []) if value is not None]
     daily = (state_snapshot.get('levels') or {}).get('daily') or {}
     latest_quote = ((state_snapshot.get('runtime') or {}).get('latest_quote') or {}) if isinstance(state_snapshot, dict) else {}
+    trend = (state_snapshot.get('trend') or {}) if isinstance(state_snapshot, dict) else {}
+    daily_bias_raw = trend.get('daily_bias') if isinstance(trend, dict) else None
+    try:
+        daily_bias = int(daily_bias_raw) if daily_bias_raw is not None else None
+    except (TypeError, ValueError):
+        daily_bias = None
     if len(closes) < 2:
         out = {
             'h1_count': len(closes),
@@ -295,6 +299,8 @@ def _price_features(state_snapshot: dict[str, Any]) -> dict[str, Any]:
             'price_bias': 'NEUTRAL',
             'atr_14': 0.0,
             'momentum_threshold': 0.75,
+            'daily_trend_bias': daily_bias,
+            'regime_filter': 'INSUFFICIENT_DATA',
         }
         return _attach_latest_quote(out, latest_quote)
     latest = closes[-1]
@@ -320,10 +326,33 @@ def _price_features(state_snapshot: dict[str, Any]) -> dict[str, Any]:
         price_bias = 'SELL'
     else:
         price_bias = 'NEUTRAL'
+
+    # Regime-aware filter. The legacy filter unconditionally neutralized BUY in
+    # the upper third and SELL in the lower third — that killed trend
+    # continuation in real uptrends/downtrends. Now we only neutralize when the
+    # daily-EMA trend disagrees with the H1 momentum (true mean-reversion
+    # failure setup). When the trend agrees, we let trend continuation BUY/SELL
+    # through.
+    regime_filter = 'NONE'
     if price_bias == 'BUY' and range_position == 'UPPER_THIRD':
-        price_bias = 'NEUTRAL'
+        if daily_bias is None:
+            price_bias = 'NEUTRAL'
+            regime_filter = 'NO_TREND_SIGNAL_NEUTRALIZED_BUY'
+        elif daily_bias <= 0:
+            price_bias = 'NEUTRAL'
+            regime_filter = 'COUNTER_TREND_UPPER_THIRD_NEUTRALIZED_BUY'
+        else:
+            regime_filter = 'TREND_ALIGNED_UPPER_THIRD_KEPT_BUY'
     elif price_bias == 'SELL' and range_position == 'LOWER_THIRD':
-        price_bias = 'NEUTRAL'
+        if daily_bias is None:
+            price_bias = 'NEUTRAL'
+            regime_filter = 'NO_TREND_SIGNAL_NEUTRALIZED_SELL'
+        elif daily_bias >= 0:
+            price_bias = 'NEUTRAL'
+            regime_filter = 'COUNTER_TREND_LOWER_THIRD_NEUTRALIZED_SELL'
+        else:
+            regime_filter = 'TREND_ALIGNED_LOWER_THIRD_KEPT_SELL'
+
     out = {
         'h1_count': len(closes),
         'momentum_3': round(momentum_3, 2),
@@ -333,6 +362,8 @@ def _price_features(state_snapshot: dict[str, Any]) -> dict[str, Any]:
         'price_bias': price_bias,
         'atr_14': round(atr_14, 4),
         'momentum_threshold': round(momentum_threshold, 4),
+        'daily_trend_bias': daily_bias,
+        'regime_filter': regime_filter,
     }
     return _attach_latest_quote(out, latest_quote)
 
@@ -436,12 +467,81 @@ def _weighting_model(market_snapshot: dict[str, Any]) -> dict[str, float]:
 def _format_market_snapshot(market_snapshot: dict[str, Any]) -> str:
     parts: list[str] = []
     for key, row in (market_snapshot.get('series') or {}).items():
-        parts.append(f"{key}={row.get('value')}({row.get('bias')})")
+        gold_signal = _gold_signal_from_bias(row.get('bias'))
+        parts.append(f"{key}={row.get('value')}(gold={gold_signal})")
     if market_snapshot.get('event_flags'):
         active = [key for key, value in market_snapshot['event_flags'].items() if value]
         if active:
             parts.append(f"events={','.join(active)}")
     return ' | '.join(parts)[:260]
+
+
+def _gold_signal_from_bias(bias: Any) -> str:
+    """Translate the (gold-perspective) bias label into an unambiguous label.
+
+    The legacy 'BUY'/'SELL' encoding is gold-perspective but the LLM keeps
+    misreading 'bias=BUY' on DXY as 'USD bullish'. Render as BULLISH/BEARISH
+    so the gold direction is unmistakable.
+    """
+    text = str(bias or 'NEUTRAL').upper()
+    if text == 'BUY':
+        return 'BULLISH'
+    if text == 'SELL':
+        return 'BEARISH'
+    return 'NEUTRAL'
+
+
+def _render_series_line(key: str, row: dict[str, Any]) -> str:
+    value = row.get('value')
+    change = row.get('change_1d')
+    bias = row.get('bias')
+    gold_signal = _gold_signal_from_bias(bias)
+    label = str(row.get('label', '') or '').strip()
+    name_part = f"{key}" + (f" ({label})" if label else "")
+    if change is None:
+        return f"- {name_part}: value={value} → gold_signal={gold_signal}"
+    interpretation = _interpret_for_gold(key, change)
+    direction_word = 'rose' if change > 0 else 'fell' if change < 0 else 'flat'
+    change_str = f"{abs(float(change)):.4f}".rstrip('0').rstrip('.')
+    if not change_str:
+        change_str = '0'
+    if change == 0:
+        change_clause = "unchanged on 1d"
+    else:
+        change_clause = f"{direction_word} {change_str} on 1d"
+    if interpretation:
+        return f"- {name_part}: value={value} ({change_clause}) → gold_signal={gold_signal} ({interpretation})"
+    return f"- {name_part}: value={value} ({change_clause}) → gold_signal={gold_signal}"
+
+
+def _interpret_for_gold(key: str, change: float) -> str:
+    """Plain-English explanation of why a series move is gold-bullish or bearish.
+
+    We surface this in the rendered report so the brief writer cannot
+    accidentally invert the meaning (e.g. 'DXY bias=BUY' → 'USD strengthening').
+    """
+    if change == 0:
+        return ''
+    rising = change > 0
+    if key in {'usd_broad_index', 'usd_major_index'}:
+        # Lower DXY → weaker USD → easier dollar-priced gold bid.
+        return 'USD strengthened — gold-pressuring' if rising else 'USD weakened — gold-supportive'
+    if key == 'us2y_yield':
+        return '2Y yield rose — opportunity-cost up, gold-pressuring' if rising else '2Y yield fell — opportunity-cost down, gold-supportive'
+    if key == 'us10y_yield':
+        return '10Y yield rose — opportunity-cost up, gold-pressuring' if rising else '10Y yield fell — opportunity-cost down, gold-supportive'
+    if key == 'us10y_real_yield':
+        return 'Real yield rose — gold-pressuring' if rising else 'Real yield fell — gold-supportive'
+    if key in {'us5y_breakeven_inflation', 'us10y_breakeven_inflation'}:
+        return 'Inflation expectations rose — gold-supportive (inflation hedge)' if rising else 'Inflation expectations fell — gold-pressuring'
+    if key == 'vix':
+        return 'VIX rose — risk-off, gold-supportive (safe-haven)' if rising else 'VIX fell — risk-on, gold-pressuring'
+    if key == 'wti_oil':
+        return 'Oil rose — inflation/commodity bid, gold-supportive' if rising else 'Oil fell — disinflation, gold-pressuring'
+    if key == 'btc_usd':
+        # Regime-dependent; let the LLM judge directionally without us forcing it.
+        return ''
+    return ''
 
 
 def _is_surfaceable_status(status: str) -> bool:

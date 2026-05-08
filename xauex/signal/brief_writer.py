@@ -65,7 +65,14 @@ def write_brief(
         '- Explain the causal chain simply, like what happened and why it matters for gold.\n'
         '- Do not mention being an AI.\n'
         '- Do not include code fences.\n'
-        '- Keep key_points to at most 3 short bullets.'
+        '- Keep key_points to at most 3 short bullets.\n'
+        '\n'
+        'Critical bias semantics (avoid common mistake):\n'
+        "- 'gold_signal=BULLISH' on a series means that series move is supportive of gold going up. It does NOT mean the underlying went up.\n"
+        "- A FALLING DXY means USD weakened — which is gold_signal=BULLISH (gold-supportive). Never describe a falling DXY as 'strengthening USD'.\n"
+        "- A FALLING US10Y yield is gold_signal=BULLISH because it lowers the opportunity cost of holding gold.\n"
+        "- A RISING breakeven inflation is gold_signal=BULLISH (gold as inflation hedge).\n"
+        "- Use the per-row interpretation strings in the report (e.g. 'USD weakened — gold-supportive') verbatim where useful instead of inventing your own narrative."
     )
 
     response = client.chat.completions.create(
