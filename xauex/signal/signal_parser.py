@@ -24,6 +24,13 @@ _TOKEN_PRICES_USD_PER_MILLION: dict[str, tuple[float, float]] = {
     'openai/gpt-oss-120b': (0.15, 0.60),
 }
 
+# Refuse to trade when the structured macro snapshot is older than this. The
+# market_snapshot freshness assessor only blocks when ≥3 individual series
+# exceed 7 days; in practice that meant a 7.5-day-old DXY plus 2.5-day-old
+# yields slipped through as "warning" and the parser produced live SELL
+# signals against gold during a strong uptrend (the May 2026 incident).
+HARD_STALE_MARKET_SNAPSHOT_SECONDS = 3 * 24 * 3600
+
 
 def parse_signal(
     *,
@@ -43,14 +50,10 @@ def parse_signal(
         report_markdown=report_markdown,
         window_label=window_label,
     )
-    parser_client = create_chat_client(
-        api_key=config.parser_llm_api_key,
-        base_url=config.parser_llm_base_url,
-    )
 
     logger.info(
-        '[PARSER] Calling %s for %s (%d chars report, %d actions)',
-        config.parser_llm_model,
+        '[PARSER] Preparing %s decision for %s (%d chars report, %d actions)',
+        decision_mode,
         asset.symbol,
         len(report_markdown),
         len(actions),
@@ -71,6 +74,39 @@ def parse_signal(
             'market_snapshot': decision_packet['market_snapshot'],
             'event_flags': decision_packet['event_flags'],
         }
+        return signal
+
+    # Hard-stale guard: the upstream `market_snapshot.py` freshness assessor
+    # only flips to 'blocked' when *multiple* series exceed 7 days. That is too
+    # permissive — a 5-day-old USD index plus 2-day-old yields produces
+    # 'warning' state but the LLM treats those values as live, leading to
+    # decisive directional trades on data that pre-dates whatever caused the
+    # current price action. Refuse to trade here as a defensive layer.
+    snapshot_age_raw = (decision_packet.get('input_freshness') or {}).get('market_snapshot_age_seconds')
+    try:
+        snapshot_age = float(snapshot_age_raw) if snapshot_age_raw is not None else None
+    except (TypeError, ValueError):
+        snapshot_age = None
+    if snapshot_age is not None and snapshot_age > HARD_STALE_MARKET_SNAPSHOT_SECONDS:
+        days_old = snapshot_age / 86400.0
+        reason = (
+            f'Macro snapshot is hard-stale at {snapshot_age:.0f}s (~{days_old:.1f} days) — '
+            f'refusing to trade until it refreshes within {HARD_STALE_MARKET_SNAPSHOT_SECONDS}s.'
+        )
+        signal = _hold_signal(asset, reason)
+        signal['decision_mode'] = decision_mode
+        signal['validator_status'] = 'skipped'
+        signal['validator_summary'] = reason
+        signal['consensus_state'] = 'blocked'
+        signal['llm_usage'] = _combine_usage(provider=config.parser_llm_base_url, stages=[])
+        signal['decision_packet'] = {
+            'decision_mode': decision_mode,
+            'window_label': decision_packet['window_label'],
+            'input_freshness': decision_packet['input_freshness'],
+            'market_snapshot': decision_packet['market_snapshot'],
+            'event_flags': decision_packet['event_flags'],
+        }
+        logger.warning('[PARSER] Hard-stale macro snapshot for %s: %s', asset.symbol, reason)
         return signal
 
     debate_usage: list[dict[str, Any]] = []
@@ -113,6 +149,11 @@ def parse_signal(
         parsed = dict(candidate_graph.get('final_decision') or {})
         parser_mode = 'candidate_graph'
     else:
+        parser_client = create_chat_client(
+            api_key=config.parser_llm_api_key,
+            base_url=config.parser_llm_base_url,
+        )
+        logger.info('[PARSER] Calling %s for %s', config.parser_llm_model, asset.symbol)
         response, parsed, parser_mode = _request_json_completion(
             client=parser_client,
             model=config.parser_llm_model,

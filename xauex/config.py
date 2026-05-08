@@ -87,6 +87,7 @@ class Config:
     xauex_cash_stop_loss_gbp: float
     xauex_risk_cap_percent: float
     xauex_confirm_spread_max_dollars: float
+    xauex_confirm_max_age_seconds: int
     xauex_confidence_full_threshold: float
     xauex_confidence_medium_threshold: float
     xauex_medium_confidence_lot_multiplier: float
@@ -373,6 +374,13 @@ def load_config(env_file: str = ".env") -> Config:
         0.05,
         10.0,
         float(os.getenv("MIROFISH_CONFIRM_SPREAD_MAX_DOLLARS", os.getenv("SCALP_SPREAD_MAX_DOLLARS", "1.0"))),
+    )
+    xauex_confirm_max_age_seconds = collect(
+        _int_range,
+        "XAUEX_CONFIRM_MAX_AGE_SECONDS",
+        60,
+        3600,
+        int(os.getenv("XAUEX_CONFIRM_MAX_AGE_SECONDS", "600")),
     )
     xauex_confidence_full_threshold = collect(
         _float_range,
@@ -704,6 +712,7 @@ def load_config(env_file: str = ".env") -> Config:
         xauex_cash_stop_loss_gbp=xauex_cash_stop_loss_gbp,
         xauex_risk_cap_percent=xauex_risk_cap_percent,
         xauex_confirm_spread_max_dollars=xauex_confirm_spread_max_dollars,
+        xauex_confirm_max_age_seconds=xauex_confirm_max_age_seconds,
         xauex_confidence_full_threshold=xauex_confidence_full_threshold,
         xauex_confidence_medium_threshold=xauex_confidence_medium_threshold,
         xauex_medium_confidence_lot_multiplier=xauex_medium_confidence_lot_multiplier,

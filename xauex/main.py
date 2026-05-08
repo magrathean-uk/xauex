@@ -144,6 +144,38 @@ def _is_strong_aligned_signal(*, signal: Dict[str, object]) -> bool:
     return consensus in {"aligned", "confirmed"} and validator_status == "reviewed"
 
 
+# Default freshness window for an upstream confirm_status read from cmd.json.
+# The London entry windows are 5 minutes wide and confirm passes run ~1 min
+# before each window opens. A confirm older than this is almost certainly a
+# stale leftover from a previous slot or an aborted run, and trusting it can
+# let news-blocked or microstructure-vetoed states slip through. Operators can
+# override via XAUEX_CONFIRM_MAX_AGE_SECONDS in the env file.
+XAUEX_CONFIRM_MAX_AGE_SECONDS_DEFAULT = 600
+
+
+def is_xauex_confirm_timestamp_fresh(
+    confirm_timestamp_utc: Optional[str],
+    now_utc: datetime,
+    max_age_seconds: int,
+) -> bool:
+    """Return True only when the provided ISO confirm timestamp is parseable
+    and within max_age_seconds of now_utc. Missing or invalid timestamps are
+    treated as stale (False) so the caller forces a re-confirmation."""
+    if not confirm_timestamp_utc:
+        return False
+    text = str(confirm_timestamp_utc).strip()
+    if not text:
+        return False
+    try:
+        confirm_dt = datetime.fromisoformat(text.replace("Z", "+00:00")).astimezone(timezone.utc)
+    except (TypeError, ValueError):
+        return False
+    age_seconds = (now_utc.astimezone(timezone.utc) - confirm_dt).total_seconds()
+    if age_seconds < 0:
+        return False
+    return age_seconds <= max(0, int(max_age_seconds))
+
+
 def build_xauex_confirm_decision(
     *,
     signal: Dict[str, object],
@@ -2995,6 +3027,29 @@ class BotOrchestrator:
             confirm_status = str(sig.get("confirm_status") or "PENDING").upper()
             confirm_reason = str(sig.get("confirm_reason") or "WAITING_FOR_CONFIRM")
             confirm_timestamp_utc = str(sig.get("confirm_timestamp_utc") or "")
+            # Defense in depth: a CONFIRMED/SKIP status from cmd.json that is
+            # older than the configured freshness window can no longer be
+            # trusted (news events may have started, microstructure may have
+            # shifted). Force a re-confirmation by demoting the status to
+            # PENDING so the existing confirm-pass branch below runs.
+            confirm_max_age_seconds = int(
+                getattr(self.config, "xauex_confirm_max_age_seconds", XAUEX_CONFIRM_MAX_AGE_SECONDS_DEFAULT)
+                or XAUEX_CONFIRM_MAX_AGE_SECONDS_DEFAULT
+            )
+            if confirm_status in {"CONFIRMED", "SKIP"} and not is_xauex_confirm_timestamp_fresh(
+                confirm_timestamp_utc=confirm_timestamp_utc,
+                now_utc=now_utc,
+                max_age_seconds=confirm_max_age_seconds,
+            ):
+                logger.warning(
+                    "[XAUEX] confirm timestamp %s is older than %ds for %s/%s — forcing re-confirmation.",
+                    confirm_timestamp_utc or "<missing>",
+                    confirm_max_age_seconds,
+                    slot,
+                    signal_id,
+                )
+                confirm_status = "PENDING"
+                confirm_reason = "CONFIRM_TIMESTAMP_STALE"
             self._journal_event(
                 "signal_decision",
                 {
@@ -3260,7 +3315,28 @@ class BotOrchestrator:
                             _safe_signal_float(sig.get("counter_signal_risk_multiplier"), 0.0),
                         )
                     else:
-                        logger.info("[XAUEX] Confirm veto: %s", confirm_reason)
+                        logger.warning(
+                            "[XAUEX] Confirm veto blocked trade: status=%s reason=%s slot=%s signal=%s action=%s confidence=%.2f",
+                            confirm_status,
+                            confirm_reason,
+                            slot,
+                            signal_id,
+                            action,
+                            confidence,
+                        )
+                        self._journal_event(
+                            "confirm_veto",
+                            {
+                                "slot": slot,
+                                "window_label": window_label,
+                                "confirm_status": confirm_status,
+                                "confirm_reason": confirm_reason,
+                                "signal_action": action,
+                                "signal_confidence": confidence,
+                                "confirm_timestamp_utc": confirm_timestamp_utc,
+                            },
+                            correlation_id=signal_id,
+                        )
                         self._mark_slot_used(
                             slot=slot,
                             signal_id=signal_id,
@@ -3278,7 +3354,14 @@ class BotOrchestrator:
                         continue
 
                 if confirm_status != "CONFIRMED" or direction is None:
-                    logger.info("[XAUEX] Confirm veto: %s", confirm_reason)
+                    logger.warning(
+                        "[XAUEX] Confirm veto blocked trade (post-counter): status=%s reason=%s slot=%s signal=%s direction=%s",
+                        confirm_status,
+                        confirm_reason,
+                        slot,
+                        signal_id,
+                        direction,
+                    )
                     self._mark_slot_used(
                         slot=slot,
                         signal_id=signal_id,

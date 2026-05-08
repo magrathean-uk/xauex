@@ -34,6 +34,8 @@ build_xauex_counter_signal_candidate = _MODULE.build_xauex_counter_signal_candid
 advance_xauex_session_phase = _MODULE.advance_xauex_session_phase
 confirm_xauex_session_phase_transition = _MODULE.confirm_xauex_session_phase_transition
 build_xauex_confirm_decision = _MODULE.build_xauex_confirm_decision
+is_xauex_confirm_timestamp_fresh = _MODULE.is_xauex_confirm_timestamp_fresh
+XAUEX_CONFIRM_MAX_AGE_SECONDS_DEFAULT = _MODULE.XAUEX_CONFIRM_MAX_AGE_SECONDS_DEFAULT
 calculate_xauex_remaining_daily_loss_budget = _MODULE.calculate_xauex_remaining_daily_loss_budget
 BotOrchestrator = _MODULE.BotOrchestrator
 
@@ -674,6 +676,44 @@ def test_structure_stop_distance_accepts_htflevels_container():
     distance = orchestrator._xauex_structure_stop_distance(direction=-1, current_price=4725.0)
 
     assert distance == 17.5
+
+
+def test_xauex_confirm_timestamp_is_fresh_when_within_max_age():
+    """A confirm_timestamp recorded within the freshness window is considered fresh."""
+    now = datetime(2026, 5, 8, 12, 30, 0, tzinfo=timezone.utc)
+    confirm_timestamp = "2026-05-08T12:25:00Z"  # 5 minutes old
+    assert is_xauex_confirm_timestamp_fresh(
+        confirm_timestamp_utc=confirm_timestamp,
+        now_utc=now,
+        max_age_seconds=600,
+    ) is True
+
+
+def test_xauex_confirm_timestamp_is_stale_beyond_max_age():
+    """A confirm_timestamp older than max_age must be flagged stale so the
+    poller will re-run the confirm pass before placing an order."""
+    now = datetime(2026, 5, 8, 12, 30, 0, tzinfo=timezone.utc)
+    confirm_timestamp = "2026-05-08T12:00:00Z"  # 30 minutes old
+    assert is_xauex_confirm_timestamp_fresh(
+        confirm_timestamp_utc=confirm_timestamp,
+        now_utc=now,
+        max_age_seconds=600,
+    ) is False
+
+
+def test_xauex_confirm_timestamp_treats_missing_or_invalid_as_stale():
+    """Empty string, None, or unparseable timestamps must be treated as stale
+    so the poller re-confirms instead of trusting a missing freshness check."""
+    now = datetime(2026, 5, 8, 12, 30, 0, tzinfo=timezone.utc)
+    assert is_xauex_confirm_timestamp_fresh("", now, 600) is False
+    assert is_xauex_confirm_timestamp_fresh(None, now, 600) is False  # type: ignore[arg-type]
+    assert is_xauex_confirm_timestamp_fresh("not-a-timestamp", now, 600) is False
+
+
+def test_xauex_confirm_default_max_age_is_ten_minutes():
+    """Document the default freshness window. If this changes the test should
+    fail noisily so we update operator documentation."""
+    assert XAUEX_CONFIRM_MAX_AGE_SECONDS_DEFAULT == 600
 
 
 @pytest.mark.asyncio

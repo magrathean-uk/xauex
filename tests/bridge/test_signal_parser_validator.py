@@ -1,6 +1,7 @@
 from xauex.signal.assets import resolve_asset
 from xauex.signal.config import SignalConfig
 from xauex.signal.signal_parser import (
+    HARD_STALE_MARKET_SNAPSHOT_SECONDS,
     _apply_validator_result,
     _build_analyst_debate,
     _build_decision_packet,
@@ -137,6 +138,125 @@ def test_validator_hard_blocker_forces_hold():
     assert merged["stop_loss_distance"] == 0.0
     assert merged["take_profit_distance"] == 0.0
     assert merged["consensus_state"] == "blocked"
+
+
+def test_parse_signal_hard_holds_when_market_snapshot_is_too_stale(monkeypatch):
+    """A 7+ day old FRED snapshot was passing as 'warning' state and the parser
+    still produced live BUY/SELL signals. Now an age above the hard-stale
+    threshold (3 days) must force HOLD before any LLM call."""
+    monkeypatch.setenv("XAUEX_SIGNAL_LLM_API_KEY", "test-key")
+    cfg = SignalConfig.from_env()
+    asset = resolve_asset("XAUUSD")
+
+    def _explode(**kwargs):
+        raise AssertionError("LLM client must not be invoked when snapshot is hard-stale")
+
+    monkeypatch.setattr("xauex.signal.signal_parser.create_chat_client", _explode)
+
+    stale_age = HARD_STALE_MARKET_SNAPSHOT_SECONDS + 60
+
+    signal = parse_signal(
+        asset=asset,
+        actions=[{"agent_name": "price_structure", "action_type": "SELL", "content": "negative momentum"}],
+        report_markdown="# Report\nGold pressured.",
+        config=cfg,
+        prediction_payload={
+            "price_features": {"price_bias": "SELL"},
+            "memory_summary": {},
+            "market_snapshot": {"series": {}},
+            "event_flags": {},
+            "input_freshness": {
+                "market_snapshot_state": "warning",
+                "market_snapshot_age_seconds": stale_age,
+                "hard_blocker": False,
+            },
+            "context_items": [],
+        },
+        window_label="us_open",
+        decision_mode="baseline",
+    )
+
+    assert signal["action"] == "HOLD"
+    assert signal["confidence"] == 0.0
+    assert signal["consensus_state"] == "blocked"
+    assert signal["validator_status"] == "skipped"
+    assert "stale" in signal["reasoning"].lower()
+    assert signal["decision_packet"]["input_freshness"]["market_snapshot_age_seconds"] == stale_age
+
+
+def test_parse_signal_does_not_hard_hold_when_snapshot_is_fresh_enough(monkeypatch):
+    """The hard-stale guard must not interfere with normal fresh-snapshot
+    operation. Use age below the threshold."""
+    monkeypatch.setenv("XAUEX_SIGNAL_LLM_API_KEY", "test-key")
+    cfg = SignalConfig.from_env()
+    asset = resolve_asset("XAUUSD")
+
+    fresh_age = HARD_STALE_MARKET_SNAPSHOT_SECONDS // 2
+
+    class _Usage:
+        prompt_tokens = 50
+        completion_tokens = 25
+        total_tokens = 75
+
+    class _Message:
+        def __init__(self, content):
+            self.content = content
+
+    class _Choice:
+        def __init__(self, content):
+            self.message = _Message(content)
+
+    class _Response:
+        def __init__(self, content):
+            self.choices = [_Choice(content)]
+            self.usage = _Usage()
+
+    parser_responses = [
+        _Response('{"action":"SELL","confidence":0.6,"reasoning":"r","stop_loss_distance":12,"take_profit_distance":24}'),
+        _Response('{"decision":"ALIGNED","confidence_adjustment":0.0,"reasoning":"ok","hard_blocker":false}'),
+    ]
+
+    class _Completions:
+        def __init__(self, queue):
+            self.queue = queue
+
+        def create(self, **kwargs):
+            return self.queue.pop(0)
+
+    class _Client:
+        def __init__(self, queue):
+            self.chat = type("Chat", (), {"completions": _Completions(queue)})()
+
+    queue = list(parser_responses)
+
+    monkeypatch.setattr(
+        "xauex.signal.signal_parser.create_chat_client",
+        lambda **kwargs: _Client(queue),
+    )
+
+    signal = parse_signal(
+        asset=asset,
+        actions=[{"agent_name": "price_structure", "action_type": "SELL", "content": "neg"}],
+        report_markdown="# Report\nGold pressured.",
+        config=cfg,
+        prediction_payload={
+            "price_features": {"price_bias": "SELL"},
+            "memory_summary": {},
+            "market_snapshot": {"series": {}},
+            "event_flags": {},
+            "input_freshness": {
+                "market_snapshot_state": "warning",
+                "market_snapshot_age_seconds": fresh_age,
+                "hard_blocker": False,
+            },
+            "context_items": [],
+        },
+        window_label="us_open",
+        decision_mode="baseline",
+    )
+
+    assert signal["action"] in {"BUY", "SELL"}
+    assert signal["consensus_state"] != "blocked"
 
 
 def test_validator_prompt_reserves_disagreement_for_direct_contradictions():
