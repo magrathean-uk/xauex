@@ -11,6 +11,59 @@ def test_usd_major_index_uses_current_fred_substitute():
     assert _FRED_SERIES["usd_major_index"]["series_id"] == "DTWEXAFEGS"
 
 
+def test_market_snapshot_freshness_tracks_daily_publishing_max_age(monkeypatch):
+    """The slow-publishing FRED series (USD broad/major index, WTI oil) lag
+    by ~7 days as a matter of normal cadence. The aggregate
+    market_snapshot_age_seconds (max of all series) reflects that and would
+    falsely trigger a hard-stale guard. Add a parallel
+    daily_publishing_max_age_seconds that only counts series where
+    stale_blocks_live_window != false, so guards keyed off daily data
+    fire only for real fetch failures."""
+    monkeypatch.setenv("XAUEX_SIGNAL_LLM_API_KEY", "test-key")
+    cfg = SignalConfig.from_env()
+    fake_rows = {
+        "DTWEXBGS": {"value": 121.0, "previous_value": 121.0, "change_1d": 0.0, "date_utc": "2026-04-30T00:00:00Z", "age_seconds": 649507.0},
+        "DTWEXAFEGS": {"value": 105.5, "previous_value": 105.5, "change_1d": 0.0, "date_utc": "2026-04-30T00:00:00Z", "age_seconds": 649507.0},
+        "DGS2": {"value": 3.8, "previous_value": 3.8, "change_1d": 0.0, "date_utc": "2026-05-06T00:00:00Z", "age_seconds": 217507.0},
+        "DGS10": {"value": 4.2, "previous_value": 4.2, "change_1d": 0.0, "date_utc": "2026-05-06T00:00:00Z", "age_seconds": 217507.0},
+        "DFII10": {"value": 1.9, "previous_value": 1.9, "change_1d": 0.0, "date_utc": "2026-05-06T00:00:00Z", "age_seconds": 217507.0},
+        "T5YIE": {"value": 2.4, "previous_value": 2.4, "change_1d": 0.0, "date_utc": "2026-05-07T00:00:00Z", "age_seconds": 131107.0},
+        "T10YIE": {"value": 2.5, "previous_value": 2.5, "change_1d": 0.0, "date_utc": "2026-05-07T00:00:00Z", "age_seconds": 131107.0},
+        "VIXCLS": {"value": 18.0, "previous_value": 18.0, "change_1d": 0.0, "date_utc": "2026-05-06T00:00:00Z", "age_seconds": 217507.0},
+        "DCOILWTICO": {"value": 82.0, "previous_value": 82.0, "change_1d": 0.0, "date_utc": "2026-05-04T00:00:00Z", "age_seconds": 390307.0},
+        "CBBTCUSD": {"value": 80000.0, "previous_value": 80000.0, "change_1d": 0.0, "date_utc": "2026-05-07T00:00:00Z", "age_seconds": 131107.0},
+    }
+    monkeypatch.setattr(
+        "xauex.signal.market_snapshot._fetch_fred_series",
+        lambda client, series_id: fake_rows[series_id],
+    )
+    monkeypatch.setattr(
+        "xauex.signal.market_snapshot.fetch_policy_context",
+        lambda config: {"status": "unavailable", "available": False, "summary": ""},
+    )
+    monkeypatch.setattr(
+        "xauex.signal.market_snapshot.fetch_fedwatch_snapshot",
+        lambda config: {"status": "unavailable", "available": False, "summary": ""},
+    )
+    monkeypatch.setattr(
+        "xauex.signal.market_snapshot.fetch_cot_snapshot",
+        lambda config: {"status": "unavailable", "available": False, "summary": ""},
+    )
+
+    snapshot = build_market_snapshot(
+        asset=resolve_asset("XAUUSD"),
+        config=replace(cfg, source_timeout_seconds=1.0),
+        context_items=[],
+    )
+    freshness = snapshot["input_freshness"]
+    # The aggregate (max) is dominated by the weekly USD index → 7.5 days.
+    assert freshness["market_snapshot_age_seconds"] == 649507
+    # The daily-publishing max is 217507 (yields / VIX at 2.5 days), well
+    # under the 3-day hard-stale threshold.
+    assert "daily_publishing_max_age_seconds" in freshness
+    assert freshness["daily_publishing_max_age_seconds"] == 217507
+
+
 def test_build_market_snapshot_maps_gold_driver_biases(monkeypatch):
     monkeypatch.setenv("XAUEX_SIGNAL_LLM_API_KEY", "test-key")
     cfg = SignalConfig.from_env()

@@ -140,10 +140,11 @@ def test_validator_hard_blocker_forces_hold():
     assert merged["consensus_state"] == "blocked"
 
 
-def test_parse_signal_hard_holds_when_market_snapshot_is_too_stale(monkeypatch):
-    """A 7+ day old FRED snapshot was passing as 'warning' state and the parser
-    still produced live BUY/SELL signals. Now an age above the hard-stale
-    threshold (3 days) must force HOLD before any LLM call."""
+def test_parse_signal_hard_holds_when_daily_macro_series_is_too_stale(monkeypatch):
+    """When daily-publishing series (yields, breakevens, VIX, BTC) exceed
+    the hard-stale threshold the parser must HOLD before any LLM call. The
+    aggregate max-age field is ignored because slow-publishing series
+    (USD trade-weighted index, WTI oil) have a natural ~7-day lag."""
     monkeypatch.setenv("XAUEX_SIGNAL_LLM_API_KEY", "test-key")
     cfg = SignalConfig.from_env()
     asset = resolve_asset("XAUUSD")
@@ -167,7 +168,8 @@ def test_parse_signal_hard_holds_when_market_snapshot_is_too_stale(monkeypatch):
             "event_flags": {},
             "input_freshness": {
                 "market_snapshot_state": "warning",
-                "market_snapshot_age_seconds": stale_age,
+                "market_snapshot_age_seconds": stale_age + 86400,
+                "daily_publishing_max_age_seconds": stale_age,
                 "hard_blocker": False,
             },
             "context_items": [],
@@ -181,7 +183,63 @@ def test_parse_signal_hard_holds_when_market_snapshot_is_too_stale(monkeypatch):
     assert signal["consensus_state"] == "blocked"
     assert signal["validator_status"] == "skipped"
     assert "stale" in signal["reasoning"].lower()
-    assert signal["decision_packet"]["input_freshness"]["market_snapshot_age_seconds"] == stale_age
+
+
+def test_parse_signal_does_not_hard_hold_when_only_slow_series_are_old(monkeypatch):
+    """The DTWEXBGS / DTWEXAFEGS USD trade-weighted indexes lag by ~7 days
+    by design. When only those slow-publishing series are old but daily
+    series are fresh, the guard must NOT block."""
+    monkeypatch.setenv("XAUEX_SIGNAL_LLM_API_KEY", "test-key")
+    cfg = SignalConfig.from_env()
+    asset = resolve_asset("XAUUSD")
+
+    class _Usage:
+        prompt_tokens = 50
+        completion_tokens = 25
+        total_tokens = 75
+
+    class _Response:
+        def __init__(self, content):
+            self.choices = [type("C", (), {"message": type("M", (), {"content": content})()})]
+            self.usage = _Usage()
+
+    parser_responses = iter([
+        _Response('{"action":"SELL","confidence":0.6,"reasoning":"r","stop_loss_distance":12,"take_profit_distance":24}'),
+        _Response('{"decision":"ALIGNED","confidence_adjustment":0.0,"reasoning":"ok","hard_blocker":false}'),
+    ])
+
+    class _Client:
+        def __init__(self):
+            self.chat = type("Chat", (), {"completions": type("Completions", (), {"create": staticmethod(lambda **kwargs: next(parser_responses))})})()
+
+    monkeypatch.setattr("xauex.signal.signal_parser.create_chat_client", lambda **kwargs: _Client())
+
+    signal = parse_signal(
+        asset=asset,
+        actions=[{"agent_name": "price_structure", "action_type": "SELL", "content": "neg"}],
+        report_markdown="# Report\nGold pressured.",
+        config=cfg,
+        prediction_payload={
+            "price_features": {"price_bias": "SELL"},
+            "memory_summary": {},
+            "market_snapshot": {"series": {}},
+            "event_flags": {},
+            "input_freshness": {
+                "market_snapshot_state": "warning",
+                # 7.5-day USD index lag is normal cadence.
+                "market_snapshot_age_seconds": 649507,
+                # Yields/VIX at 2.5 days = under the 3-day threshold.
+                "daily_publishing_max_age_seconds": 217507,
+                "hard_blocker": False,
+            },
+            "context_items": [],
+        },
+        window_label="us_open",
+        decision_mode="baseline",
+    )
+
+    assert signal["action"] in {"BUY", "SELL"}
+    assert signal["consensus_state"] != "blocked"
 
 
 def test_parse_signal_blocks_low_confidence_directional_flip_via_persistence(monkeypatch, tmp_path):

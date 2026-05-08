@@ -79,20 +79,31 @@ def parse_signal(
         return signal
 
     # Hard-stale guard: the upstream `market_snapshot.py` freshness assessor
-    # only flips to 'blocked' when *multiple* series exceed 7 days. That is too
-    # permissive — a 5-day-old USD index plus 2-day-old yields produces
-    # 'warning' state but the LLM treats those values as live, leading to
-    # decisive directional trades on data that pre-dates whatever caused the
-    # current price action. Refuse to trade here as a defensive layer.
-    snapshot_age_raw = (decision_packet.get('input_freshness') or {}).get('market_snapshot_age_seconds')
+    # only flips to 'blocked' when *multiple* series exceed 7 days. That's too
+    # permissive — a 5-day-old daily series plus 2-day-old yields slips
+    # through as 'warning' and the LLM treats stale values as live. Refuse
+    # to trade as a defensive layer.
+    #
+    # Critically, this guard only checks *daily-publishing* series. The
+    # USD trade-weighted indexes (DTWEXBGS, DTWEXAFEGS) and WTI oil have a
+    # natural ~7-day publication lag from FRED H.10; using the aggregate max
+    # age would force HOLD on every signal under normal cadence.
+    freshness = decision_packet.get('input_freshness') or {}
+    daily_age_raw = freshness.get('daily_publishing_max_age_seconds')
+    if daily_age_raw is None:
+        # Backward-compatible fallback for callers that pre-date the
+        # daily-age field — fall back to the aggregate max but only when
+        # the freshness state already flags a problem.
+        if str(freshness.get('market_snapshot_state', '')).lower() in {'blocked'}:
+            daily_age_raw = freshness.get('market_snapshot_age_seconds')
     try:
-        snapshot_age = float(snapshot_age_raw) if snapshot_age_raw is not None else None
+        daily_age = float(daily_age_raw) if daily_age_raw is not None else None
     except (TypeError, ValueError):
-        snapshot_age = None
-    if snapshot_age is not None and snapshot_age > HARD_STALE_MARKET_SNAPSHOT_SECONDS:
-        days_old = snapshot_age / 86400.0
+        daily_age = None
+    if daily_age is not None and daily_age > HARD_STALE_MARKET_SNAPSHOT_SECONDS:
+        days_old = daily_age / 86400.0
         reason = (
-            f'Macro snapshot is hard-stale at {snapshot_age:.0f}s (~{days_old:.1f} days) — '
+            f'Daily-publishing macro series is hard-stale at {daily_age:.0f}s (~{days_old:.1f} days) — '
             f'refusing to trade until it refreshes within {HARD_STALE_MARKET_SNAPSHOT_SECONDS}s.'
         )
         signal = _hold_signal(asset, reason)
