@@ -3841,6 +3841,27 @@ class BotOrchestrator:
                     await self.write_state()
                     continue
                 target_cash_reward = round(lot * float(self.symbol_spec.lot_size) * tp_distance, 2)
+                # Capture the signal context that produced this trade so the
+                # post-trade journal and weekly review can attribute outcomes
+                # to confidence, validator opinion, regime filter, and macro
+                # snapshot freshness rather than treating every closed trade
+                # as a context-free event.
+                decision_packet_for_meta = sig.get("decision_packet") or {}
+                price_features_for_meta = (decision_packet_for_meta.get("price_features") or {}) if isinstance(decision_packet_for_meta, dict) else {}
+                input_freshness_for_meta = (decision_packet_for_meta.get("input_freshness") or {}) if isinstance(decision_packet_for_meta, dict) else {}
+                signal_context = {
+                    "signal_action": str(sig.get("action") or "").upper(),
+                    "signal_confidence": round(float(sig.get("confidence") or 0.0), 4),
+                    "validator_status": str(sig.get("validator_status") or ""),
+                    "validator_summary": str(sig.get("validator_summary") or "")[:280],
+                    "consensus_state": str(sig.get("consensus_state") or ""),
+                    "decision_mode": str(sig.get("decision_mode") or ""),
+                    "daily_trend_bias": price_features_for_meta.get("daily_trend_bias"),
+                    "range_position": price_features_for_meta.get("range_position"),
+                    "regime_filter": price_features_for_meta.get("regime_filter"),
+                    "market_snapshot_age_seconds": input_freshness_for_meta.get("market_snapshot_age_seconds"),
+                    "market_snapshot_state": input_freshness_for_meta.get("market_snapshot_state"),
+                }
                 session_metadata = {
                     "session": {
                         "phase": "OBSERVE",
@@ -3871,7 +3892,13 @@ class BotOrchestrator:
                         "confirm_status": confirm_status,
                         "confirm_reason": confirm_reason,
                         "confirm_timestamp_utc": confirm_timestamp_utc,
-                    }
+                    },
+                    "signal_context": signal_context,
+                    # Top-level mirrors so the journal/weekly review can read
+                    # them without traversing the metadata dict.
+                    "signal_confidence": signal_context["signal_confidence"],
+                    "consensus_state": signal_context["consensus_state"],
+                    "validator_status": signal_context["validator_status"],
                 }
                 logger.info(
                     "[XAUEX] Executing %s %s | Lot:%.2f assurance=%s score=%.2f risk_budget:%.2f/%.2f actual_risk:%.2f target_rr:%.2f SL:%.2f TP:%.2f signal_sl:%.2f atr_sl:%.2f structure_sl:%.2f | Confidence:%.2f | %s",

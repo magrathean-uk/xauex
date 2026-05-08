@@ -548,7 +548,9 @@ class Executor:
             close_price, pnl_sign, abs(pnl), position.pattern.name, position.level,
         )
 
-        self._closed_trades_today.append({
+        position_metadata = dict(position.metadata or {})
+        signal_context = position_metadata.get("signal_context") if isinstance(position_metadata.get("signal_context"), dict) else {}
+        closed_record = {
             "position_id": position_id,
             "direction": position.direction,
             "entry_price": position.entry_price,
@@ -560,9 +562,28 @@ class Executor:
             "pattern": position.pattern.name,
             "level": position.level,
             "owner": position.owner,
-            "metadata": dict(position.metadata or {}),
+            "metadata": position_metadata,
             "close_time_utc": datetime.now(timezone.utc).isoformat(),
-        })
+        }
+        # Lift the signal-context fields so analyst layers (post-trade journal,
+        # weekly review) can read them directly without traversing metadata.
+        for context_key in (
+            "signal_confidence",
+            "signal_action",
+            "validator_status",
+            "consensus_state",
+            "decision_mode",
+            "daily_trend_bias",
+            "range_position",
+            "regime_filter",
+            "market_snapshot_age_seconds",
+            "market_snapshot_state",
+        ):
+            if signal_context and context_key in signal_context:
+                closed_record[context_key] = signal_context[context_key]
+            elif context_key in position_metadata:
+                closed_record[context_key] = position_metadata[context_key]
+        self._closed_trades_today.append(closed_record)
         correlation_id = str((position.metadata or {}).get("correlation_id") or "")
         session = (position.metadata or {}).get("session") if isinstance((position.metadata or {}).get("session"), dict) else {}
         if not correlation_id:
