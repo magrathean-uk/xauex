@@ -62,6 +62,152 @@ def filter_to_week(entries: List[Dict], ts_key: str, start: datetime, end: datet
     return result
 
 
+_DIRECTION_SKEW_ALERT_THRESHOLD = 0.70
+_PATTERN_HIT_RATE_ALERT_THRESHOLD = 0.25
+
+
+def compute_trade_metrics(journal: List[Dict]) -> Dict[str, Any]:
+    """Aggregate direction-aware metrics from a list of journal entries.
+
+    The legacy weekly review only looked at total PnL and recommended
+    "increase risk appetite" on a system that was 82% short and bleeding on
+    those shorts. This function exposes:
+
+    * LONG/SHORT counts and PnL split.
+    * Pattern hit rate (proportion of trades with a non-NONE pattern).
+    * Direction skew ratio and an explicit alert when one side dominates >70%.
+    * Confidence-weighted PnL when the journal records ``signal_confidence``.
+    """
+    trades = list(journal or [])
+    long_pnl = 0.0
+    short_pnl = 0.0
+    long_count = 0
+    short_count = 0
+    unknown_direction_count = 0
+    wins = 0
+    losses = 0
+    pattern_hits = 0
+    high_conf_pnl = 0.0
+    low_conf_pnl = 0.0
+    high_conf_count = 0
+    low_conf_count = 0
+    for trade in trades:
+        entry = trade.get("entry") or {}
+        direction = str(entry.get("direction") or "").upper()
+        try:
+            pnl = float(entry.get("pnl") or 0.0)
+        except (TypeError, ValueError):
+            pnl = 0.0
+        pattern = str(entry.get("pattern") or "NONE").upper()
+        try:
+            confidence = float(entry.get("signal_confidence") or 0.0)
+        except (TypeError, ValueError):
+            confidence = 0.0
+
+        if direction == "LONG":
+            long_count += 1
+            long_pnl += pnl
+        elif direction == "SHORT":
+            short_count += 1
+            short_pnl += pnl
+        else:
+            unknown_direction_count += 1
+
+        if pnl > 0:
+            wins += 1
+        elif pnl < 0:
+            losses += 1
+
+        if pattern not in ("", "NONE"):
+            pattern_hits += 1
+
+        if confidence >= 0.6:
+            high_conf_count += 1
+            high_conf_pnl += pnl
+        elif confidence > 0:
+            low_conf_count += 1
+            low_conf_pnl += pnl
+
+    trade_count = len(trades)
+    pattern_hit_rate = (pattern_hits / trade_count) if trade_count else 0.0
+    win_rate = (wins / (wins + losses)) if (wins + losses) else 0.0
+    if trade_count and (long_count or short_count):
+        direction_skew_ratio = max(long_count, short_count) / max(1, long_count + short_count)
+    else:
+        direction_skew_ratio = 0.0
+    direction_skew_alert = direction_skew_ratio >= _DIRECTION_SKEW_ALERT_THRESHOLD and trade_count >= 4
+    pattern_hit_rate_alert = pattern_hit_rate < _PATTERN_HIT_RATE_ALERT_THRESHOLD and trade_count >= 3
+
+    return {
+        "trade_count": trade_count,
+        "long_count": long_count,
+        "short_count": short_count,
+        "unknown_direction_count": unknown_direction_count,
+        "long_pnl": round(long_pnl, 2),
+        "short_pnl": round(short_pnl, 2),
+        "net_pnl": round(long_pnl + short_pnl, 2),
+        "wins": wins,
+        "losses": losses,
+        "win_rate": round(win_rate, 3),
+        "pattern_hits": pattern_hits,
+        "pattern_hit_rate": round(pattern_hit_rate, 3),
+        "direction_skew_ratio": round(direction_skew_ratio, 3),
+        "direction_skew_alert": direction_skew_alert,
+        "pattern_hit_rate_alert": pattern_hit_rate_alert,
+        "high_confidence_count": high_conf_count,
+        "low_confidence_count": low_conf_count,
+        "high_confidence_pnl": round(high_conf_pnl, 2),
+        "low_confidence_pnl": round(low_conf_pnl, 2),
+    }
+
+
+def format_trade_metrics(metrics: Dict[str, Any]) -> str:
+    """Render the metrics block for the analyst prompt."""
+    lines = [
+        "DIRECTION BREAKDOWN:",
+        f"  LONG trades: {metrics['long_count']} (PnL {metrics['long_pnl']:+.2f})",
+        f"  SHORT trades: {metrics['short_count']} (PnL {metrics['short_pnl']:+.2f})",
+    ]
+    if metrics.get("unknown_direction_count"):
+        lines.append(f"  Unknown-direction trades: {metrics['unknown_direction_count']}")
+    lines.append(
+        f"  Direction skew ratio: {metrics['direction_skew_ratio']:.2f} "
+        f"(threshold {_DIRECTION_SKEW_ALERT_THRESHOLD:.2f})"
+    )
+    if metrics.get("direction_skew_alert"):
+        lines.append(
+            "  ⚠ DIRECTION SKEW ALERT: more than 70% of trades went in one direction. "
+            "Investigate whether the bot has a systemic directional bias."
+        )
+
+    lines.append("")
+    lines.append("PATTERN QUALITY:")
+    lines.append(
+        f"  Pattern hit rate: {metrics['pattern_hit_rate']:.2f} "
+        f"({metrics['pattern_hits']}/{metrics['trade_count']} trades had a confirmed pattern)"
+    )
+    if metrics.get("pattern_hit_rate_alert"):
+        lines.append(
+            "  ⚠ PATTERN HIT RATE ALERT: fewer than 25% of trades had a confirmed pattern. "
+            "Trades without pattern confirmation have historically lost money."
+        )
+
+    lines.append("")
+    lines.append("OUTCOME SUMMARY:")
+    lines.append(
+        f"  Wins {metrics['wins']} / Losses {metrics['losses']} (win rate {metrics['win_rate']:.2f})"
+    )
+    lines.append(f"  Net PnL: {metrics['net_pnl']:+.2f}")
+    if metrics.get("high_confidence_count") or metrics.get("low_confidence_count"):
+        lines.append(
+            f"  High-conf (≥0.6) trades: {metrics['high_confidence_count']} "
+            f"PnL {metrics['high_confidence_pnl']:+.2f}; "
+            f"Low-conf trades: {metrics['low_confidence_count']} "
+            f"PnL {metrics['low_confidence_pnl']:+.2f}"
+        )
+    return "\n".join(lines)
+
+
 def build_review_prompt(
     state: Dict,
     journal: List[Dict],
@@ -79,8 +225,14 @@ def build_review_prompt(
     week_start_str = week_start.strftime("%Y-%m-%d")
     week_end_str = week_end.strftime("%Y-%m-%d")
 
+    metrics = compute_trade_metrics(journal)
+    metrics_text = format_trade_metrics(metrics)
+
     journal_text = "No trades this week." if not journal else "\n".join(
-        f"  [{e.get('trade_id')}] PnL={e.get('entry', {}).get('pnl', '?'):.2f} | {e.get('journal', '')[:120]}"
+        f"  [{e.get('trade_id')}] {e.get('entry', {}).get('direction', '?'):>5s} "
+        f"pattern={e.get('entry', {}).get('pattern', 'NONE'):<25s} "
+        f"PnL={e.get('entry', {}).get('pnl', '?'):.2f} | "
+        f"{e.get('journal', '')[:120]}"
         for e in journal
     )
 
@@ -105,6 +257,8 @@ RISK SUMMARY:
   Weekly halted: {risk.get('weekly_halted', False)}
   Consecutive losses (end of week): {risk.get('consecutive_losses_today', 0)}
 
+{metrics_text}
+
 TRADE JOURNAL ({len(journal)} trades):
 {journal_text}
 
@@ -117,11 +271,12 @@ SIGNAL ACTIVITY:
   Candidate lane: {candidate_text}
 
 Provide a strategic weekly review covering:
-1. Overall performance: win rate, RR quality, patterns in outcomes
-2. Setup quality: were high-score setups more profitable? Any low-score trades that worked (luck)?
-3. Strategy divergence: did primary and shadow strategies agree or disagree? What does that suggest?
-4. Risk management: were drawdown limits ever near? Any rule violations?
-5. Recommendations: 1-2 concrete, specific parameter or behaviour changes to consider next week (or "no changes recommended" if performance was solid)
+1. Overall performance: win rate, RR quality, patterns in outcomes — but ALWAYS lead with the direction breakdown if a skew alert fires.
+2. Pattern discipline: low pattern hit rate has been correlated with losses; flag this if the alert is set.
+3. Setup quality: were high-confidence trades more profitable than low-confidence? Did high-score setups outperform?
+4. Strategy divergence: did primary and shadow strategies agree or disagree? What does that suggest?
+5. Risk management: were drawdown limits ever near? Any rule violations? Avoid recommending "increase risk appetite" when a direction-skew or pattern-hit-rate alert is active.
+6. Recommendations: 1-2 concrete, specific parameter or behaviour changes to consider next week (or "no changes recommended" if performance was solid). NEVER recommend increasing risk on a system that just fired one of the alerts above.
 
 Be analytical and direct. Focus on actionable insights, not platitudes."""
 
