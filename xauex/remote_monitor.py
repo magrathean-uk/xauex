@@ -97,8 +97,7 @@ def render_report(result: MonitorResult) -> str:
         lines.append(
             "  "
             f"status={health.get('status', '?')}  "
-            f"bot_status={health.get('bot_status', '?')}  "
-            f"observe_only={health.get('observe_only', '?')}"
+            f"bot_status={health.get('bot_status', '?')}"
         )
         lines.append(
             "  "

@@ -217,7 +217,6 @@ def test_manual_positions_do_not_count_toward_xauex_daily_limit():
 
 def test_manual_positions_do_not_block_new_xauex_entries_at_account_level():
     config = SimpleNamespace(
-        observe_only=False,
         weekly_stop_pct=100.0,
         daily_stop_pct=100.0,
         max_consecutive_losses=99,
@@ -294,15 +293,14 @@ def test_restart_recovery_can_match_position_from_pending_market_order():
 
 
 def test_manual_trade_open_honors_global_safety_blockers():
-    assert manual_trade_global_block_reason(observe_only=True, kill_switch_active=False, auth_failure=False) == "OBSERVE_ONLY"
-    assert manual_trade_global_block_reason(observe_only=False, kill_switch_active=True, auth_failure=False) == "KILL_SWITCH"
-    assert manual_trade_global_block_reason(observe_only=False, kill_switch_active=False, auth_failure=True) == "AUTH_FAILURE"
-    assert manual_trade_global_block_reason(observe_only=False, kill_switch_active=False, auth_failure=False) is None
+    assert manual_trade_global_block_reason(kill_switch_active=True, auth_failure=False) == "KILL_SWITCH"
+    assert manual_trade_global_block_reason(kill_switch_active=False, auth_failure=True) == "AUTH_FAILURE"
+    assert manual_trade_global_block_reason(kill_switch_active=False, auth_failure=False) is None
 
 
 def test_trailing_engine_skips_manual_and_xauex_positions():
     executor = Executor(
-        config=SimpleNamespace(observe_only=False),
+        config=SimpleNamespace(),
         api_client=SimpleNamespace(get_current_quote=lambda: (4700.0, 4700.2)),
         level_manager=None,
     )
@@ -348,7 +346,7 @@ def test_manual_position_close_does_not_touch_risk_gates():
             self.closed.append(pnl)
 
     executor = Executor(
-        config=SimpleNamespace(observe_only=False),
+        config=SimpleNamespace(),
         api_client=SimpleNamespace(get_current_quote=lambda: (4700.0, 4700.2)),
         level_manager=None,
         risk_gates=_RiskGates(),
@@ -375,7 +373,7 @@ def test_manual_position_close_does_not_touch_risk_gates():
 
 def test_closed_trades_today_resets_on_new_utc_day():
     executor = Executor(
-        config=SimpleNamespace(observe_only=False),
+        config=SimpleNamespace(),
         api_client=SimpleNamespace(get_current_quote=lambda: (4700.0, 4700.2)),
         level_manager=None,
     )

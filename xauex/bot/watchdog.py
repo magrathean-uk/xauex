@@ -121,9 +121,7 @@ class Watchdog:
                 except Exception as exc:
                     logger.error("[WATCHDOG] Reconcile after reconnect failed: %s", exc)
 
-                self.orchestrator.set_status(
-                    "OBSERVE_ONLY" if self.orchestrator.config.observe_only else "RUNNING"
-                )
+                self.orchestrator.set_status("RUNNING")
                 await self.orchestrator.write_state()
                 return
 

@@ -29,7 +29,7 @@ Compatibility shims remain at repo root for old imports: `config.py`, `auth.py`,
 
 ## How The Trading Flow Works
 
-XAUEX trades `XAUUSD` on a cTrader demo account. The bot is allowed to trade when `OBSERVE_ONLY=false`, `XAUEX_MODE=true`, and the latest command bundle passes the runtime gates.
+XAUEX trades `XAUUSD` on a cTrader demo account. The bot is allowed to trade when `XAUEX_MODE=true` and the latest command bundle passes the runtime gates.
 
 The live windows are defined in `xauex/live_windows.py`:
 
@@ -144,5 +144,3 @@ Do not commit:
 - logs
 - runtime state
 - local caches and compiled artifacts
-
-Use `OBSERVE_ONLY=true` when validating new strategy behavior without live demo execution.

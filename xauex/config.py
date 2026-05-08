@@ -129,9 +129,6 @@ class Config:
     scalp_max_trades_per_day: int
     scalp_reentry_cooldown_bars: int
 
-    # Observe-only mode (default True for safety)
-    observe_only: bool
-
     # Health check endpoint
     health_check_host: str
     health_check_port: int
@@ -643,8 +640,6 @@ def load_config(env_file: str = ".env") -> Config:
             "XAUEX_MEDIUM_CONFIDENCE_LOT_MULTIPLIER"
         )
 
-    observe_only = os.getenv("OBSERVE_ONLY", "true").lower() == "true"
-
     health_check_host = os.getenv("HEALTH_CHECK_HOST", "127.0.0.1").strip() or "127.0.0.1"
     health_check_port = collect(_int_range, "HEALTH_CHECK_PORT", 1024, 65535, 8051) or 8051
 
@@ -760,7 +755,6 @@ def load_config(env_file: str = ".env") -> Config:
         scalp_take_profit_rr=scalp_take_profit_rr,
         scalp_max_trades_per_day=scalp_max_trades_per_day,
         scalp_reentry_cooldown_bars=scalp_reentry_cooldown_bars,
-        observe_only=observe_only,
         health_check_host=health_check_host,
         health_check_port=health_check_port,
         state_file_path=state_file_path,

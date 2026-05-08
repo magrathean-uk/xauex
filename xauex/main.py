@@ -733,10 +733,8 @@ def count_tradeable_open_positions(positions: List[object]) -> int:
     return sum(1 for position in positions if _position_owner(position) == "xauex")
 
 
-def manual_trade_global_block_reason(*, observe_only: bool, kill_switch_active: bool, auth_failure: bool) -> Optional[str]:
+def manual_trade_global_block_reason(*, kill_switch_active: bool, auth_failure: bool) -> Optional[str]:
     """Manual trades remain independent from Oracle logic, but not from explicit global safety halts."""
-    if observe_only:
-        return "OBSERVE_ONLY"
     if kill_switch_active:
         return "KILL_SWITCH"
     if auth_failure:
@@ -1145,7 +1143,7 @@ class BotOrchestrator:
         logger.info("[STARTUP] Tick stream subscribed.")
 
         self.running = True
-        self.bot_status = "OBSERVE_ONLY" if self.config.observe_only else "RUNNING"
+        self.bot_status = "RUNNING"
 
         # Background: poll kill switch, watchdog, health check
         asyncio.create_task(self._poll_kill_switch())
@@ -1501,7 +1499,7 @@ class BotOrchestrator:
                 action = "EXECUTED"
                 self._record_trade_level(level, direction)
             else:
-                action = "OBSERVE_ONLY" if self.config.observe_only else "FAILED"
+                action = "FAILED"
         else:
             pos_id = await self.executor.place_market_order(
                 direction=direction,
@@ -1515,7 +1513,7 @@ class BotOrchestrator:
                 action = "EXECUTED"
                 self._record_trade_level(level, direction)
             else:
-                action = "OBSERVE_ONLY" if self.config.observe_only else "FAILED"
+                action = "FAILED"
 
             if pos_id and len(self._recent_h1_closes) > 0:
                 self._append_trade_entry_on_chart(
@@ -1648,7 +1646,7 @@ class BotOrchestrator:
                             )
                             action = "EXECUTED"
                         else:
-                            action = "OBSERVE_ONLY" if self.config.observe_only else "FAILED"
+                            action = "FAILED"
 
         self._record_signal(
             decision.pattern,
@@ -1807,7 +1805,7 @@ class BotOrchestrator:
                             )
                             action = "EXECUTED"
                         else:
-                            action = "OBSERVE_ONLY" if self.config.observe_only else "FAILED"
+                            action = "FAILED"
 
         self._record_signal(
             decision.pattern,
@@ -3102,7 +3100,7 @@ class BotOrchestrator:
                 elif cmd.get("kill_switch") is False and self.kill_switch_active:
                     logger.info("[KILL SWITCH] Deactivated. Resuming trading.")
                     self.kill_switch_active = False
-                    self.set_status("OBSERVE_ONLY" if self.config.observe_only else "RUNNING")
+                    self.set_status("RUNNING")
                     await self.write_state()
             except FileNotFoundError:
                 pass
@@ -3968,10 +3966,7 @@ class BotOrchestrator:
                     if not str(pos_id).startswith("order:"):
                         self._append_trade_entry_on_chart(str(pos_id), dir_label, current_price, "xauex")
                 else:
-                    if self.config.observe_only:
-                        logger.info("[XAUEX] OBSERVE_ONLY - order logged but not placed")
-                    else:
-                        logger.warning("[XAUEX] Order placement returned None")
+                    logger.warning("[XAUEX] Order placement returned None")
 
                 self._mark_slot_used(
                     slot=slot,
@@ -4139,10 +4134,6 @@ class BotOrchestrator:
                     position.volume,
                 )
 
-                if self.config.observe_only:
-                    self._xauex_close_requested[position.position_id] = now_utc
-                    continue
-
                 closed = await self.api_client.close_position(
                     position_id=position.position_id,
                     volume_lots=position.volume,
@@ -4236,7 +4227,6 @@ class BotOrchestrator:
             stop_loss = float(payload.get("stop_loss"))
             take_profit = float(payload.get("take_profit"))
             block_reason = manual_trade_global_block_reason(
-                observe_only=bool(self.config.observe_only),
                 kill_switch_active=bool(self.kill_switch_active),
                 auth_failure=bool(self.executor.HALTED_AUTH_FAILURE),
             )

@@ -220,7 +220,6 @@ Confirm these values in `xauex/.env` before trusting live demo execution:
 ```dotenv
 CTRADER_HOST=demo-uk-eqx-01.p.c-trader.com
 CTRADER_TLS_SERVER_NAME=connect.spotware.com
-OBSERVE_ONLY=false
 XAUEX_MODE=true
 CMD_FILE_PATH=/var/lib/xauex/cmd.json
 LOG_FILE_PATH=/var/log/xauex/xauex.log
@@ -229,8 +228,6 @@ XAUEX_MAX_TRADES_PER_DAY=3
 XAUEX_CASH_TAKE_PROFIT_GBP=50
 XAUEX_CASH_STOP_LOSS_GBP=50
 ```
-
-Use `OBSERVE_ONLY=true` for non-executing validation.
 
 ## Manual Signal Refresh
 

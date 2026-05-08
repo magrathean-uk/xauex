@@ -87,7 +87,7 @@ def build_prompt(state: dict, news_section: str, stale: bool = False) -> str:
 
     return f"""You are a trading operations analyst for an automated XAUUSD bot. Produce a concise morning brief covering the key points an operator needs before the London session opens.{stale_warning}
 
-BOT STATUS: {meta.get('bot_status', 'UNKNOWN')} (observe_only={state.get('observe_only', True)})
+BOT STATUS: {meta.get('bot_status', 'UNKNOWN')}
 ACCOUNT: balance={account.get('balance', '?')} equity={account.get('equity', '?')}
 RISK: consecutive_losses_today={risk.get('consecutive_losses_today', 0)} weekly_pnl={risk.get('weekly_pnl', 0):.2f} weekly_halted={risk.get('weekly_halted', False)} daily_halted={risk.get('daily_halted', False)}
 
@@ -117,7 +117,7 @@ def run(
 
     if state is None:
         logger.warning("[BRIEF] state.json missing at %s — generating stale-warning brief.", state_path)
-        state = {"meta": {"bot_status": "UNKNOWN", "last_updated_utc": "N/A"}, "account": {}, "risk": {}, "levels": {}, "open_positions": [], "signal_history": [], "observe_only": True}
+        state = {"meta": {"bot_status": "UNKNOWN", "last_updated_utc": "N/A"}, "account": {}, "risk": {}, "levels": {}, "open_positions": [], "signal_history": []}
         stale = True
 
     news_section = build_news_section(news_cache_path)

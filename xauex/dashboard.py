@@ -46,7 +46,6 @@ _REVIEW_PATH = os.getenv("WEEKLY_REVIEW_PATH", "/var/lib/xauex/weekly_review.jso
 _STATUS_COLOURS = {
     "RUNNING": "green",
     "RECONNECTING": "yellow",
-    "OBSERVE_ONLY": "cyan",
     "HALTED_WEEKLY_DRAWDOWN": "red",
     "HALTED_DAILY_LOSSES": "red",
     "HALTED_AUTH_FAILURE": "red",
@@ -423,7 +422,6 @@ class XAUEXDashboard(App):
         signal_history = state.get("signal_history", [])
         shadow_signal_history = state.get("shadow_signal_history", [])
         diagnostics = state.get("diagnostics", {}) or {}
-        observe = state.get("observe_only", True)
         exec_tf = runtime.get("execution_timeframe", trend.get("execution_timeframe", "H1"))
 
         if not diagnostics:
@@ -602,12 +600,10 @@ class XAUEXDashboard(App):
         max_l = 2
         daily_pnl = risk.get("daily_pnl", 0.0)
         weekly_pnl = risk.get("weekly_pnl", 0.0)
-        obs_label = "YES" if observe else "NO"
         self.query_one("#risk-panel", Static).update(
             f"RISK  Losses today: {losses}/{max_l}   "
             f"Daily P&L: {daily_pnl:+.2f}   "
-            f"Weekly P&L: {weekly_pnl:+.2f}   "
-            f"Observe: {obs_label}\n"
+            f"Weekly P&L: {weekly_pnl:+.2f}\n"
             f"[K] Kill switch   [Q] Quit   Live policy: {policy_label}"
         )
 

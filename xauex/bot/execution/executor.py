@@ -96,8 +96,7 @@ class Executor:
     Execute orders via cTrader Open API.
 
     Pre-conditions are verified by the orchestrator. The executor performs a
-    secondary validation, places the order, and logs all outcomes. In
-    OBSERVE_ONLY mode no real orders are submitted.
+    secondary validation, places the order, and logs all outcomes.
     """
 
     HALTED_AUTH_FAILURE = False   # set True on TRADING_DISABLED error
@@ -298,18 +297,6 @@ class Executor:
         )
         self._journal_event("order_intent", intent.__dict__, correlation_id=intent.correlation_id)
 
-        if self.config.observe_only:
-            logger.info(
-                "[EXECUTOR] OBSERVE_ONLY — would have placed %s %.2f lots. SL:%s TP:%s",
-                direction_label, lot_size, sl_label, tp_label,
-            )
-            self._journal_event(
-                "order_rejected",
-                {"reason": "OBSERVE_ONLY", **intent.__dict__},
-                correlation_id=intent.correlation_id,
-            )
-            return None
-
         try:
             ack = await self.broker_adapter.place_market_order(intent)
         except Exception as exc:
@@ -415,13 +402,6 @@ class Executor:
             "[EXECUTOR] Placing INSIDE_BAR pair | Buy:%.2f Sell:%.2f | Level:%.2f",
             buy_stop_price, sell_stop_price, level,
         )
-
-        if self.config.observe_only:
-            logger.info(
-                "[EXECUTOR] OBSERVE_ONLY — would have placed INSIDE_BAR stop orders at %.2f / %.2f",
-                buy_stop_price, sell_stop_price,
-            )
-            return None, None
 
         buy_id: Optional[str] = None
         sell_id: Optional[str] = None
@@ -704,8 +684,6 @@ class Executor:
         3. Validate the new SL doesn't move further from entry (hard rule).
         4. Send amend_position_sltp() to broker.
         5. Update local TrackedPosition.stop_loss.
-
-        In OBSERVE_ONLY mode, only logs — never sends to broker.
         """
         from bot.risk.trailing_stop import evaluate_trailing_stop
 
@@ -749,9 +727,6 @@ class Executor:
                     pos.position_id, pos.direction, result.reason,
                     pos.stop_loss, result.new_sl,
                 )
-
-                if self.config.observe_only:
-                    continue
 
                 ok = await self.api_client.amend_position_sltp(
                     position_id=pos.position_id,

@@ -88,7 +88,7 @@ def test_remote_dashboard_renders_diagnostics_and_transport_errors():
             timeout=5.0,
         )
         snapshot = RemoteSnapshot(
-            health={"bot_status": "RUNNING", "status": "ok", "observe_only": False},
+            health={"bot_status": "RUNNING", "status": "ok"},
             state=_sample_state(),
             errors=["state fetch failed: timeout"],
         )

@@ -217,7 +217,6 @@ class StateWriter:
                 "runtime": runtime,
                 "last_error": last_error,
             }),
-            "observe_only": self.config.observe_only,
         }
 
     def _atomic_write(self, state: Dict) -> None:

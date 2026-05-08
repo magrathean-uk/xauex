@@ -13,8 +13,7 @@ Usage (from BotOrchestrator.startup):
 Response format:
     {
         "status": "ok" | "degraded" | "disconnected",
-        "bot_status": "RUNNING" | "OBSERVE_ONLY" | "HALTED_..." | ...,
-        "observe_only": true,
+        "bot_status": "RUNNING" | "HALTED_..." | ...,
         "uptime_seconds": 3600,
         "open_positions": 1,
         "last_tick_age_seconds": 5,
@@ -131,7 +130,6 @@ class HealthCheck:
         body = {
             "status":               status,
             "bot_status":           self.orchestrator.bot_status,
-            "observe_only":         self.orchestrator.config.observe_only,
             "uptime_seconds":       uptime,
             "open_positions":       pos_count,
             "last_tick_age_seconds": last_tick_age,

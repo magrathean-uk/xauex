@@ -38,7 +38,6 @@ DEFAULT_STATE_URL = "http://127.0.0.1:8051/state"
 _STATUS_COLOURS = {
     "RUNNING": "green",
     "RECONNECTING": "yellow",
-    "OBSERVE_ONLY": "cyan",
     "HALTED_WEEKLY_DRAWDOWN": "red",
     "HALTED_DAILY_LOSSES": "red",
     "HALTED_AUTH_FAILURE": "red",
@@ -290,7 +289,6 @@ class RemoteXAUEXDashboard(App):
         signal_history = state.get("signal_history", [])
         shadow_signal_history = state.get("shadow_signal_history", [])
         diagnostics = state.get("diagnostics", {}) or {}
-        observe = state.get("observe_only", health.get("observe_only", True))
         exec_tf = runtime.get("execution_timeframe", trend.get("execution_timeframe", "H1"))
 
         if not diagnostics:
@@ -468,8 +466,7 @@ class RemoteXAUEXDashboard(App):
         self.query_one("#risk-panel", Static).update(
             f"RISK  Losses today: {risk.get('consecutive_losses_today', 0)}   "
             f"Daily P&L: {_fmt_float(risk.get('daily_pnl'))}   "
-            f"Weekly P&L: {_fmt_float(risk.get('weekly_pnl'))}   "
-            f"Observe: {'YES' if observe else 'NO'}\n"
+            f"Weekly P&L: {_fmt_float(risk.get('weekly_pnl'))}\n"
             f"Read-only remote dashboard   [Q] Quit   Live policy: {policy_label}"
         )
 
