@@ -153,6 +153,89 @@ def _is_strong_aligned_signal(*, signal: Dict[str, object]) -> bool:
 XAUEX_CONFIRM_MAX_AGE_SECONDS_DEFAULT = 600
 
 
+_XAUEX_BULLISH_PATTERN_TYPES: frozenset = frozenset()
+_XAUEX_BEARISH_PATTERN_TYPES: frozenset = frozenset()
+
+
+def _populate_xauex_pattern_sets() -> None:
+    """Lazy import to avoid PatternType being unresolved at module import time
+    if the bot package isn't fully initialised yet (tests load main.py via
+    importlib spec)."""
+    global _XAUEX_BULLISH_PATTERN_TYPES, _XAUEX_BEARISH_PATTERN_TYPES
+    if _XAUEX_BULLISH_PATTERN_TYPES:
+        return
+    from bot.patterns.detector import PatternType as _PT
+    _XAUEX_BULLISH_PATTERN_TYPES = frozenset({
+        _PT.BULLISH_ENGULFING,
+        _PT.BULLISH_PIN_BAR,
+        _PT.BULLISH_CONTINUATION_CLOSE,
+        _PT.BULLISH_CONSOLIDATION_BREAK,
+        _PT.INSIDE_BAR,  # directionally ambiguous — accepted either way
+    })
+    _XAUEX_BEARISH_PATTERN_TYPES = frozenset({
+        _PT.BEARISH_ENGULFING,
+        _PT.BEARISH_PIN_BAR,
+        _PT.BEARISH_CONTINUATION_CLOSE,
+        _PT.BEARISH_CONSOLIDATION_BREAK,
+        _PT.INSIDE_BAR,
+    })
+
+
+def xauex_pattern_check(
+    *,
+    pattern_detector,
+    prev_candle,
+    signal_candle,
+    candidate_levels,
+    direction: int,
+):
+    """Run pattern detection against the candidate HTF levels and return
+    whether the strongest match aligns with the proposed direction.
+
+    Returns a tuple ``(pattern, level, ok, reason)`` where ``ok`` is True only
+    when a pattern fires that supports ``direction``. The XAUEX poll uses this
+    behind the ``XAUEX_REQUIRE_PATTERN_MATCH`` feature flag to refuse trades
+    that would have been blind LLM directional bets.
+    """
+    _populate_xauex_pattern_sets()
+    from bot.patterns.detector import PatternType as _PT
+
+    if not candidate_levels:
+        return _PT.NONE, None, False, "NO_LEVELS"
+
+    sorted_levels = sorted(candidate_levels, key=lambda lvl: abs(signal_candle.close - float(lvl)))
+    rank = {
+        _PT.BULLISH_ENGULFING: 4,
+        _PT.BEARISH_ENGULFING: 4,
+        _PT.BULLISH_CONTINUATION_CLOSE: 3,
+        _PT.BEARISH_CONTINUATION_CLOSE: 3,
+        _PT.BULLISH_PIN_BAR: 2,
+        _PT.BEARISH_PIN_BAR: 2,
+        _PT.INSIDE_BAR: 1,
+    }
+    best_pattern = _PT.NONE
+    best_level: Optional[float] = None
+    best_rank = -1
+    for lvl in sorted_levels:
+        result = pattern_detector.detect(prev_candle, signal_candle, float(lvl))
+        if result.pattern == _PT.NONE:
+            continue
+        current_rank = rank.get(result.pattern, 0)
+        if current_rank > best_rank:
+            best_rank = current_rank
+            best_pattern = result.pattern
+            best_level = float(lvl)
+
+    if best_pattern == _PT.NONE:
+        return _PT.NONE, sorted_levels[0] if sorted_levels else None, False, "NO_PATTERN"
+
+    if direction > 0 and best_pattern in _XAUEX_BULLISH_PATTERN_TYPES:
+        return best_pattern, best_level, True, "MATCH"
+    if direction < 0 and best_pattern in _XAUEX_BEARISH_PATTERN_TYPES:
+        return best_pattern, best_level, True, "MATCH"
+    return best_pattern, best_level, False, "DIRECTION_MISMATCH"
+
+
 def is_xauex_confirm_timestamp_fresh(
     confirm_timestamp_utc: Optional[str],
     now_utc: datetime,
@@ -1902,6 +1985,77 @@ class BotOrchestrator:
                     await asyncio.sleep(0.5)
                     continue
         logger.error("[TREND] Failed to fetch H1 bars: %s", last_exc)
+        return None
+
+    async def _xauex_pattern_gate_check(self, *, direction: int):
+        """Run the XAUEX pattern gate against the latest H1 bars.
+
+        Returns ``(matched_pattern, matched_level, reason)``. ``matched_pattern``
+        is None when the gate blocks (no level / no pattern / direction
+        mismatch / insufficient data). ``reason`` always carries a short label
+        suitable for slot-record diagnostics.
+        """
+        from bot.patterns.detector import Candle, PatternType as _PT
+
+        if self.pattern_detector is None or self.level_manager is None:
+            return None, None, "DETECTOR_UNAVAILABLE"
+        bars = await self._fetch_recent_h1_ohlc_bars(count=4)
+        if not bars or len(bars) < 2:
+            return None, None, "H1_BARS_UNAVAILABLE"
+        prev_bar = bars[-2]
+        signal_bar = bars[-1]
+        try:
+            prev_candle = Candle(
+                open=float(prev_bar["open"]),
+                high=float(prev_bar["high"]),
+                low=float(prev_bar["low"]),
+                close=float(prev_bar["close"]),
+                open_time=prev_bar.get("open_time") or datetime.now(timezone.utc),
+            )
+            signal_candle = Candle(
+                open=float(signal_bar["open"]),
+                high=float(signal_bar["high"]),
+                low=float(signal_bar["low"]),
+                close=float(signal_bar["close"]),
+                open_time=signal_bar.get("open_time") or datetime.now(timezone.utc),
+            )
+        except (KeyError, TypeError, ValueError):
+            return None, None, "H1_BAR_MALFORMED"
+
+        range_low = min(prev_candle.low, signal_candle.low)
+        range_high = max(prev_candle.high, signal_candle.high)
+        candidates = self.level_manager.levels_near_range(range_low, range_high)
+        if not candidates:
+            candidates = self.level_manager.all_levels()
+        if not candidates:
+            return None, None, "NO_LEVELS"
+
+        pattern, level, ok, reason = xauex_pattern_check(
+            pattern_detector=self.pattern_detector,
+            prev_candle=prev_candle,
+            signal_candle=signal_candle,
+            candidate_levels=candidates,
+            direction=direction,
+        )
+        if ok and pattern != _PT.NONE:
+            return pattern, level, "MATCH"
+        return None, level, reason
+
+    async def _fetch_recent_h1_ohlc_bars(self, count: int = 4) -> Optional[List[Dict]]:
+        """Fetch the most recent closed H1 OHLC bars for pattern detection in
+        the XAUEX poll path. Returns the raw bar dicts with open/high/low/close
+        keys so :func:`xauex_pattern_check` can build Candle objects."""
+        last_exc = None
+        for attempt in range(2):
+            try:
+                bars = await self.api_client.get_trendbar("H1", max(2, int(count)))
+                return list(bars or [])
+            except Exception as exc:
+                last_exc = exc
+                if attempt == 0:
+                    await asyncio.sleep(0.5)
+                    continue
+        logger.error("[XAUEX] Failed to fetch H1 OHLC bars: %s", last_exc)
         return None
 
     def _load_macro_regime(self) -> Optional[MacroRegime]:
@@ -3741,13 +3895,68 @@ class BotOrchestrator:
                     reasoning,
                 )
 
+                # Pattern gate (feature-flagged via XAUEX_REQUIRE_PATTERN_MATCH).
+                # Historically every XAUEX trade was placed with pattern=NONE,
+                # which bypassed the candle-confirmation discipline that the
+                # HTF_LEVEL strategy relied on. When the flag is active, refuse
+                # to place an order unless an H1 pattern at a nearby HTF level
+                # supports the proposed direction. The detected pattern is
+                # then recorded on the trade so the journal can attribute
+                # outcomes to real setups instead of NONE.
+                placement_pattern = PatternType.NONE
+                placement_level = current_price
+                if bool(getattr(self.config, "xauex_require_pattern_match", False)):
+                    matched_pattern, matched_level, gate_reason = await self._xauex_pattern_gate_check(
+                        direction=direction,
+                    )
+                    if matched_pattern is None:
+                        logger.warning(
+                            "[XAUEX] Pattern gate blocked trade: %s slot=%s signal=%s direction=%s",
+                            gate_reason,
+                            slot,
+                            signal_id,
+                            dir_label,
+                        )
+                        self._journal_event(
+                            "pattern_gate_block",
+                            {
+                                "slot": slot,
+                                "window_label": window_label,
+                                "direction": dir_label,
+                                "reason": gate_reason,
+                            },
+                            correlation_id=signal_id,
+                        )
+                        self._mark_slot_used(
+                            slot=slot,
+                            signal_id=signal_id,
+                            reason=f"PATTERN_GATE_{gate_reason}",
+                            signal_time=now_utc,
+                            signal_action=action,
+                            signal_confidence=confidence,
+                            window_label=window_label,
+                            confirm_status=confirm_status,
+                            confirm_reason=confirm_reason,
+                            confirm_timestamp_utc=confirm_timestamp_utc,
+                            terminal=True,
+                        )
+                        await self.write_state()
+                        continue
+                    placement_pattern = matched_pattern
+                    placement_level = matched_level if matched_level is not None else current_price
+                    logger.info(
+                        "[XAUEX] Pattern gate cleared: pattern=%s level=%.2f",
+                        placement_pattern.name,
+                        placement_level,
+                    )
+
                 pos_id = await self.executor.place_market_order(
                     direction=direction,
                     lot_size=lot,
                     stop_loss_price=stop_loss_price,
                     take_profit_price=take_profit_price,
-                    pattern=PatternType.NONE,
-                    level=current_price,
+                    pattern=placement_pattern,
+                    level=placement_level,
                     owner="xauex",
                     metadata=session_metadata,
                 )
