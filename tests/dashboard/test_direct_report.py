@@ -166,7 +166,10 @@ def test_dashboard_payload_uses_direct_report_link_when_report_id_missing(monkey
     assert payload["links"]["report_direct"] == "/report/direct"
 
 
-def test_homepage_report_link_defaults_to_direct_report(monkeypatch, tmp_path):
+def test_homepage_renders_xauex_dashboard(monkeypatch, tmp_path):
+    """The redesigned dashboard drops the prediction-report link from the
+    chrome — operators inspect /report/direct directly when needed. The
+    homepage still has to render the bot operational shell."""
     dashboard_app = _load_dashboard_module(monkeypatch, tmp_path)
     client = dashboard_app.app.test_client()
 
@@ -174,8 +177,9 @@ def test_homepage_report_link_defaults_to_direct_report(monkeypatch, tmp_path):
 
     assert response.status_code == 200
     body = response.get_data(as_text=True)
-    assert 'id="report-link"' in body
-    assert 'href="/report/direct"' in body
+    assert 'id="signal-action"' in body
+    assert 'id="positions"' in body
+    assert 'id="recent-trades"' in body
 
 
 def test_dashboard_payload_exposes_validator_and_cost_metadata(monkeypatch, tmp_path):
