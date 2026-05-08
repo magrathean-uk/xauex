@@ -344,9 +344,337 @@ def test_report_and_actions_surface_cot_positioning():
     assert "mm_net_long=250000" in cot_actions[0]["content"]
 
 
+def test_price_bias_uses_longer_momentum_window_and_higher_threshold():
+    """The legacy 20-bar window with ATR*0.4 threshold registered tiny noise on
+    flat consolidation as 'negative momentum' and triggered SELL bias. With
+    60-bar momentum and ATR*1.0 threshold, a market that drifted ~0.7%
+    (10 dollars over 20 hours) on a 4720-base price now requires a real move
+    above ATR rather than micro-noise."""
+    asset = resolve_asset("XAUUSD")
+    # 80 closes drifting from 4720 → 4710 (very small downside drift over 80h)
+    drift_closes = [4720.0 - i * 0.125 for i in range(80)]
+    payload = build_prediction_payload(
+        asset=asset,
+        context_markdown="# Context",
+        recent_runs=[],
+        state_snapshot={
+            "recent_h1_closes": drift_closes,
+            "levels": {"daily": {"low": 4710.0, "high": 4720.0}},
+            "trend": {"daily_bias": 0, "alignment": "MIXED"},
+        },
+    )
+    features = payload["price_features"]
+    # Long-window momentum fields are computed.
+    assert "momentum_24" in features
+    assert "momentum_60" in features
+    assert features["h1_count"] == 80
+    # The drift is 10 dollars over 80h. ATR_14 on this even drift = 0.125, so
+    # threshold = 0.125. avg_momentum ~= -10 - well past threshold.
+    # But we want to verify the threshold is high enough to suppress micro
+    # noise on a flatter dataset:
+    flat_closes = [4720.0 + (-1) ** i * 0.4 for i in range(80)]  # oscillating 0.4 either side
+    payload_flat = build_prediction_payload(
+        asset=asset,
+        context_markdown="# Context",
+        recent_runs=[],
+        state_snapshot={
+            "recent_h1_closes": flat_closes,
+            "levels": {"daily": {"low": 4719.0, "high": 4721.0}},
+            "trend": {"daily_bias": 1, "alignment": "ALIGNED"},
+        },
+    )
+    flat_features = payload_flat["price_features"]
+    # On pure noise, the new threshold should yield NEUTRAL not BUY/SELL.
+    assert flat_features["price_bias"] == "NEUTRAL"
+    # Threshold reflects the new ATR multiplier.
+    assert flat_features["momentum_threshold"] >= flat_features["atr_14"] * 0.99
+
+
+def test_price_features_omit_long_window_momentum_when_data_insufficient():
+    """When fewer than 60 closes are available, the long-window momentum field
+    is None or absent rather than silently extrapolating from 4 closes."""
+    asset = resolve_asset("XAUUSD")
+    payload = build_prediction_payload(
+        asset=asset,
+        context_markdown="# Context",
+        recent_runs=[],
+        state_snapshot={
+            "recent_h1_closes": [10.0, 11.0, 12.0, 13.0],  # 4 closes only
+            "levels": {"daily": {"low": 9.0, "high": 15.0}},
+        },
+    )
+    features = payload["price_features"]
+    assert features["h1_count"] == 4
+    # When < 25 closes, momentum_24 should be None.
+    assert features["momentum_24"] is None
+    assert features["momentum_60"] is None
+
+
+def test_memory_summary_exposes_direction_pnl_breakdown():
+    """The validator's '2+ losses in same direction' rule needs explicit
+    direction-loss accounting. Aggregate counts alone forced the validator to
+    infer correlation that wasn't actually surfaced."""
+    asset = resolve_asset("XAUUSD")
+    payload = build_prediction_payload(
+        asset=asset,
+        context_markdown="# Context",
+        recent_runs=[
+            {"action": "SELL", "pnl": -18.0, "journal": "stopped"},
+            {"action": "SELL", "pnl": -17.0, "journal": "stopped"},
+            {"action": "SELL", "pnl": 5.3, "journal": "trail tp"},
+            {"action": "BUY", "pnl": 7.0, "journal": "tp1"},
+        ],
+        state_snapshot={"recent_h1_closes": [10, 11, 12, 13], "levels": {"daily": {"low": 9, "high": 15}}},
+    )
+    memory = payload["memory_summary"]
+    assert memory["buy_count"] == 1
+    assert memory["sell_count"] == 3
+    assert memory["buy_pnl"] == 7.0
+    assert memory["sell_pnl"] == -29.7
+    assert memory["last_3_directions"] == ["SELL", "SELL", "BUY"]
+    # Two consecutive SELL losses preceded the recovery win — earlier still in
+    # the run history. The streak counter looks at the freshest losses only;
+    # since the most recent trade was a BUY win, the streak is empty.
+    assert memory["consecutive_loss_direction"] == ""
+
+
+def test_memory_summary_flags_consecutive_loss_streak():
+    """When the most recent trades are all losses in the same direction, the
+    streak field must surface that explicitly so the validator can act."""
+    asset = resolve_asset("XAUUSD")
+    payload = build_prediction_payload(
+        asset=asset,
+        context_markdown="# Context",
+        recent_runs=[
+            {"action": "BUY", "pnl": 8.0, "journal": "win"},
+            {"action": "SELL", "pnl": -18.0, "journal": "stopped"},
+            {"action": "SELL", "pnl": -17.0, "journal": "stopped"},
+            {"action": "SELL", "pnl": -18.0, "journal": "stopped"},
+        ],
+        state_snapshot={"recent_h1_closes": [10, 11, 12, 13], "levels": {"daily": {"low": 9, "high": 15}}},
+    )
+    memory = payload["memory_summary"]
+    assert memory["consecutive_loss_direction"] == "SELL_3"
+
+
+def test_memory_summary_uses_extended_window():
+    """The legacy summary clipped to last 8 trades. Extend to 12 so the
+    direction-loss view captures a fuller pattern."""
+    asset = resolve_asset("XAUUSD")
+    history = [
+        {"action": "BUY", "pnl": 10.0, "journal": "old win"},
+        *[
+            {"action": "SELL", "pnl": -3.0, "journal": "stop"} for _ in range(11)
+        ],
+    ]
+    payload = build_prediction_payload(
+        asset=asset,
+        context_markdown="# Context",
+        recent_runs=history,
+        state_snapshot={"recent_h1_closes": [10, 11, 12, 13], "levels": {"daily": {"low": 9, "high": 15}}},
+    )
+    memory = payload["memory_summary"]
+    assert memory["trade_count"] == 12
+    assert memory["buy_count"] == 1
+    assert memory["sell_count"] == 11
+
+
 def test_close_volatility_is_direction_symmetric():
     uptrend_closes = [float(value) for value in range(100, 115)]
     downtrend_closes = [float(value) for value in range(114, 99, -1)]
 
     assert _calculate_atr(uptrend_closes) == _calculate_atr(downtrend_closes)
     assert _calculate_atr(uptrend_closes) == 1.0
+
+
+def test_market_snapshot_render_uses_gold_perspective_interpretation():
+    """The LLM has been mistaking 'bias=BUY' on DXY for 'USD bullish'. The rendered
+    report must instead say something like 'gold_signal=BULLISH (USD weakened — gold-supportive)'
+    so the LLM cannot confuse asset direction with gold direction.
+    """
+    asset = resolve_asset("XAUUSD")
+    payload = build_prediction_payload(
+        asset=asset,
+        context_markdown="# Context",
+        recent_runs=[],
+        state_snapshot={"recent_h1_closes": [10, 11, 12, 13], "levels": {"daily": {"low": 9, "high": 15}}},
+        market_snapshot={
+            "series": {
+                "usd_broad_index": {
+                    "label": "Trade-weighted USD broad index",
+                    "value": 118.39,
+                    "change_1d": -0.28,
+                    "bias": "BUY",
+                },
+                "us10y_yield": {
+                    "label": "US 10Y Treasury yield",
+                    "value": 4.36,
+                    "change_1d": -0.07,
+                    "bias": "BUY",
+                },
+                "us5y_breakeven_inflation": {
+                    "label": "US 5Y breakeven inflation expectation",
+                    "value": 2.61,
+                    "change_1d": 0.03,
+                    "bias": "BUY",
+                },
+                "vix": {
+                    "label": "CBOE VIX",
+                    "value": 17.39,
+                    "change_1d": 0.01,
+                    "bias": "BUY",
+                },
+                "btc_usd": {
+                    "label": "Bitcoin USD (Coinbase)",
+                    "value": 80047.2,
+                    "change_1d": -1429.31,
+                    "bias": "NEUTRAL",
+                },
+            },
+        },
+    )
+    report = render_direct_report(payload)
+
+    # Each series row must include a gold-perspective interpretation. The LLM
+    # mislabeled DXY as "strengthening USD" when DXY went DOWN; the new
+    # rendering must make the gold direction unambiguous.
+    assert "gold_signal=BULLISH" in report
+    assert "USD weakened" in report
+    assert "10Y yield fell" in report
+    assert "Inflation expectations rose" in report
+    # The ambiguous legacy 'bias=BUY' phrasing on its own should not appear in
+    # the structured market snapshot section. (It can still exist as data; we
+    # check the rendered string here.)
+    snapshot_section = report.split("## Structured Market Snapshot", 1)[1].split("##", 1)[0]
+    assert "bias=BUY" not in snapshot_section
+    assert "bias=SELL" not in snapshot_section
+
+
+def _rising_upper_third_closes() -> list[float]:
+    """Build a 20-close H1 series whose last value sits firmly in the upper
+    third of the daily range and has positive avg momentum > ATR*0.4 threshold.
+
+    Daily range below: low=4700, high=4720, span=20. Upper third starts at pos
+    0.66 → price ≥ 4713.2. Last close 4719.0 sits at pos=0.95 (upper third).
+    Average ATR computed on these closes is 0.6 → threshold is 0.24, well below
+    avg momentum (≈12 over 12 bars). So price_bias triggers BUY before the
+    regime filter runs.
+    """
+    return [4700.0, 4704.0, 4706.0, 4707.0, 4708.0, 4709.0, 4710.0, 4711.0,
+            4712.0, 4713.0, 4714.0, 4715.0, 4715.5, 4716.0, 4716.5, 4717.0,
+            4717.5, 4718.0, 4718.5, 4719.0]
+
+
+def _falling_lower_third_closes() -> list[float]:
+    """Mirror of _rising_upper_third_closes for downtrend testing."""
+    return [4720.0, 4716.0, 4714.0, 4713.0, 4712.0, 4711.0, 4710.0, 4709.0,
+            4708.0, 4707.0, 4706.0, 4705.0, 4704.5, 4704.0, 4703.5, 4703.0,
+            4702.5, 4702.0, 4701.5, 4701.0]
+
+
+def test_price_bias_keeps_buy_in_upper_third_when_daily_trend_is_up():
+    """The anti-trend filter neutralized BUY in upper-third unconditionally,
+    killing trend-continuation in real uptrends. With a bullish daily regime
+    (trend.daily_bias > 0), BUY in upper-third must survive."""
+    asset = resolve_asset("XAUUSD")
+    payload = build_prediction_payload(
+        asset=asset,
+        context_markdown="# Context",
+        recent_runs=[],
+        state_snapshot={
+            "recent_h1_closes": _rising_upper_third_closes(),
+            "levels": {"daily": {"low": 4700.0, "high": 4720.0}},
+            "trend": {"daily_bias": 1, "alignment": "ALIGNED"},
+        },
+    )
+    assert payload["price_features"]["price_bias"] == "BUY"
+    assert payload["price_features"]["range_position"] == "UPPER_THIRD"
+    assert payload["price_features"]["regime_filter"] == "TREND_ALIGNED_UPPER_THIRD_KEPT_BUY"
+
+
+def test_price_bias_neutralizes_buy_in_upper_third_when_daily_trend_is_down():
+    """When the daily trend is bearish but H1 momentum pushes BUY in the upper
+    third, that's a fade-the-bounce setup that historically fails — keep
+    neutralizing it (mean-reversion failure protection)."""
+    asset = resolve_asset("XAUUSD")
+    payload = build_prediction_payload(
+        asset=asset,
+        context_markdown="# Context",
+        recent_runs=[],
+        state_snapshot={
+            "recent_h1_closes": _rising_upper_third_closes(),
+            "levels": {"daily": {"low": 4700.0, "high": 4720.0}},
+            "trend": {"daily_bias": -1, "alignment": "ALIGNED"},
+        },
+    )
+    assert payload["price_features"]["price_bias"] == "NEUTRAL"
+    assert payload["price_features"]["regime_filter"] == "COUNTER_TREND_UPPER_THIRD_NEUTRALIZED_BUY"
+
+
+def test_price_bias_neutralizes_buy_in_upper_third_when_no_trend_signal():
+    """Without a trend signal, fall back to the conservative legacy behavior."""
+    asset = resolve_asset("XAUUSD")
+    payload = build_prediction_payload(
+        asset=asset,
+        context_markdown="# Context",
+        recent_runs=[],
+        state_snapshot={
+            "recent_h1_closes": _rising_upper_third_closes(),
+            "levels": {"daily": {"low": 4700.0, "high": 4720.0}},
+        },
+    )
+    # Conservative default: with no trend evidence, neutralize BUY in upper third.
+    assert payload["price_features"]["price_bias"] == "NEUTRAL"
+    assert payload["price_features"]["regime_filter"] == "NO_TREND_SIGNAL_NEUTRALIZED_BUY"
+
+
+def test_price_bias_keeps_sell_in_lower_third_when_daily_trend_is_down():
+    """Mirror case for shorts: SELL in lower-third with bearish daily trend
+    should be kept (continuation), not neutralized."""
+    asset = resolve_asset("XAUUSD")
+    payload = build_prediction_payload(
+        asset=asset,
+        context_markdown="# Context",
+        recent_runs=[],
+        state_snapshot={
+            "recent_h1_closes": _falling_lower_third_closes(),
+            "levels": {"daily": {"low": 4700.0, "high": 4720.0}},
+            "trend": {"daily_bias": -1, "alignment": "ALIGNED"},
+        },
+    )
+    assert payload["price_features"]["price_bias"] == "SELL"
+    assert payload["price_features"]["range_position"] == "LOWER_THIRD"
+    assert payload["price_features"]["regime_filter"] == "TREND_ALIGNED_LOWER_THIRD_KEPT_SELL"
+
+
+def test_render_direct_report_handles_gold_bearish_inputs():
+    """When DXY rises, the rendering should say 'USD strengthened — gold-pressuring'
+    and gold_signal=BEARISH."""
+    asset = resolve_asset("XAUUSD")
+    payload = build_prediction_payload(
+        asset=asset,
+        context_markdown="# Context",
+        recent_runs=[],
+        state_snapshot={"recent_h1_closes": [10, 11, 12, 13], "levels": {"daily": {"low": 9, "high": 15}}},
+        market_snapshot={
+            "series": {
+                "usd_broad_index": {
+                    "label": "Trade-weighted USD broad index",
+                    "value": 119.5,
+                    "change_1d": 0.4,
+                    "bias": "SELL",
+                },
+                "us10y_yield": {
+                    "label": "US 10Y Treasury yield",
+                    "value": 4.55,
+                    "change_1d": 0.12,
+                    "bias": "SELL",
+                },
+            },
+        },
+    )
+    report = render_direct_report(payload)
+    assert "gold_signal=BEARISH" in report
+    assert "USD strengthened" in report
+    assert "10Y yield rose" in report
+    assert "gold-pressuring" in report

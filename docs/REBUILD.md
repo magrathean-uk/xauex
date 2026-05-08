@@ -47,14 +47,11 @@ Root `.env` is used by the signal/dashboard support code. Fill in the LLM/API se
 ```dotenv
 CTRADER_HOST=demo-uk-eqx-01.p.c-trader.com
 CTRADER_TLS_SERVER_NAME=connect.spotware.com
-OBSERVE_ONLY=false
 XAUEX_MODE=true
 CMD_FILE_PATH=/var/lib/xauex/cmd.json
 LOG_FILE_PATH=/var/log/xauex/xauex.log
 STATE_FILE_PATH=/var/lib/xauex/state.json
 ```
-
-Use `OBSERVE_ONLY=true` for a non-executing rebuild validation.
 
 ## 5. Install Services
 
@@ -184,4 +181,3 @@ These are intentionally excluded from git.
 5. Install dependencies.
 6. Run `sudo bash ops/install_systemd.sh`.
 7. Verify dashboard, bot health, timers, Monit, and logs.
-8. Keep `OBSERVE_ONLY=true` until credentials and dashboard state look correct.

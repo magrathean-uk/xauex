@@ -160,6 +160,7 @@ def build_market_snapshot(
         series_payload: dict[str, Any] = {}
         missing_series: list[str] = []
         ages: list[float] = []
+        daily_ages: list[float] = []
         block_stale_series_count = 0
         for key, meta in _FRED_SERIES.items():
             result = series_results.get(key)
@@ -173,6 +174,11 @@ def build_market_snapshot(
                 continue
             ages.append(latest['age_seconds'])
             stale_blocks_live_window = result_meta.get('stale_blocks_live_window', 'true') != 'false'
+            if stale_blocks_live_window:
+                # Series we expect to publish daily (yields, breakevens, VIX,
+                # BTC). Track their max age separately so the hard-stale
+                # guard ignores normal weekly-publish lag on slow series.
+                daily_ages.append(latest['age_seconds'])
             if latest['age_seconds'] >= _MARKET_SNAPSHOT_BLOCK_AGE_SECONDS and stale_blocks_live_window:
                 block_stale_series_count += 1
             series_payload[key] = {
@@ -192,6 +198,7 @@ def build_market_snapshot(
         polymarket = polymarket_future.result()
     freshness = _assess_market_snapshot_freshness(
         market_snapshot_age_seconds=int(max(ages)) if ages else None,
+        daily_publishing_max_age_seconds=int(max(daily_ages)) if daily_ages else None,
         missing_series_count=len(missing_series),
         stale_block_series_count=block_stale_series_count,
         window_label=window_label,
@@ -258,6 +265,7 @@ def _fetch_fred_series_payload(
 def _assess_market_snapshot_freshness(
     *,
     market_snapshot_age_seconds: int | None,
+    daily_publishing_max_age_seconds: int | None = None,
     missing_series_count: int,
     stale_block_series_count: int = 1,
     window_label: str,
@@ -302,6 +310,7 @@ def _assess_market_snapshot_freshness(
     return {
         'window_label': window_label,
         'market_snapshot_age_seconds': market_snapshot_age_seconds,
+        'daily_publishing_max_age_seconds': daily_publishing_max_age_seconds,
         'missing_series_count': missing_series_count,
         'stale_block_series_count': stale_block_series_count,
         'market_snapshot_state': state,

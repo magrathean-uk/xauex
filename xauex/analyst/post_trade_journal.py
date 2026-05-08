@@ -34,6 +34,40 @@ def find_new_trades(trades: List[Dict], cursor: Dict) -> List[Dict]:
     return [t for t in trades if t.get("position_id") not in seen]
 
 
+_SIGNAL_CONTEXT_KEYS = (
+    "signal_confidence",
+    "signal_action",
+    "consensus_state",
+    "validator_status",
+    "validator_summary",
+    "decision_mode",
+    "daily_trend_bias",
+    "range_position",
+    "regime_filter",
+    "market_snapshot_age_seconds",
+    "market_snapshot_state",
+)
+
+
+def _signal_context_block(trade: Dict) -> str:
+    metadata = trade.get("metadata") or {}
+    nested = metadata.get("signal_context") if isinstance(metadata.get("signal_context"), dict) else {}
+    fields = {}
+    for key in _SIGNAL_CONTEXT_KEYS:
+        if key in trade and trade[key] not in (None, ""):
+            fields[key] = trade[key]
+        elif key in nested and nested[key] not in (None, ""):
+            fields[key] = nested[key]
+        elif key in metadata and metadata[key] not in (None, ""):
+            fields[key] = metadata[key]
+    if not fields:
+        return ""
+    lines = ["", "SIGNAL CONTEXT (recorded at entry):"]
+    for key, value in fields.items():
+        lines.append(f"  {key}: {value}")
+    return "\n".join(lines)
+
+
 def build_trade_prompt(trade: Dict) -> str:
     """Build the analyst prompt for a single closed trade."""
     direction = trade["direction"]
@@ -53,6 +87,13 @@ def build_trade_prompt(trade: Dict) -> str:
     pnl_per_lot = round(pnl / lots, 2) if lots > 0 else 0
     outcome = "WIN" if pnl >= 0 else "LOSS"
 
+    signal_block = _signal_context_block(trade)
+    context_instruction = (
+        " Comment on whether the outcome matches what the signal confidence and consensus state suggested."
+        if signal_block
+        else ""
+    )
+
     return f"""You are a trading journal assistant for an automated XAUUSD bot. Write a concise post-trade journal entry (3-5 sentences) for the following trade.
 
 TRADE SUMMARY:
@@ -65,9 +106,9 @@ TRADE SUMMARY:
   Take Profit: {tp} (distance: {tp_dist:.2f} USD)
   Planned RR: {rr_planned}
   Lot size: {lots}
-  P&L: {pnl:.2f} USD ({pnl_per_lot:.2f} USD/lot)
+  P&L: {pnl:.2f} USD ({pnl_per_lot:.2f} USD/lot){signal_block}
 
-Write a journal entry covering: what the setup looked like, whether execution followed the rules, and what can be learned from this trade."""
+Write a journal entry covering: what the setup looked like, whether execution followed the rules, and what can be learned from this trade.{context_instruction}"""
 
 
 def run(

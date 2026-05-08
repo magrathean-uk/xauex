@@ -59,7 +59,7 @@ def test_executor_journals_normalized_order_intent_and_ack(tmp_path):
     broker = _FakeBroker(OrderAck(status="accepted", order_id="o-1", raw_result={"status": "accepted", "order_id": "o-1"}))
     api_client = SimpleNamespace(_symbol_spec=SimpleNamespace(symbol="LTCUSD"), _last_bid=55.74, _last_ask=56.83)
     executor = Executor(
-        config=SimpleNamespace(observe_only=False),
+        config=SimpleNamespace(),
         api_client=api_client,
         level_manager=None,
         broker_adapter=broker,
@@ -107,7 +107,7 @@ def test_executor_journals_broker_rejects(tmp_path):
     journal = tmp_path / "events.jsonl"
     broker = _FakeBroker(OrderAck(status="rejected", reason="MARKET_CLOSED", raw_result=None))
     executor = Executor(
-        config=SimpleNamespace(observe_only=False),
+        config=SimpleNamespace(),
         api_client=None,
         level_manager=None,
         broker_adapter=broker,

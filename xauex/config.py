@@ -87,6 +87,8 @@ class Config:
     xauex_cash_stop_loss_gbp: float
     xauex_risk_cap_percent: float
     xauex_confirm_spread_max_dollars: float
+    xauex_confirm_max_age_seconds: int
+    xauex_require_pattern_match: bool
     xauex_confidence_full_threshold: float
     xauex_confidence_medium_threshold: float
     xauex_medium_confidence_lot_multiplier: float
@@ -126,9 +128,6 @@ class Config:
     scalp_take_profit_rr: float
     scalp_max_trades_per_day: int
     scalp_reentry_cooldown_bars: int
-
-    # Observe-only mode (default True for safety)
-    observe_only: bool
 
     # Health check endpoint
     health_check_host: str
@@ -373,6 +372,19 @@ def load_config(env_file: str = ".env") -> Config:
         0.05,
         10.0,
         float(os.getenv("MIROFISH_CONFIRM_SPREAD_MAX_DOLLARS", os.getenv("SCALP_SPREAD_MAX_DOLLARS", "1.0"))),
+    )
+    xauex_confirm_max_age_seconds = collect(
+        _int_range,
+        "XAUEX_CONFIRM_MAX_AGE_SECONDS",
+        60,
+        3600,
+        int(os.getenv("XAUEX_CONFIRM_MAX_AGE_SECONDS", "600")),
+    )
+    xauex_require_pattern_match = os.getenv("XAUEX_REQUIRE_PATTERN_MATCH", "false").lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
     )
     xauex_confidence_full_threshold = collect(
         _float_range,
@@ -628,8 +640,6 @@ def load_config(env_file: str = ".env") -> Config:
             "XAUEX_MEDIUM_CONFIDENCE_LOT_MULTIPLIER"
         )
 
-    observe_only = os.getenv("OBSERVE_ONLY", "true").lower() == "true"
-
     health_check_host = os.getenv("HEALTH_CHECK_HOST", "127.0.0.1").strip() or "127.0.0.1"
     health_check_port = collect(_int_range, "HEALTH_CHECK_PORT", 1024, 65535, 8051) or 8051
 
@@ -704,6 +714,8 @@ def load_config(env_file: str = ".env") -> Config:
         xauex_cash_stop_loss_gbp=xauex_cash_stop_loss_gbp,
         xauex_risk_cap_percent=xauex_risk_cap_percent,
         xauex_confirm_spread_max_dollars=xauex_confirm_spread_max_dollars,
+        xauex_confirm_max_age_seconds=xauex_confirm_max_age_seconds,
+        xauex_require_pattern_match=xauex_require_pattern_match,
         xauex_confidence_full_threshold=xauex_confidence_full_threshold,
         xauex_confidence_medium_threshold=xauex_confidence_medium_threshold,
         xauex_medium_confidence_lot_multiplier=xauex_medium_confidence_lot_multiplier,
@@ -743,7 +755,6 @@ def load_config(env_file: str = ".env") -> Config:
         scalp_take_profit_rr=scalp_take_profit_rr,
         scalp_max_trades_per_day=scalp_max_trades_per_day,
         scalp_reentry_cooldown_bars=scalp_reentry_cooldown_bars,
-        observe_only=observe_only,
         health_check_host=health_check_host,
         health_check_port=health_check_port,
         state_file_path=state_file_path,

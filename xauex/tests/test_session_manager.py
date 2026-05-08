@@ -34,6 +34,8 @@ build_xauex_counter_signal_candidate = _MODULE.build_xauex_counter_signal_candid
 advance_xauex_session_phase = _MODULE.advance_xauex_session_phase
 confirm_xauex_session_phase_transition = _MODULE.confirm_xauex_session_phase_transition
 build_xauex_confirm_decision = _MODULE.build_xauex_confirm_decision
+is_xauex_confirm_timestamp_fresh = _MODULE.is_xauex_confirm_timestamp_fresh
+XAUEX_CONFIRM_MAX_AGE_SECONDS_DEFAULT = _MODULE.XAUEX_CONFIRM_MAX_AGE_SECONDS_DEFAULT
 calculate_xauex_remaining_daily_loss_budget = _MODULE.calculate_xauex_remaining_daily_loss_budget
 BotOrchestrator = _MODULE.BotOrchestrator
 
@@ -674,6 +676,169 @@ def test_structure_stop_distance_accepts_htflevels_container():
     distance = orchestrator._xauex_structure_stop_distance(direction=-1, current_price=4725.0)
 
     assert distance == 17.5
+
+
+def test_xauex_confirm_timestamp_is_fresh_when_within_max_age():
+    """A confirm_timestamp recorded within the freshness window is considered fresh."""
+    now = datetime(2026, 5, 8, 12, 30, 0, tzinfo=timezone.utc)
+    confirm_timestamp = "2026-05-08T12:25:00Z"  # 5 minutes old
+    assert is_xauex_confirm_timestamp_fresh(
+        confirm_timestamp_utc=confirm_timestamp,
+        now_utc=now,
+        max_age_seconds=600,
+    ) is True
+
+
+def test_xauex_confirm_timestamp_is_stale_beyond_max_age():
+    """A confirm_timestamp older than max_age must be flagged stale so the
+    poller will re-run the confirm pass before placing an order."""
+    now = datetime(2026, 5, 8, 12, 30, 0, tzinfo=timezone.utc)
+    confirm_timestamp = "2026-05-08T12:00:00Z"  # 30 minutes old
+    assert is_xauex_confirm_timestamp_fresh(
+        confirm_timestamp_utc=confirm_timestamp,
+        now_utc=now,
+        max_age_seconds=600,
+    ) is False
+
+
+def test_xauex_confirm_timestamp_treats_missing_or_invalid_as_stale():
+    """Empty string, None, or unparseable timestamps must be treated as stale
+    so the poller re-confirms instead of trusting a missing freshness check."""
+    now = datetime(2026, 5, 8, 12, 30, 0, tzinfo=timezone.utc)
+    assert is_xauex_confirm_timestamp_fresh("", now, 600) is False
+    assert is_xauex_confirm_timestamp_fresh(None, now, 600) is False  # type: ignore[arg-type]
+    assert is_xauex_confirm_timestamp_fresh("not-a-timestamp", now, 600) is False
+
+
+def test_xauex_confirm_default_max_age_is_ten_minutes():
+    """Document the default freshness window. If this changes the test should
+    fail noisily so we update operator documentation."""
+    assert XAUEX_CONFIRM_MAX_AGE_SECONDS_DEFAULT == 600
+
+
+def test_xauex_pattern_check_matches_long_with_bullish_engulfing():
+    """The XAUEX path historically placed every order with pattern=NONE,
+    skipping all candle confirmation. With the gate active a BUY signal must
+    be backed by a bullish pattern aligned to a nearby HTF level."""
+    from datetime import datetime, timezone
+    from bot.patterns.detector import Candle, PatternDetector, PatternType
+    from config import Config
+
+    config = SimpleNamespace(
+        pin_max_body_ratio=0.30,
+        pin_min_wick_ratio=0.60,
+        engulf_min_body_ratio=1.0,
+        consolidation_break_buffer=0.10,
+        consolidation_min_bars=3,
+        candle_proximity_dollars=4.0,
+    )
+    detector = PatternDetector(config)
+
+    # Strong bullish engulfing at 4720 level: prev red small, signal green large.
+    prev = Candle(open=4722.0, high=4722.5, low=4719.5, close=4720.0, open_time=datetime(2026, 5, 8, 7, tzinfo=timezone.utc))
+    signal = Candle(open=4719.5, high=4724.0, low=4719.0, close=4723.5, open_time=datetime(2026, 5, 8, 8, tzinfo=timezone.utc))
+
+    pattern, level, ok, reason = _MODULE.xauex_pattern_check(
+        pattern_detector=detector,
+        prev_candle=prev,
+        signal_candle=signal,
+        candidate_levels=[4720.0, 4750.0, 4690.0],
+        direction=+1,  # LONG
+    )
+    assert ok is True
+    assert level == 4720.0
+    assert pattern == PatternType.BULLISH_ENGULFING
+    assert reason == "MATCH"
+
+
+def test_xauex_pattern_check_blocks_when_no_pattern_aligns_to_level():
+    """When the nearest level has no detectable pattern, the gate must
+    reject (ok=False, reason=NO_PATTERN)."""
+    from datetime import datetime, timezone
+    from bot.patterns.detector import Candle, PatternDetector
+
+    config = SimpleNamespace(
+        pin_max_body_ratio=0.30,
+        pin_min_wick_ratio=0.60,
+        engulf_min_body_ratio=1.0,
+        consolidation_break_buffer=0.10,
+        consolidation_min_bars=3,
+        candle_proximity_dollars=4.0,
+    )
+    detector = PatternDetector(config)
+
+    # Both candles drifting up — no clear pattern.
+    prev = Candle(open=4720.0, high=4721.0, low=4719.5, close=4720.8, open_time=datetime(2026, 5, 8, 7, tzinfo=timezone.utc))
+    signal = Candle(open=4720.8, high=4721.5, low=4720.5, close=4721.2, open_time=datetime(2026, 5, 8, 8, tzinfo=timezone.utc))
+
+    pattern, level, ok, reason = _MODULE.xauex_pattern_check(
+        pattern_detector=detector,
+        prev_candle=prev,
+        signal_candle=signal,
+        candidate_levels=[4750.0],
+        direction=+1,
+    )
+    assert ok is False
+    assert reason in {"NO_PATTERN", "DIRECTION_MISMATCH"}
+
+
+def test_xauex_pattern_check_blocks_when_pattern_disagrees_with_direction():
+    """A bearish pattern at the level cannot back a LONG signal."""
+    from datetime import datetime, timezone
+    from bot.patterns.detector import Candle, PatternDetector, PatternType
+
+    config = SimpleNamespace(
+        pin_max_body_ratio=0.30,
+        pin_min_wick_ratio=0.60,
+        engulf_min_body_ratio=1.0,
+        consolidation_break_buffer=0.10,
+        consolidation_min_bars=3,
+        candle_proximity_dollars=4.0,
+    )
+    detector = PatternDetector(config)
+
+    # Bearish engulfing at level 4720.
+    prev = Candle(open=4719.0, high=4720.5, low=4718.5, close=4720.0, open_time=datetime(2026, 5, 8, 7, tzinfo=timezone.utc))
+    signal = Candle(open=4720.5, high=4720.8, low=4716.0, close=4716.5, open_time=datetime(2026, 5, 8, 8, tzinfo=timezone.utc))
+
+    pattern, level, ok, reason = _MODULE.xauex_pattern_check(
+        pattern_detector=detector,
+        prev_candle=prev,
+        signal_candle=signal,
+        candidate_levels=[4720.0],
+        direction=+1,  # LONG against bearish pattern
+    )
+    # The detector may return BEARISH_ENGULFING or NONE depending on body ratio.
+    assert ok is False
+    assert pattern != PatternType.BULLISH_ENGULFING
+
+
+def test_xauex_pattern_check_returns_no_levels_when_candidates_empty():
+    from datetime import datetime, timezone
+    from bot.patterns.detector import Candle, PatternDetector
+
+    config = SimpleNamespace(
+        pin_max_body_ratio=0.30,
+        pin_min_wick_ratio=0.60,
+        engulf_min_body_ratio=1.0,
+        consolidation_break_buffer=0.10,
+        consolidation_min_bars=3,
+        candle_proximity_dollars=4.0,
+    )
+    detector = PatternDetector(config)
+    prev = Candle(open=10.0, high=11.0, low=9.0, close=10.5, open_time=datetime.now(timezone.utc))
+    signal = Candle(open=10.5, high=11.2, low=10.0, close=10.8, open_time=datetime.now(timezone.utc))
+
+    pattern, level, ok, reason = _MODULE.xauex_pattern_check(
+        pattern_detector=detector,
+        prev_candle=prev,
+        signal_candle=signal,
+        candidate_levels=[],
+        direction=+1,
+    )
+    assert ok is False
+    assert level is None
+    assert reason == "NO_LEVELS"
 
 
 @pytest.mark.asyncio

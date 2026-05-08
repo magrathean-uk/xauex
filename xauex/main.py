@@ -144,6 +144,121 @@ def _is_strong_aligned_signal(*, signal: Dict[str, object]) -> bool:
     return consensus in {"aligned", "confirmed"} and validator_status == "reviewed"
 
 
+# Default freshness window for an upstream confirm_status read from cmd.json.
+# The London entry windows are 5 minutes wide and confirm passes run ~1 min
+# before each window opens. A confirm older than this is almost certainly a
+# stale leftover from a previous slot or an aborted run, and trusting it can
+# let news-blocked or microstructure-vetoed states slip through. Operators can
+# override via XAUEX_CONFIRM_MAX_AGE_SECONDS in the env file.
+XAUEX_CONFIRM_MAX_AGE_SECONDS_DEFAULT = 600
+
+
+_XAUEX_BULLISH_PATTERN_TYPES: frozenset = frozenset()
+_XAUEX_BEARISH_PATTERN_TYPES: frozenset = frozenset()
+
+
+def _populate_xauex_pattern_sets() -> None:
+    """Lazy import to avoid PatternType being unresolved at module import time
+    if the bot package isn't fully initialised yet (tests load main.py via
+    importlib spec)."""
+    global _XAUEX_BULLISH_PATTERN_TYPES, _XAUEX_BEARISH_PATTERN_TYPES
+    if _XAUEX_BULLISH_PATTERN_TYPES:
+        return
+    from bot.patterns.detector import PatternType as _PT
+    _XAUEX_BULLISH_PATTERN_TYPES = frozenset({
+        _PT.BULLISH_ENGULFING,
+        _PT.BULLISH_PIN_BAR,
+        _PT.BULLISH_CONTINUATION_CLOSE,
+        _PT.BULLISH_CONSOLIDATION_BREAK,
+        _PT.INSIDE_BAR,  # directionally ambiguous — accepted either way
+    })
+    _XAUEX_BEARISH_PATTERN_TYPES = frozenset({
+        _PT.BEARISH_ENGULFING,
+        _PT.BEARISH_PIN_BAR,
+        _PT.BEARISH_CONTINUATION_CLOSE,
+        _PT.BEARISH_CONSOLIDATION_BREAK,
+        _PT.INSIDE_BAR,
+    })
+
+
+def xauex_pattern_check(
+    *,
+    pattern_detector,
+    prev_candle,
+    signal_candle,
+    candidate_levels,
+    direction: int,
+):
+    """Run pattern detection against the candidate HTF levels and return
+    whether the strongest match aligns with the proposed direction.
+
+    Returns a tuple ``(pattern, level, ok, reason)`` where ``ok`` is True only
+    when a pattern fires that supports ``direction``. The XAUEX poll uses this
+    behind the ``XAUEX_REQUIRE_PATTERN_MATCH`` feature flag to refuse trades
+    that would have been blind LLM directional bets.
+    """
+    _populate_xauex_pattern_sets()
+    from bot.patterns.detector import PatternType as _PT
+
+    if not candidate_levels:
+        return _PT.NONE, None, False, "NO_LEVELS"
+
+    sorted_levels = sorted(candidate_levels, key=lambda lvl: abs(signal_candle.close - float(lvl)))
+    rank = {
+        _PT.BULLISH_ENGULFING: 4,
+        _PT.BEARISH_ENGULFING: 4,
+        _PT.BULLISH_CONTINUATION_CLOSE: 3,
+        _PT.BEARISH_CONTINUATION_CLOSE: 3,
+        _PT.BULLISH_PIN_BAR: 2,
+        _PT.BEARISH_PIN_BAR: 2,
+        _PT.INSIDE_BAR: 1,
+    }
+    best_pattern = _PT.NONE
+    best_level: Optional[float] = None
+    best_rank = -1
+    for lvl in sorted_levels:
+        result = pattern_detector.detect(prev_candle, signal_candle, float(lvl))
+        if result.pattern == _PT.NONE:
+            continue
+        current_rank = rank.get(result.pattern, 0)
+        if current_rank > best_rank:
+            best_rank = current_rank
+            best_pattern = result.pattern
+            best_level = float(lvl)
+
+    if best_pattern == _PT.NONE:
+        return _PT.NONE, sorted_levels[0] if sorted_levels else None, False, "NO_PATTERN"
+
+    if direction > 0 and best_pattern in _XAUEX_BULLISH_PATTERN_TYPES:
+        return best_pattern, best_level, True, "MATCH"
+    if direction < 0 and best_pattern in _XAUEX_BEARISH_PATTERN_TYPES:
+        return best_pattern, best_level, True, "MATCH"
+    return best_pattern, best_level, False, "DIRECTION_MISMATCH"
+
+
+def is_xauex_confirm_timestamp_fresh(
+    confirm_timestamp_utc: Optional[str],
+    now_utc: datetime,
+    max_age_seconds: int,
+) -> bool:
+    """Return True only when the provided ISO confirm timestamp is parseable
+    and within max_age_seconds of now_utc. Missing or invalid timestamps are
+    treated as stale (False) so the caller forces a re-confirmation."""
+    if not confirm_timestamp_utc:
+        return False
+    text = str(confirm_timestamp_utc).strip()
+    if not text:
+        return False
+    try:
+        confirm_dt = datetime.fromisoformat(text.replace("Z", "+00:00")).astimezone(timezone.utc)
+    except (TypeError, ValueError):
+        return False
+    age_seconds = (now_utc.astimezone(timezone.utc) - confirm_dt).total_seconds()
+    if age_seconds < 0:
+        return False
+    return age_seconds <= max(0, int(max_age_seconds))
+
+
 def build_xauex_confirm_decision(
     *,
     signal: Dict[str, object],
@@ -618,10 +733,8 @@ def count_tradeable_open_positions(positions: List[object]) -> int:
     return sum(1 for position in positions if _position_owner(position) == "xauex")
 
 
-def manual_trade_global_block_reason(*, observe_only: bool, kill_switch_active: bool, auth_failure: bool) -> Optional[str]:
+def manual_trade_global_block_reason(*, kill_switch_active: bool, auth_failure: bool) -> Optional[str]:
     """Manual trades remain independent from Oracle logic, but not from explicit global safety halts."""
-    if observe_only:
-        return "OBSERVE_ONLY"
     if kill_switch_active:
         return "KILL_SWITCH"
     if auth_failure:
@@ -855,7 +968,7 @@ class BotOrchestrator:
         }
         self.last_tick_time = time.monotonic()
 
-        self._recent_h1_closes: deque = deque(maxlen=20)
+        self._recent_h1_closes: deque = deque(maxlen=80)
         self._trade_entries_on_chart: List[Dict] = []
         self._last_signal: Optional[Dict] = None
         self._signal_history: deque = deque(maxlen=12)
@@ -1030,7 +1143,7 @@ class BotOrchestrator:
         logger.info("[STARTUP] Tick stream subscribed.")
 
         self.running = True
-        self.bot_status = "OBSERVE_ONLY" if self.config.observe_only else "RUNNING"
+        self.bot_status = "RUNNING"
 
         # Background: poll kill switch, watchdog, health check
         asyncio.create_task(self._poll_kill_switch())
@@ -1163,7 +1276,7 @@ class BotOrchestrator:
             )
             return
 
-        self._recent_h1_closes = deque([bar["close"] for bar in bars[-20:]], maxlen=20)
+        self._recent_h1_closes = deque([bar["close"] for bar in bars[-80:]], maxlen=80)
 
         if mode == "SCALP_V1":
             daily_closes = await self._fetch_daily_closes()
@@ -1225,7 +1338,7 @@ class BotOrchestrator:
             await self.write_state()
             return
 
-        self._recent_h1_closes = deque([bar["close"] for bar in bars[-20:]], maxlen=20)
+        self._recent_h1_closes = deque([bar["close"] for bar in bars[-80:]], maxlen=80)
 
         try:
             await self.level_manager.refresh_if_needed()
@@ -1386,7 +1499,7 @@ class BotOrchestrator:
                 action = "EXECUTED"
                 self._record_trade_level(level, direction)
             else:
-                action = "OBSERVE_ONLY" if self.config.observe_only else "FAILED"
+                action = "FAILED"
         else:
             pos_id = await self.executor.place_market_order(
                 direction=direction,
@@ -1400,7 +1513,7 @@ class BotOrchestrator:
                 action = "EXECUTED"
                 self._record_trade_level(level, direction)
             else:
-                action = "OBSERVE_ONLY" if self.config.observe_only else "FAILED"
+                action = "FAILED"
 
             if pos_id and len(self._recent_h1_closes) > 0:
                 self._append_trade_entry_on_chart(
@@ -1450,7 +1563,7 @@ class BotOrchestrator:
             return
 
         if store == "live":
-            self._recent_h1_closes = deque([bar["close"] for bar in bars[-20:]], maxlen=20)
+            self._recent_h1_closes = deque([bar["close"] for bar in bars[-80:]], maxlen=80)
 
         gate_result = await self._environment_gate(apply_risk_gates=apply_risk_gates)
         if gate_result is not None:
@@ -1533,7 +1646,7 @@ class BotOrchestrator:
                             )
                             action = "EXECUTED"
                         else:
-                            action = "OBSERVE_ONLY" if self.config.observe_only else "FAILED"
+                            action = "FAILED"
 
         self._record_signal(
             decision.pattern,
@@ -1582,7 +1695,7 @@ class BotOrchestrator:
             return
 
         if store == "live":
-            self._recent_h1_closes = deque([bar["close"] for bar in bars[-20:]], maxlen=20)
+            self._recent_h1_closes = deque([bar["close"] for bar in bars[-80:]], maxlen=80)
 
         gate_result = await self._environment_gate(apply_risk_gates=apply_risk_gates)
         if gate_result is not None:
@@ -1692,7 +1805,7 @@ class BotOrchestrator:
                             )
                             action = "EXECUTED"
                         else:
-                            action = "OBSERVE_ONLY" if self.config.observe_only else "FAILED"
+                            action = "FAILED"
 
         self._record_signal(
             decision.pattern,
@@ -1808,8 +1921,8 @@ class BotOrchestrator:
             return
 
         self._recent_h1_closes = deque(
-            [bar["close"] for bar in bars[-20:]],
-            maxlen=20,
+            [bar["close"] for bar in bars[-80:]],
+            maxlen=80,
         )
         if self.active_strategy_mode == "SCALP_V1":
             daily_closes = await self._fetch_daily_closes()
@@ -1870,6 +1983,77 @@ class BotOrchestrator:
                     await asyncio.sleep(0.5)
                     continue
         logger.error("[TREND] Failed to fetch H1 bars: %s", last_exc)
+        return None
+
+    async def _xauex_pattern_gate_check(self, *, direction: int):
+        """Run the XAUEX pattern gate against the latest H1 bars.
+
+        Returns ``(matched_pattern, matched_level, reason)``. ``matched_pattern``
+        is None when the gate blocks (no level / no pattern / direction
+        mismatch / insufficient data). ``reason`` always carries a short label
+        suitable for slot-record diagnostics.
+        """
+        from bot.patterns.detector import Candle, PatternType as _PT
+
+        if self.pattern_detector is None or self.level_manager is None:
+            return None, None, "DETECTOR_UNAVAILABLE"
+        bars = await self._fetch_recent_h1_ohlc_bars(count=4)
+        if not bars or len(bars) < 2:
+            return None, None, "H1_BARS_UNAVAILABLE"
+        prev_bar = bars[-2]
+        signal_bar = bars[-1]
+        try:
+            prev_candle = Candle(
+                open=float(prev_bar["open"]),
+                high=float(prev_bar["high"]),
+                low=float(prev_bar["low"]),
+                close=float(prev_bar["close"]),
+                open_time=prev_bar.get("open_time") or datetime.now(timezone.utc),
+            )
+            signal_candle = Candle(
+                open=float(signal_bar["open"]),
+                high=float(signal_bar["high"]),
+                low=float(signal_bar["low"]),
+                close=float(signal_bar["close"]),
+                open_time=signal_bar.get("open_time") or datetime.now(timezone.utc),
+            )
+        except (KeyError, TypeError, ValueError):
+            return None, None, "H1_BAR_MALFORMED"
+
+        range_low = min(prev_candle.low, signal_candle.low)
+        range_high = max(prev_candle.high, signal_candle.high)
+        candidates = self.level_manager.levels_near_range(range_low, range_high)
+        if not candidates:
+            candidates = self.level_manager.all_levels()
+        if not candidates:
+            return None, None, "NO_LEVELS"
+
+        pattern, level, ok, reason = xauex_pattern_check(
+            pattern_detector=self.pattern_detector,
+            prev_candle=prev_candle,
+            signal_candle=signal_candle,
+            candidate_levels=candidates,
+            direction=direction,
+        )
+        if ok and pattern != _PT.NONE:
+            return pattern, level, "MATCH"
+        return None, level, reason
+
+    async def _fetch_recent_h1_ohlc_bars(self, count: int = 4) -> Optional[List[Dict]]:
+        """Fetch the most recent closed H1 OHLC bars for pattern detection in
+        the XAUEX poll path. Returns the raw bar dicts with open/high/low/close
+        keys so :func:`xauex_pattern_check` can build Candle objects."""
+        last_exc = None
+        for attempt in range(2):
+            try:
+                bars = await self.api_client.get_trendbar("H1", max(2, int(count)))
+                return list(bars or [])
+            except Exception as exc:
+                last_exc = exc
+                if attempt == 0:
+                    await asyncio.sleep(0.5)
+                    continue
+        logger.error("[XAUEX] Failed to fetch H1 OHLC bars: %s", last_exc)
         return None
 
     def _load_macro_regime(self) -> Optional[MacroRegime]:
@@ -2916,7 +3100,7 @@ class BotOrchestrator:
                 elif cmd.get("kill_switch") is False and self.kill_switch_active:
                     logger.info("[KILL SWITCH] Deactivated. Resuming trading.")
                     self.kill_switch_active = False
-                    self.set_status("OBSERVE_ONLY" if self.config.observe_only else "RUNNING")
+                    self.set_status("RUNNING")
                     await self.write_state()
             except FileNotFoundError:
                 pass
@@ -2995,6 +3179,29 @@ class BotOrchestrator:
             confirm_status = str(sig.get("confirm_status") or "PENDING").upper()
             confirm_reason = str(sig.get("confirm_reason") or "WAITING_FOR_CONFIRM")
             confirm_timestamp_utc = str(sig.get("confirm_timestamp_utc") or "")
+            # Defense in depth: a CONFIRMED/SKIP status from cmd.json that is
+            # older than the configured freshness window can no longer be
+            # trusted (news events may have started, microstructure may have
+            # shifted). Force a re-confirmation by demoting the status to
+            # PENDING so the existing confirm-pass branch below runs.
+            confirm_max_age_seconds = int(
+                getattr(self.config, "xauex_confirm_max_age_seconds", XAUEX_CONFIRM_MAX_AGE_SECONDS_DEFAULT)
+                or XAUEX_CONFIRM_MAX_AGE_SECONDS_DEFAULT
+            )
+            if confirm_status in {"CONFIRMED", "SKIP"} and not is_xauex_confirm_timestamp_fresh(
+                confirm_timestamp_utc=confirm_timestamp_utc,
+                now_utc=now_utc,
+                max_age_seconds=confirm_max_age_seconds,
+            ):
+                logger.warning(
+                    "[XAUEX] confirm timestamp %s is older than %ds for %s/%s — forcing re-confirmation.",
+                    confirm_timestamp_utc or "<missing>",
+                    confirm_max_age_seconds,
+                    slot,
+                    signal_id,
+                )
+                confirm_status = "PENDING"
+                confirm_reason = "CONFIRM_TIMESTAMP_STALE"
             self._journal_event(
                 "signal_decision",
                 {
@@ -3260,7 +3467,28 @@ class BotOrchestrator:
                             _safe_signal_float(sig.get("counter_signal_risk_multiplier"), 0.0),
                         )
                     else:
-                        logger.info("[XAUEX] Confirm veto: %s", confirm_reason)
+                        logger.warning(
+                            "[XAUEX] Confirm veto blocked trade: status=%s reason=%s slot=%s signal=%s action=%s confidence=%.2f",
+                            confirm_status,
+                            confirm_reason,
+                            slot,
+                            signal_id,
+                            action,
+                            confidence,
+                        )
+                        self._journal_event(
+                            "confirm_veto",
+                            {
+                                "slot": slot,
+                                "window_label": window_label,
+                                "confirm_status": confirm_status,
+                                "confirm_reason": confirm_reason,
+                                "signal_action": action,
+                                "signal_confidence": confidence,
+                                "confirm_timestamp_utc": confirm_timestamp_utc,
+                            },
+                            correlation_id=signal_id,
+                        )
                         self._mark_slot_used(
                             slot=slot,
                             signal_id=signal_id,
@@ -3278,7 +3506,14 @@ class BotOrchestrator:
                         continue
 
                 if confirm_status != "CONFIRMED" or direction is None:
-                    logger.info("[XAUEX] Confirm veto: %s", confirm_reason)
+                    logger.warning(
+                        "[XAUEX] Confirm veto blocked trade (post-counter): status=%s reason=%s slot=%s signal=%s direction=%s",
+                        confirm_status,
+                        confirm_reason,
+                        slot,
+                        signal_id,
+                        direction,
+                    )
                     self._mark_slot_used(
                         slot=slot,
                         signal_id=signal_id,
@@ -3606,6 +3841,27 @@ class BotOrchestrator:
                     await self.write_state()
                     continue
                 target_cash_reward = round(lot * float(self.symbol_spec.lot_size) * tp_distance, 2)
+                # Capture the signal context that produced this trade so the
+                # post-trade journal and weekly review can attribute outcomes
+                # to confidence, validator opinion, regime filter, and macro
+                # snapshot freshness rather than treating every closed trade
+                # as a context-free event.
+                decision_packet_for_meta = sig.get("decision_packet") or {}
+                price_features_for_meta = (decision_packet_for_meta.get("price_features") or {}) if isinstance(decision_packet_for_meta, dict) else {}
+                input_freshness_for_meta = (decision_packet_for_meta.get("input_freshness") or {}) if isinstance(decision_packet_for_meta, dict) else {}
+                signal_context = {
+                    "signal_action": str(sig.get("action") or "").upper(),
+                    "signal_confidence": round(float(sig.get("confidence") or 0.0), 4),
+                    "validator_status": str(sig.get("validator_status") or ""),
+                    "validator_summary": str(sig.get("validator_summary") or "")[:280],
+                    "consensus_state": str(sig.get("consensus_state") or ""),
+                    "decision_mode": str(sig.get("decision_mode") or ""),
+                    "daily_trend_bias": price_features_for_meta.get("daily_trend_bias"),
+                    "range_position": price_features_for_meta.get("range_position"),
+                    "regime_filter": price_features_for_meta.get("regime_filter"),
+                    "market_snapshot_age_seconds": input_freshness_for_meta.get("market_snapshot_age_seconds"),
+                    "market_snapshot_state": input_freshness_for_meta.get("market_snapshot_state"),
+                }
                 session_metadata = {
                     "session": {
                         "phase": "OBSERVE",
@@ -3636,7 +3892,13 @@ class BotOrchestrator:
                         "confirm_status": confirm_status,
                         "confirm_reason": confirm_reason,
                         "confirm_timestamp_utc": confirm_timestamp_utc,
-                    }
+                    },
+                    "signal_context": signal_context,
+                    # Top-level mirrors so the journal/weekly review can read
+                    # them without traversing the metadata dict.
+                    "signal_confidence": signal_context["signal_confidence"],
+                    "consensus_state": signal_context["consensus_state"],
+                    "validator_status": signal_context["validator_status"],
                 }
                 logger.info(
                     "[XAUEX] Executing %s %s | Lot:%.2f assurance=%s score=%.2f risk_budget:%.2f/%.2f actual_risk:%.2f target_rr:%.2f SL:%.2f TP:%.2f signal_sl:%.2f atr_sl:%.2f structure_sl:%.2f | Confidence:%.2f | %s",
@@ -3658,13 +3920,68 @@ class BotOrchestrator:
                     reasoning,
                 )
 
+                # Pattern gate (feature-flagged via XAUEX_REQUIRE_PATTERN_MATCH).
+                # Historically every XAUEX trade was placed with pattern=NONE,
+                # which bypassed the candle-confirmation discipline that the
+                # HTF_LEVEL strategy relied on. When the flag is active, refuse
+                # to place an order unless an H1 pattern at a nearby HTF level
+                # supports the proposed direction. The detected pattern is
+                # then recorded on the trade so the journal can attribute
+                # outcomes to real setups instead of NONE.
+                placement_pattern = PatternType.NONE
+                placement_level = current_price
+                if bool(getattr(self.config, "xauex_require_pattern_match", False)):
+                    matched_pattern, matched_level, gate_reason = await self._xauex_pattern_gate_check(
+                        direction=direction,
+                    )
+                    if matched_pattern is None:
+                        logger.warning(
+                            "[XAUEX] Pattern gate blocked trade: %s slot=%s signal=%s direction=%s",
+                            gate_reason,
+                            slot,
+                            signal_id,
+                            dir_label,
+                        )
+                        self._journal_event(
+                            "pattern_gate_block",
+                            {
+                                "slot": slot,
+                                "window_label": window_label,
+                                "direction": dir_label,
+                                "reason": gate_reason,
+                            },
+                            correlation_id=signal_id,
+                        )
+                        self._mark_slot_used(
+                            slot=slot,
+                            signal_id=signal_id,
+                            reason=f"PATTERN_GATE_{gate_reason}",
+                            signal_time=now_utc,
+                            signal_action=action,
+                            signal_confidence=confidence,
+                            window_label=window_label,
+                            confirm_status=confirm_status,
+                            confirm_reason=confirm_reason,
+                            confirm_timestamp_utc=confirm_timestamp_utc,
+                            terminal=True,
+                        )
+                        await self.write_state()
+                        continue
+                    placement_pattern = matched_pattern
+                    placement_level = matched_level if matched_level is not None else current_price
+                    logger.info(
+                        "[XAUEX] Pattern gate cleared: pattern=%s level=%.2f",
+                        placement_pattern.name,
+                        placement_level,
+                    )
+
                 pos_id = await self.executor.place_market_order(
                     direction=direction,
                     lot_size=lot,
                     stop_loss_price=stop_loss_price,
                     take_profit_price=take_profit_price,
-                    pattern=PatternType.NONE,
-                    level=current_price,
+                    pattern=placement_pattern,
+                    level=placement_level,
                     owner="xauex",
                     metadata=session_metadata,
                 )
@@ -3676,10 +3993,7 @@ class BotOrchestrator:
                     if not str(pos_id).startswith("order:"):
                         self._append_trade_entry_on_chart(str(pos_id), dir_label, current_price, "xauex")
                 else:
-                    if self.config.observe_only:
-                        logger.info("[XAUEX] OBSERVE_ONLY - order logged but not placed")
-                    else:
-                        logger.warning("[XAUEX] Order placement returned None")
+                    logger.warning("[XAUEX] Order placement returned None")
 
                 self._mark_slot_used(
                     slot=slot,
@@ -3847,10 +4161,6 @@ class BotOrchestrator:
                     position.volume,
                 )
 
-                if self.config.observe_only:
-                    self._xauex_close_requested[position.position_id] = now_utc
-                    continue
-
                 closed = await self.api_client.close_position(
                     position_id=position.position_id,
                     volume_lots=position.volume,
@@ -3944,7 +4254,6 @@ class BotOrchestrator:
             stop_loss = float(payload.get("stop_loss"))
             take_profit = float(payload.get("take_profit"))
             block_reason = manual_trade_global_block_reason(
-                observe_only=bool(self.config.observe_only),
                 kill_switch_active=bool(self.kill_switch_active),
                 auth_failure=bool(self.executor.HALTED_AUTH_FAILURE),
             )

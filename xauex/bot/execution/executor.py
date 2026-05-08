@@ -96,8 +96,7 @@ class Executor:
     Execute orders via cTrader Open API.
 
     Pre-conditions are verified by the orchestrator. The executor performs a
-    secondary validation, places the order, and logs all outcomes. In
-    OBSERVE_ONLY mode no real orders are submitted.
+    secondary validation, places the order, and logs all outcomes.
     """
 
     HALTED_AUTH_FAILURE = False   # set True on TRADING_DISABLED error
@@ -298,18 +297,6 @@ class Executor:
         )
         self._journal_event("order_intent", intent.__dict__, correlation_id=intent.correlation_id)
 
-        if self.config.observe_only:
-            logger.info(
-                "[EXECUTOR] OBSERVE_ONLY — would have placed %s %.2f lots. SL:%s TP:%s",
-                direction_label, lot_size, sl_label, tp_label,
-            )
-            self._journal_event(
-                "order_rejected",
-                {"reason": "OBSERVE_ONLY", **intent.__dict__},
-                correlation_id=intent.correlation_id,
-            )
-            return None
-
         try:
             ack = await self.broker_adapter.place_market_order(intent)
         except Exception as exc:
@@ -415,13 +402,6 @@ class Executor:
             "[EXECUTOR] Placing INSIDE_BAR pair | Buy:%.2f Sell:%.2f | Level:%.2f",
             buy_stop_price, sell_stop_price, level,
         )
-
-        if self.config.observe_only:
-            logger.info(
-                "[EXECUTOR] OBSERVE_ONLY — would have placed INSIDE_BAR stop orders at %.2f / %.2f",
-                buy_stop_price, sell_stop_price,
-            )
-            return None, None
 
         buy_id: Optional[str] = None
         sell_id: Optional[str] = None
@@ -568,7 +548,9 @@ class Executor:
             close_price, pnl_sign, abs(pnl), position.pattern.name, position.level,
         )
 
-        self._closed_trades_today.append({
+        position_metadata = dict(position.metadata or {})
+        signal_context = position_metadata.get("signal_context") if isinstance(position_metadata.get("signal_context"), dict) else {}
+        closed_record = {
             "position_id": position_id,
             "direction": position.direction,
             "entry_price": position.entry_price,
@@ -580,9 +562,28 @@ class Executor:
             "pattern": position.pattern.name,
             "level": position.level,
             "owner": position.owner,
-            "metadata": dict(position.metadata or {}),
+            "metadata": position_metadata,
             "close_time_utc": datetime.now(timezone.utc).isoformat(),
-        })
+        }
+        # Lift the signal-context fields so analyst layers (post-trade journal,
+        # weekly review) can read them directly without traversing metadata.
+        for context_key in (
+            "signal_confidence",
+            "signal_action",
+            "validator_status",
+            "consensus_state",
+            "decision_mode",
+            "daily_trend_bias",
+            "range_position",
+            "regime_filter",
+            "market_snapshot_age_seconds",
+            "market_snapshot_state",
+        ):
+            if signal_context and context_key in signal_context:
+                closed_record[context_key] = signal_context[context_key]
+            elif context_key in position_metadata:
+                closed_record[context_key] = position_metadata[context_key]
+        self._closed_trades_today.append(closed_record)
         correlation_id = str((position.metadata or {}).get("correlation_id") or "")
         session = (position.metadata or {}).get("session") if isinstance((position.metadata or {}).get("session"), dict) else {}
         if not correlation_id:
@@ -704,8 +705,6 @@ class Executor:
         3. Validate the new SL doesn't move further from entry (hard rule).
         4. Send amend_position_sltp() to broker.
         5. Update local TrackedPosition.stop_loss.
-
-        In OBSERVE_ONLY mode, only logs — never sends to broker.
         """
         from bot.risk.trailing_stop import evaluate_trailing_stop
 
@@ -749,9 +748,6 @@ class Executor:
                     pos.position_id, pos.direction, result.reason,
                     pos.stop_loss, result.new_sl,
                 )
-
-                if self.config.observe_only:
-                    continue
 
                 ok = await self.api_client.amend_position_sltp(
                     position_id=pos.position_id,

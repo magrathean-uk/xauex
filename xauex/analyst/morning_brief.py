@@ -3,7 +3,8 @@
 import logging
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional
 
 from xauex.analyst._utils import (
     default_model,
@@ -22,11 +23,17 @@ _STATE_DIR = os.path.dirname(STATE_PATH) or "."
 NEWS_CACHE_PATH = os.environ.get(
     "XAUEX_NEWS_CACHE", os.path.join(_STATE_DIR, "news_calendar_cache.json")
 )
+JOURNAL_PATH = os.environ.get(
+    "XAUEX_JOURNAL_OUTPUT", "/var/lib/xauex/trade_journal.json"
+)
 OUTPUT_PATH = os.environ.get(
     "XAUEX_BRIEF_OUTPUT", "/var/lib/xauex/morning_brief.json"
 )
 STALE_SECONDS = 30 * 60  # 30 minutes
 NEWS_STALE_HOURS = 24
+YESTERDAY_LOOKBACK_HOURS = 24
+_YESTERDAY_DIRECTION_SKEW_ALERT = 0.70
+_YESTERDAY_PATTERN_HIT_RATE_ALERT = 0.25
 
 
 def build_news_section(news_cache_path: str) -> str:
@@ -55,7 +62,105 @@ def build_news_section(news_cache_path: str) -> str:
     return "\n".join(lines)
 
 
-def build_prompt(state: dict, news_section: str, stale: bool = False) -> str:
+def filter_recent_journal_entries(
+    entries: List[Dict[str, Any]],
+    *,
+    now: datetime,
+    lookback_hours: int = YESTERDAY_LOOKBACK_HOURS,
+) -> List[Dict[str, Any]]:
+    """Return journal entries whose close_time_utc falls within the lookback
+    window. Entries with missing or unparseable timestamps are dropped."""
+    cutoff = now.astimezone(timezone.utc) - timedelta(hours=lookback_hours)
+    out: List[Dict[str, Any]] = []
+    for entry in entries or []:
+        ts_str = (
+            (entry.get("entry") or {}).get("close_time_utc")
+            or entry.get("journalled_at_utc")
+            or ""
+        )
+        if not ts_str:
+            continue
+        try:
+            ts = datetime.fromisoformat(str(ts_str).replace("Z", "+00:00")).astimezone(timezone.utc)
+        except (ValueError, AttributeError, TypeError):
+            continue
+        if ts >= cutoff:
+            out.append(entry)
+    return out
+
+
+def build_yesterday_outcomes_section(
+    *,
+    journal_entries: List[Dict[str, Any]],
+    now: datetime,
+    lookback_hours: int = YESTERDAY_LOOKBACK_HOURS,
+) -> str:
+    """Render a deterministic summary of trades closed in the last 24 hours.
+
+    The legacy brief had no link back to actual outcomes, so operators
+    arriving at the morning open had no read on yesterday's direction skew
+    or pattern hit rate before placing today's first signal.
+    """
+    recent = filter_recent_journal_entries(journal_entries, now=now, lookback_hours=lookback_hours)
+    if not recent:
+        return f"YESTERDAY'S OUTCOMES (last {lookback_hours}h):\n  No trades closed in the last {lookback_hours} hours."
+
+    long_count = sum(1 for e in recent if str((e.get("entry") or {}).get("direction") or "").upper() == "LONG")
+    short_count = sum(1 for e in recent if str((e.get("entry") or {}).get("direction") or "").upper() == "SHORT")
+    long_pnl = sum(float((e.get("entry") or {}).get("pnl") or 0.0)
+                   for e in recent
+                   if str((e.get("entry") or {}).get("direction") or "").upper() == "LONG")
+    short_pnl = sum(float((e.get("entry") or {}).get("pnl") or 0.0)
+                    for e in recent
+                    if str((e.get("entry") or {}).get("direction") or "").upper() == "SHORT")
+    net_pnl = sum(float((e.get("entry") or {}).get("pnl") or 0.0) for e in recent)
+    wins = sum(1 for e in recent if float((e.get("entry") or {}).get("pnl") or 0.0) > 0)
+    losses = sum(1 for e in recent if float((e.get("entry") or {}).get("pnl") or 0.0) < 0)
+    pattern_hits = sum(
+        1
+        for e in recent
+        if str((e.get("entry") or {}).get("pattern") or "NONE").upper() not in ("", "NONE")
+    )
+    pattern_hit_rate = pattern_hits / len(recent) if recent else 0.0
+    direction_skew = max(long_count, short_count) / max(1, long_count + short_count) if (long_count + short_count) else 0.0
+
+    lines = [
+        f"YESTERDAY'S OUTCOMES (last {lookback_hours}h): {len(recent)} trades closed",
+        f"  LONG: {long_count} trade{'s' if long_count != 1 else ''} (PnL {long_pnl:+.2f})",
+        f"  SHORT: {short_count} trade{'s' if short_count != 1 else ''} (PnL {short_pnl:+.2f})",
+        f"  Wins {wins} / Losses {losses}, Net PnL {net_pnl:+.2f}",
+        f"  Patterns hit: {pattern_hits}/{len(recent)} ({pattern_hit_rate:.0%})",
+    ]
+
+    patterns_seen = sorted(
+        {
+            str((e.get("entry") or {}).get("pattern") or "NONE").upper()
+            for e in recent
+            if str((e.get("entry") or {}).get("pattern") or "NONE").upper() not in ("", "NONE")
+        }
+    )
+    if patterns_seen:
+        lines.append(f"  Pattern types: {', '.join(patterns_seen)}")
+
+    if direction_skew >= _YESTERDAY_DIRECTION_SKEW_ALERT and len(recent) >= 4:
+        lines.append(
+            f"  ⚠ DIRECTION SKEW ALERT: {direction_skew:.0%} of yesterday's trades were on one side. "
+            "Investigate whether the bot is biased before today's session."
+        )
+    if pattern_hit_rate < _YESTERDAY_PATTERN_HIT_RATE_ALERT and len(recent) >= 3:
+        lines.append(
+            f"  ⚠ PATTERN HIT RATE ALERT: only {pattern_hit_rate:.0%} of yesterday's trades had a confirmed pattern. "
+            "Trades without pattern confirmation have historically lost money."
+        )
+    return "\n".join(lines)
+
+
+def build_prompt(
+    state: dict,
+    news_section: str,
+    stale: bool = False,
+    yesterday_section: Optional[str] = None,
+) -> str:
     """Build the analyst prompt for the morning brief."""
     meta = state.get("meta", {})
     account = state.get("account", {})
@@ -85,11 +190,15 @@ def build_prompt(state: dict, news_section: str, stale: bool = False) -> str:
     wk = levels.get("weekly", {})
     mn = levels.get("monthly", {})
 
+    yesterday_block = yesterday_section or "YESTERDAY'S OUTCOMES: not provided."
+
     return f"""You are a trading operations analyst for an automated XAUUSD bot. Produce a concise morning brief covering the key points an operator needs before the London session opens.{stale_warning}
 
-BOT STATUS: {meta.get('bot_status', 'UNKNOWN')} (observe_only={state.get('observe_only', True)})
+BOT STATUS: {meta.get('bot_status', 'UNKNOWN')}
 ACCOUNT: balance={account.get('balance', '?')} equity={account.get('equity', '?')}
 RISK: consecutive_losses_today={risk.get('consecutive_losses_today', 0)} weekly_pnl={risk.get('weekly_pnl', 0):.2f} weekly_halted={risk.get('weekly_halted', False)} daily_halted={risk.get('daily_halted', False)}
+
+{yesterday_block}
 
 HTF LEVELS:
   Weekly: O={wk.get('open')} H={wk.get('high')} L={wk.get('low')} C={wk.get('close')}
@@ -103,13 +212,14 @@ LAST 5 SIGNALS:
 
 {news_section}
 
-Produce a short morning brief (5-10 sentences) covering: current positioning, key levels to watch, risk status, and any upcoming news events that could affect XAUUSD today. Be direct and operational."""
+Produce a short morning brief (5-10 sentences) covering: yesterday's outcomes (lead with this if a direction-skew or pattern-hit-rate alert fires), current positioning, key levels to watch, risk status, and any upcoming news events that could affect XAUUSD today. Be direct and operational. Do NOT recommend taking the same direction as yesterday when a direction-skew alert is active."""
 
 
 def run(
     state_path: str = STATE_PATH,
     news_cache_path: str = NEWS_CACHE_PATH,
     output_path: str = OUTPUT_PATH,
+    journal_path: str = JOURNAL_PATH,
 ) -> None:
     """Generate morning brief and write to output file."""
     state = read_json_file(state_path)
@@ -117,11 +227,16 @@ def run(
 
     if state is None:
         logger.warning("[BRIEF] state.json missing at %s — generating stale-warning brief.", state_path)
-        state = {"meta": {"bot_status": "UNKNOWN", "last_updated_utc": "N/A"}, "account": {}, "risk": {}, "levels": {}, "open_positions": [], "signal_history": [], "observe_only": True}
+        state = {"meta": {"bot_status": "UNKNOWN", "last_updated_utc": "N/A"}, "account": {}, "risk": {}, "levels": {}, "open_positions": [], "signal_history": []}
         stale = True
 
     news_section = build_news_section(news_cache_path)
-    prompt = build_prompt(state, news_section, stale=stale)
+    journal_entries = read_json_file(journal_path) or []
+    yesterday_section = build_yesterday_outcomes_section(
+        journal_entries=journal_entries,
+        now=datetime.now(timezone.utc),
+    )
+    prompt = build_prompt(state, news_section, stale=stale, yesterday_section=yesterday_section)
 
     logger.info("[BRIEF] Calling analyst model (%s)...", MODEL)
     brief_text = call_claude(prompt, MODEL)

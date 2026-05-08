@@ -21,18 +21,16 @@ def make_symbol_spec() -> SymbolSpec:
     )
 
 
-def make_config(observe_only: bool = False):
-    cfg = MagicMock()
-    cfg.observe_only = observe_only
-    return cfg
+def make_config():
+    return MagicMock()
 
 
-def make_executor(observe_only: bool = False, amend_ok: bool = True) -> Executor:
+def make_executor(amend_ok: bool = True) -> Executor:
     api = MagicMock()
     api.amend_position_sltp = AsyncMock(return_value=amend_ok)
     api.get_current_quote = MagicMock(return_value=(None, None))
     return Executor(
-        config=make_config(observe_only=observe_only),
+        config=make_config(),
         api_client=api,
         level_manager=MagicMock(),
     )
