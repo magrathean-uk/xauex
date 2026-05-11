@@ -37,8 +37,50 @@ def _config():
         ctrader_client_secret="client-secret",
         ctrader_access_token="access-token",
         ctrader_refresh_token="refresh-token",
-        ctrader_token_expiry=0,
+        ctrader_token_expiry=2_000_000_000,
     )
+
+
+@pytest.mark.asyncio
+async def test_connect_refreshes_expired_token_before_authentication(monkeypatch):
+    config = _config()
+    config.ctrader_token_expiry = 0
+    client = ApiClient(config)
+    calls = []
+
+    monkeypatch.setattr("bot.api.client.CTraderTransport", _FakeTransport)
+
+    async def fake_refresh_token_if_needed(self):
+        calls.append("refresh_token_if_needed")
+        return True
+
+    async def fake_app_auth(self):
+        calls.append("app_auth")
+
+    async def fake_validate_access(self):
+        calls.append("validate_access")
+
+    async def fake_account_auth(self):
+        calls.append("account_auth")
+
+    monkeypatch.setattr(ApiClient, "refresh_token_if_needed", fake_refresh_token_if_needed)
+    monkeypatch.setattr(ApiClient, "_app_auth", fake_app_auth)
+    monkeypatch.setattr(
+        ApiClient,
+        "_validate_access_token_accounts",
+        fake_validate_access,
+        raising=False,
+    )
+    monkeypatch.setattr(ApiClient, "_account_auth", fake_account_auth)
+
+    await client.connect()
+
+    assert calls == [
+        "refresh_token_if_needed",
+        "app_auth",
+        "validate_access",
+        "account_auth",
+    ]
 
 
 @pytest.mark.asyncio

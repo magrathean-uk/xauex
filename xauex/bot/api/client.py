@@ -114,6 +114,7 @@ class ApiClient:
 
     Token refresh:
         - On startup: refresh if within 5 min of expiry
+        - On connect/reconnect: refresh if within 5 min of expiry
         - Before every order: refresh if within 5 min of expiry
         - On refresh failure: propagate exception so caller can halt
 
@@ -153,6 +154,8 @@ class ApiClient:
 
     async def connect(self) -> None:
         """Connect to cTrader, run startup auth, subscribe to account."""
+        await self.refresh_token_if_needed()
+
         self._message_futures = {}
         self._tick_event_queue = DropOldestAsyncQueue(maxsize=2048)
         self._execution_event_queue = DropOldestAsyncQueue(maxsize=1024)
