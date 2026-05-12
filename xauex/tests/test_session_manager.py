@@ -722,7 +722,6 @@ def test_xauex_pattern_check_matches_long_with_bullish_engulfing():
     be backed by a bullish pattern aligned to a nearby HTF level."""
     from datetime import datetime, timezone
     from bot.patterns.detector import Candle, PatternDetector, PatternType
-    from config import Config
 
     config = SimpleNamespace(
         pin_max_body_ratio=0.30,

@@ -13,8 +13,6 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
-import pytest
-
 from xauex.signal.directional_persistence import (
     DEFAULT_LOCK_CONFIDENCE_THRESHOLD,
     DEFAULT_FLIP_CONFIDENCE_THRESHOLD,
