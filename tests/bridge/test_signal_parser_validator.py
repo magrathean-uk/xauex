@@ -12,6 +12,8 @@ from xauex.signal.signal_parser import (
     parse_signal,
 )
 
+_FRESH_BUSINESS_DAY_LAG = 2
+
 
 def test_build_decision_packet_prefers_structured_inputs():
     asset = resolve_asset("XAUUSD")
@@ -240,6 +242,101 @@ def test_parse_signal_does_not_hard_hold_when_only_slow_series_are_old(monkeypat
 
     assert signal["action"] in {"BUY", "SELL"}
     assert signal["consensus_state"] != "blocked"
+
+
+def test_parse_signal_allows_weekend_calendar_lag_when_business_age_is_fresh(monkeypatch):
+    """Friday observations can be >3 calendar days old by Tuesday's London
+    windows. If business-day age is still within tolerance, do not hard-HOLD
+    solely because FRED has not published the next daily row yet."""
+    monkeypatch.setenv("XAUEX_SIGNAL_LLM_API_KEY", "test-key")
+    cfg = SignalConfig.from_env()
+    asset = resolve_asset("XAUUSD")
+
+    class _Usage:
+        prompt_tokens = 50
+        completion_tokens = 25
+        total_tokens = 75
+
+    class _Response:
+        def __init__(self, content):
+            self.choices = [type("C", (), {"message": type("M", (), {"content": content})()})]
+            self.usage = _Usage()
+
+    parser_responses = iter([
+        _Response('{"action":"BUY","confidence":0.62,"reasoning":"fresh enough by business days","stop_loss_distance":12,"take_profit_distance":24}'),
+        _Response('{"decision":"ALIGNED","confidence_adjustment":0.0,"reasoning":"ok","hard_blocker":false}'),
+    ])
+
+    class _Client:
+        def __init__(self):
+            self.chat = type("Chat", (), {"completions": type("Completions", (), {"create": staticmethod(lambda **kwargs: next(parser_responses))})})()
+
+    monkeypatch.setattr("xauex.signal.signal_parser.create_chat_client", lambda **kwargs: _Client())
+
+    signal = parse_signal(
+        asset=asset,
+        actions=[{"agent_name": "price_structure", "action_type": "BUY", "content": "supportive"}],
+        report_markdown="# Report\nGold supported.",
+        config=cfg,
+        prediction_payload={
+            "price_features": {"price_bias": "BUY"},
+            "memory_summary": {},
+            "market_snapshot": {"series": {}},
+            "event_flags": {},
+            "input_freshness": {
+                "market_snapshot_state": "warning",
+                "market_snapshot_age_seconds": HARD_STALE_MARKET_SNAPSHOT_SECONDS + 86400,
+                "daily_publishing_max_age_seconds": HARD_STALE_MARKET_SNAPSHOT_SECONDS + 86400,
+                "daily_publishing_max_business_age_days": _FRESH_BUSINESS_DAY_LAG,
+                "hard_blocker": False,
+            },
+            "context_items": [],
+        },
+        window_label="us_open",
+        decision_mode="baseline",
+    )
+
+    assert signal["action"] in {"BUY", "SELL"}
+    assert signal["consensus_state"] != "blocked"
+
+
+def test_parse_signal_blocks_daily_inputs_stale_by_business_days(monkeypatch):
+    monkeypatch.setenv("XAUEX_SIGNAL_LLM_API_KEY", "test-key")
+    cfg = SignalConfig.from_env()
+    asset = resolve_asset("XAUUSD")
+
+    def _explode(**kwargs):
+        raise AssertionError("LLM client must not be invoked when business-day stale")
+
+    monkeypatch.setattr("xauex.signal.signal_parser.create_chat_client", _explode)
+
+    signal = parse_signal(
+        asset=asset,
+        actions=[{"agent_name": "price_structure", "action_type": "BUY", "content": "supportive"}],
+        report_markdown="# Report\nGold supported.",
+        config=cfg,
+        prediction_payload={
+            "price_features": {"price_bias": "BUY"},
+            "memory_summary": {},
+            "market_snapshot": {"series": {}},
+            "event_flags": {},
+            "input_freshness": {
+                "market_snapshot_state": "warning",
+                "market_snapshot_age_seconds": HARD_STALE_MARKET_SNAPSHOT_SECONDS + 86400,
+                "daily_publishing_max_age_seconds": HARD_STALE_MARKET_SNAPSHOT_SECONDS + 86400,
+                "daily_publishing_max_business_age_days": _FRESH_BUSINESS_DAY_LAG + 1,
+                "hard_blocker": False,
+            },
+            "context_items": [],
+        },
+        window_label="us_open",
+        decision_mode="baseline",
+    )
+
+    assert signal["action"] == "HOLD"
+    assert signal["confidence"] == 0.0
+    assert signal["consensus_state"] == "blocked"
+    assert "business days" in signal["reasoning"]
 
 
 def test_parse_signal_blocks_low_confidence_directional_flip_via_persistence(monkeypatch, tmp_path):

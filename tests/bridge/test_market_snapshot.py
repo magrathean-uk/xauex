@@ -1,14 +1,33 @@
 from dataclasses import replace
+from datetime import datetime, timezone
 import threading
 import time
 
 from xauex.signal.assets import AssetProfile, resolve_asset
 from xauex.signal.config import SignalConfig
-from xauex.signal.market_snapshot import _FRED_SERIES, _assess_market_snapshot_freshness, build_market_snapshot
+from xauex.signal.market_snapshot import (
+    _FRED_SERIES,
+    _assess_market_snapshot_freshness,
+    _business_days_since_observation,
+    build_market_snapshot,
+)
 
 
 def test_usd_major_index_uses_current_fred_substitute():
     assert _FRED_SERIES["usd_major_index"]["series_id"] == "DTWEXAFEGS"
+
+
+def test_business_day_age_ignores_weekend_calendar_lag():
+    friday_observation = "2026-05-08T00:00:00Z"
+
+    assert _business_days_since_observation(
+        friday_observation,
+        now_utc=datetime(2026, 5, 12, 12, 25, tzinfo=timezone.utc),
+    ) == 2
+    assert _business_days_since_observation(
+        friday_observation,
+        now_utc=datetime(2026, 5, 13, 12, 25, tzinfo=timezone.utc),
+    ) == 3
 
 
 def test_market_snapshot_freshness_tracks_daily_publishing_max_age(monkeypatch):
@@ -62,6 +81,7 @@ def test_market_snapshot_freshness_tracks_daily_publishing_max_age(monkeypatch):
     # under the 3-day hard-stale threshold.
     assert "daily_publishing_max_age_seconds" in freshness
     assert freshness["daily_publishing_max_age_seconds"] == 217507
+    assert "daily_publishing_max_business_age_days" in freshness
 
 
 def test_build_market_snapshot_maps_gold_driver_biases(monkeypatch):

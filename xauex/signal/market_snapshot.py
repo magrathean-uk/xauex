@@ -5,7 +5,7 @@ from __future__ import annotations
 from csv import DictReader
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import as_completed
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from io import StringIO
 import logging
 from typing import Any
@@ -161,6 +161,7 @@ def build_market_snapshot(
         missing_series: list[str] = []
         ages: list[float] = []
         daily_ages: list[float] = []
+        daily_business_ages: list[int] = []
         block_stale_series_count = 0
         for key, meta in _FRED_SERIES.items():
             result = series_results.get(key)
@@ -174,14 +175,17 @@ def build_market_snapshot(
                 continue
             ages.append(latest['age_seconds'])
             stale_blocks_live_window = result_meta.get('stale_blocks_live_window', 'true') != 'false'
+            business_age_days = _latest_business_age_days(latest)
             if stale_blocks_live_window:
                 # Series we expect to publish daily (yields, breakevens, VIX,
                 # BTC). Track their max age separately so the hard-stale
                 # guard ignores normal weekly-publish lag on slow series.
                 daily_ages.append(latest['age_seconds'])
+                if business_age_days is not None:
+                    daily_business_ages.append(business_age_days)
             if latest['age_seconds'] >= _MARKET_SNAPSHOT_BLOCK_AGE_SECONDS and stale_blocks_live_window:
                 block_stale_series_count += 1
-            series_payload[key] = {
+            row_payload = {
                 'label': result_meta['label'],
                 'series_id': result_meta['series_id'],
                 'value': latest['value'],
@@ -191,6 +195,9 @@ def build_market_snapshot(
                 'age_seconds': latest['age_seconds'],
                 'bias': _series_bias(asset.symbol, key, latest['change_1d']),
             }
+            if business_age_days is not None:
+                row_payload['business_age_days'] = business_age_days
+            series_payload[key] = row_payload
 
         fedwatch = fedwatch_future.result()
         policy_context = policy_context_future.result()
@@ -199,6 +206,7 @@ def build_market_snapshot(
     freshness = _assess_market_snapshot_freshness(
         market_snapshot_age_seconds=int(max(ages)) if ages else None,
         daily_publishing_max_age_seconds=int(max(daily_ages)) if daily_ages else None,
+        daily_publishing_max_business_age_days=int(max(daily_business_ages)) if daily_business_ages else None,
         missing_series_count=len(missing_series),
         stale_block_series_count=block_stale_series_count,
         window_label=window_label,
@@ -266,6 +274,7 @@ def _assess_market_snapshot_freshness(
     *,
     market_snapshot_age_seconds: int | None,
     daily_publishing_max_age_seconds: int | None = None,
+    daily_publishing_max_business_age_days: int | None = None,
     missing_series_count: int,
     stale_block_series_count: int = 1,
     window_label: str,
@@ -311,6 +320,7 @@ def _assess_market_snapshot_freshness(
         'window_label': window_label,
         'market_snapshot_age_seconds': market_snapshot_age_seconds,
         'daily_publishing_max_age_seconds': daily_publishing_max_age_seconds,
+        'daily_publishing_max_business_age_days': daily_publishing_max_business_age_days,
         'missing_series_count': missing_series_count,
         'stale_block_series_count': stale_block_series_count,
         'market_snapshot_state': state,
@@ -339,14 +349,61 @@ def _fetch_fred_series(client: httpx.Client, series_id: str) -> dict[str, Any]:
     date_value, latest = rows[-1]
     _, previous = rows[-2]
     observation = datetime.strptime(date_value, '%Y-%m-%d').replace(tzinfo=timezone.utc)
-    age_seconds = max(0.0, (datetime.now(timezone.utc) - observation).total_seconds())
+    now_utc = datetime.now(timezone.utc)
+    age_seconds = max(0.0, (now_utc - observation).total_seconds())
     return {
         'value': round(latest, 4),
         'previous_value': round(previous, 4),
         'change_1d': round(latest - previous, 4),
         'date_utc': observation.strftime('%Y-%m-%dT%H:%M:%SZ'),
         'age_seconds': age_seconds,
+        'business_age_days': _business_days_since_observation(
+            observation.strftime('%Y-%m-%dT%H:%M:%SZ'),
+            now_utc=now_utc,
+        ),
     }
+
+
+def _latest_business_age_days(latest: dict[str, Any]) -> int | None:
+    raw_age = latest.get('business_age_days')
+    if raw_age is not None:
+        try:
+            return max(0, int(float(raw_age)))
+        except (TypeError, ValueError):
+            return None
+    date_utc = str(latest.get('date_utc', '') or '').strip()
+    if not date_utc:
+        return None
+    return _business_days_since_observation(date_utc)
+
+
+def _business_days_since_observation(date_utc: str, now_utc: datetime | None = None) -> int:
+    text = str(date_utc or '').strip()
+    if not text:
+        return 0
+    try:
+        if text.endswith('Z'):
+            observed = datetime.fromisoformat(text.replace('Z', '+00:00'))
+        elif 'T' in text:
+            observed = datetime.fromisoformat(text)
+        else:
+            observed = datetime.strptime(text[:10], '%Y-%m-%d').replace(tzinfo=timezone.utc)
+    except ValueError:
+        return 0
+    if observed.tzinfo is None:
+        observed = observed.replace(tzinfo=timezone.utc)
+    observed_date = observed.astimezone(timezone.utc).date()
+    current_date = (now_utc or datetime.now(timezone.utc)).astimezone(timezone.utc).date()
+    if current_date <= observed_date:
+        return 0
+
+    elapsed_days = (current_date - observed_date).days
+    full_weeks, remainder_days = divmod(elapsed_days, 7)
+    business_days = full_weeks * 5
+    for offset in range(1, remainder_days + 1):
+        if (observed_date + timedelta(days=offset)).weekday() < 5:
+            business_days += 1
+    return business_days
 
 
 def _event_flags(context_items: list[dict[str, Any]] | list[Any]) -> dict[str, bool]:

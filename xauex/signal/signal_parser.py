@@ -9,7 +9,6 @@ from datetime import datetime, timezone
 from math import exp
 from pathlib import Path
 from typing import Any
-from zoneinfo import ZoneInfo
 
 from xauex.signal.assets import AssetProfile
 from xauex.signal.candidate_graph import run_tradingagents_candidate
@@ -32,6 +31,7 @@ _TOKEN_PRICES_USD_PER_MILLION: dict[str, tuple[float, float]] = {
 # yields slipped through as "warning" and the parser produced live SELL
 # signals against gold during a strong uptrend (the May 2026 incident).
 HARD_STALE_MARKET_SNAPSHOT_SECONDS = 3 * 24 * 3600
+HARD_STALE_MARKET_SNAPSHOT_BUSINESS_DAYS = 2
 
 
 def parse_signal(
@@ -89,6 +89,32 @@ def parse_signal(
     # natural ~7-day publication lag from FRED H.10; using the aggregate max
     # age would force HOLD on every signal under normal cadence.
     freshness = decision_packet.get('input_freshness') or {}
+    daily_business_age_raw = freshness.get('daily_publishing_max_business_age_days')
+    try:
+        daily_business_age = float(daily_business_age_raw) if daily_business_age_raw is not None else None
+    except (TypeError, ValueError):
+        daily_business_age = None
+    if daily_business_age is not None and daily_business_age > HARD_STALE_MARKET_SNAPSHOT_BUSINESS_DAYS:
+        reason = (
+            f'Daily-publishing macro series is hard-stale at {daily_business_age:.0f} business days — '
+            f'refusing to trade until it refreshes within {HARD_STALE_MARKET_SNAPSHOT_BUSINESS_DAYS} business days.'
+        )
+        signal = _hold_signal(asset, reason)
+        signal['decision_mode'] = decision_mode
+        signal['validator_status'] = 'skipped'
+        signal['validator_summary'] = reason
+        signal['consensus_state'] = 'blocked'
+        signal['llm_usage'] = _combine_usage(provider=config.parser_llm_base_url, stages=[])
+        signal['decision_packet'] = {
+            'decision_mode': decision_mode,
+            'window_label': decision_packet['window_label'],
+            'input_freshness': decision_packet['input_freshness'],
+            'market_snapshot': decision_packet['market_snapshot'],
+            'event_flags': decision_packet['event_flags'],
+        }
+        logger.warning('[PARSER] Hard-stale macro snapshot for %s: %s', asset.symbol, reason)
+        return signal
+
     daily_age_raw = freshness.get('daily_publishing_max_age_seconds')
     if daily_age_raw is None:
         # Backward-compatible fallback for callers that pre-date the
@@ -100,7 +126,11 @@ def parse_signal(
         daily_age = float(daily_age_raw) if daily_age_raw is not None else None
     except (TypeError, ValueError):
         daily_age = None
-    if daily_age is not None and daily_age > HARD_STALE_MARKET_SNAPSHOT_SECONDS:
+    if (
+        daily_business_age is None
+        and daily_age is not None
+        and daily_age > HARD_STALE_MARKET_SNAPSHOT_SECONDS
+    ):
         days_old = daily_age / 86400.0
         reason = (
             f'Daily-publishing macro series is hard-stale at {daily_age:.0f}s (~{days_old:.1f} days) — '
