@@ -371,3 +371,10 @@ def test_install_systemd_only_restarts_xauex_when_runtime_changed():
     assert "XAUEX_RUNTIME_CHANGED=0" in script
     assert 'if [[ "$XAUEX_RUNTIME_CHANGED" -eq 1 ]]; then' in script
     assert "systemctl restart xauex.service" in script
+
+
+def test_install_systemd_keeps_caddyfile_readable_for_caddy_user():
+    script = _read_ops_file("install_systemd.sh")
+
+    assert 'install -m 644 "$tmp" /etc/caddy/Caddyfile' in script
+    assert 'mv "$tmp" /etc/caddy/Caddyfile' not in script

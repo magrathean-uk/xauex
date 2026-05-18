@@ -140,6 +140,7 @@ if command -v caddy >/dev/null 2>&1; then
   mkdir -p /etc/caddy/Caddyfile.d
   install -m 644 "$REPO_ROOT/ops/xauex-dashboard.caddy" /etc/caddy/Caddyfile.d/xauex-dashboard.caddy
   if [[ -f /etc/caddy/Caddyfile ]]; then
+    tmp="$(mktemp)"
     awk '
       $0 == "import /etc/caddy/Caddyfile.d/*.caddy" {
         if (seen++) {
@@ -147,8 +148,9 @@ if command -v caddy >/dev/null 2>&1; then
         }
       }
       { print }
-    ' /etc/caddy/Caddyfile > /etc/caddy/Caddyfile.tmp
-    mv /etc/caddy/Caddyfile.tmp /etc/caddy/Caddyfile
+    ' /etc/caddy/Caddyfile > "$tmp"
+    install -m 644 "$tmp" /etc/caddy/Caddyfile
+    rm -f "$tmp"
   fi
   if ! grep -Fxq 'import /etc/caddy/Caddyfile.d/*.caddy' /etc/caddy/Caddyfile 2>/dev/null; then
     printf '\nimport /etc/caddy/Caddyfile.d/*.caddy\n' >> /etc/caddy/Caddyfile
