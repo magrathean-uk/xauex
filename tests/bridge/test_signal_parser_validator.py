@@ -633,6 +633,145 @@ def test_request_json_completion_retries_with_json_object_mode_after_invalid_str
     assert client.chat.completions.calls[0]["extra_body"]["include_reasoning"] is False
 
 
+def test_openrouter_opus_schema_request_requires_supported_schema_parameters():
+    class _Usage:
+        prompt_tokens = 8700
+        completion_tokens = 140
+        total_tokens = 8840
+
+    class _Message:
+        def __init__(self, content: str):
+            self.content = content
+
+    class _Choice:
+        def __init__(self, content: str):
+            self.message = _Message(content)
+
+    class _Response:
+        def __init__(self, content: str):
+            self.choices = [_Choice(content)]
+            self.usage = _Usage()
+
+    class _Completions:
+        def __init__(self):
+            self.calls = []
+
+        def create(self, **kwargs):
+            self.calls.append(kwargs)
+            return _Response('{"action":"HOLD","confidence":0.0}')
+
+    class _Client:
+        def __init__(self):
+            self.chat = type("Chat", (), {"completions": _Completions()})()
+
+    client = _Client()
+
+    response, parsed, mode = _request_json_completion(
+        client=client,
+        model="anthropic/claude-opus-4.7",
+        base_url="https://openrouter.ai/api/v1",
+        messages=[{"role": "system", "content": "Return JSON."}],
+        temperature=0.1,
+        max_tokens=350,
+        response_schema={
+            "name": "signal_decision",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string"},
+                    "confidence": {"type": "number"},
+                },
+                "required": ["action", "confidence"],
+                "additionalProperties": False,
+            },
+        },
+    )
+
+    assert response is not None
+    assert parsed == {"action": "HOLD", "confidence": 0.0}
+    assert mode == "json_schema"
+    assert client.chat.completions.calls[0]["response_format"]["type"] == "json_schema"
+    assert client.chat.completions.calls[0]["provider"] == {"require_parameters": True}
+    assert client.chat.completions.calls[0]["max_tokens"] == 350
+    assert "max_completion_tokens" not in client.chat.completions.calls[0]
+    assert "temperature" not in client.chat.completions.calls[0]
+
+
+def test_openrouter_gpt55_schema_request_omits_unsupported_temperature():
+    class _Usage:
+        prompt_tokens = 8700
+        completion_tokens = 140
+        total_tokens = 8840
+
+    class _Message:
+        def __init__(self, content: str):
+            self.content = content
+
+    class _Choice:
+        def __init__(self, content: str):
+            self.message = _Message(content)
+
+    class _Response:
+        def __init__(self, content: str):
+            self.choices = [_Choice(content)]
+            self.usage = _Usage()
+
+    class _Completions:
+        def __init__(self):
+            self.calls = []
+
+        def create(self, **kwargs):
+            self.calls.append(kwargs)
+            return _Response('{"decision":"APPROVE","confidence_adjustment":0.0,"reasoning":"ok","hard_blocker":false}')
+
+    class _Client:
+        def __init__(self):
+            self.chat = type("Chat", (), {"completions": _Completions()})()
+
+    client = _Client()
+
+    response, parsed, mode = _request_json_completion(
+        client=client,
+        model="openai/gpt-5.5",
+        base_url="https://openrouter.ai/api/v1",
+        messages=[{"role": "system", "content": "Return JSON."}],
+        temperature=0.1,
+        max_tokens=220,
+        response_schema={
+            "name": "signal_validator",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "decision": {"type": "string"},
+                    "confidence_adjustment": {"type": "number"},
+                    "reasoning": {"type": "string"},
+                    "hard_blocker": {"type": "boolean"},
+                },
+                "required": ["decision", "confidence_adjustment", "reasoning", "hard_blocker"],
+                "additionalProperties": False,
+            },
+        },
+    )
+
+    assert response is not None
+    assert parsed["decision"] == "APPROVE"
+    assert mode == "json_schema"
+    assert client.chat.completions.calls[0]["provider"] == {"require_parameters": True}
+    assert client.chat.completions.calls[0]["max_completion_tokens"] == 220
+    assert "max_tokens" not in client.chat.completions.calls[0]
+    assert "temperature" not in client.chat.completions.calls[0]
+
+
+def test_new_openrouter_model_prices_are_estimated():
+    from xauex.signal.signal_parser import _estimate_cost_usd
+
+    assert _estimate_cost_usd("anthropic/claude-opus-4.7", 8744, 150) == 0.04747
+    assert _estimate_cost_usd("openai/gpt-5.5", 8651, 63) == 0.045145
+    assert _estimate_cost_usd("google/gemini-3.1-flash-lite", 3150, 200) == 0.0010875
+
+
 def test_build_analyst_debate_returns_bull_and_bear_cases(monkeypatch):
     monkeypatch.setenv("XAUEX_SIGNAL_LLM_API_KEY", "test-key")
     cfg = SignalConfig.from_env()

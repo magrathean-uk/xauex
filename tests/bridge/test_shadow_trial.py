@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import sys
 
 import xauex.signal.shadow_trial as shadow_trial
 from xauex.signal.shadow_trial import (
@@ -9,6 +10,23 @@ from xauex.signal.shadow_trial import (
     render_shadow_trial_report,
     shadow_report_has_enough_history,
 )
+
+
+def test_shadow_compare_can_be_disabled_before_expensive_llm_replays(monkeypatch, capsys):
+    called = False
+
+    def fake_create_shadow_trial(**kwargs):
+        nonlocal called
+        called = True
+        return None
+
+    monkeypatch.setattr(shadow_trial, "create_shadow_trial", fake_create_shadow_trial)
+    monkeypatch.setenv("XAUEX_SHADOW_COMPARE_ENABLED", "0")
+    monkeypatch.setattr(sys, "argv", ["shadow_trial", "compare"])
+
+    assert shadow_trial.main() == 0
+    assert called is False
+    assert capsys.readouterr().out.strip() == "DISABLED"
 
 
 def test_find_latest_baseline_archive_prefers_newest_baseline_dir(tmp_path):

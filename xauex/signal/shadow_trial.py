@@ -467,9 +467,12 @@ def _send_mail(recipient: str, subject: str, body: str) -> None:
 
 
 def main() -> int:
-    load_dotenv()
+    load_dotenv(dotenv_path=Path.cwd() / '.env')
     args = _parse_args()
     if args.command == 'compare':
+        if not _env_bool('XAUEX_SHADOW_COMPARE_ENABLED', default=True):
+            print('DISABLED')
+            return 0
         created = create_shadow_trial(
             archive_root=Path(args.archive_root),
             shadow_root=Path(args.shadow_root),
@@ -499,6 +502,13 @@ def main() -> int:
         print(body)
         return 0
     raise SystemExit(f'Unknown command: {args.command}')
+
+
+def _env_bool(name: str, *, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {'1', 'true', 'yes', 'on'}
 
 
 if __name__ == '__main__':

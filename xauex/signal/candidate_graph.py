@@ -11,6 +11,12 @@ from typing import Any
 
 from xauex.signal.assets import AssetProfile
 from xauex.signal.config import SignalConfig
+from xauex.signal.llm_models import (
+    completion_options,
+    estimate_cost_usd,
+    request_temperature_kwargs,
+    supports_strict_json_schema,
+)
 from xauex.signal.scratchpad import (
     record_final_decision,
     record_stage_error,
@@ -29,14 +35,6 @@ _STAGES = [
     "risk_reviewer",
     "portfolio_decision",
 ]
-
-_TOKEN_PRICES_USD_PER_MILLION: dict[str, tuple[float, float]] = {
-    "llama-3.1-8b-instant": (0.05, 0.08),
-    "llama-3.3-70b-versatile": (0.59, 0.79),
-    "openai/gpt-oss-20b": (0.075, 0.30),
-    "openai/gpt-oss-120b": (0.15, 0.60),
-}
-
 
 def run_tradingagents_candidate(
     *,
@@ -71,6 +69,7 @@ def run_tradingagents_candidate(
             response, parsed, response_mode, attempts = _request_json_completion(
                 client=client,
                 model=_model_for_stage(config, stage),
+                base_url=config.parser_llm_base_url,
                 messages=[
                     {"role": "system", "content": _stage_system_prompt(asset=asset, stage=stage)},
                     {"role": "user", "content": prompt},
@@ -382,32 +381,28 @@ def _model_completion_options(
     model: str,
     *,
     max_tokens: int,
+    base_url: str | None = None,
     response_schema: dict[str, Any] | None = None,
     json_object: bool = False,
 ) -> dict[str, Any]:
-    options: dict[str, Any] = {"max_completion_tokens": max_tokens}
-    if model.startswith("openai/gpt-oss-"):
-        options["reasoning_effort"] = "low"
-        options["max_completion_tokens"] = max(max_tokens, 700)
-        options["extra_body"] = {"include_reasoning": False}
-    if response_schema is not None:
-        options["response_format"] = {
-            "type": "json_schema",
-            "json_schema": response_schema,
-        }
-    elif json_object:
-        options["response_format"] = {"type": "json_object"}
-    return options
+    return completion_options(
+        model,
+        max_tokens=max_tokens,
+        base_url=base_url,
+        response_schema=response_schema,
+        json_object=json_object,
+    )
 
 
 def _supports_strict_json_schema(model: str) -> bool:
-    return model in {"openai/gpt-oss-20b", "openai/gpt-oss-120b"}
+    return supports_strict_json_schema(model)
 
 
 def _request_json_completion(
     *,
     client: Any,
     model: str,
+    base_url: str | None = None,
     messages: list[dict[str, Any]],
     temperature: float,
     max_tokens: int,
@@ -418,13 +413,23 @@ def _request_json_completion(
         attempts.append(
             (
                 "json_schema",
-                _model_completion_options(model, max_tokens=max_tokens, response_schema=response_schema),
+                _model_completion_options(
+                    model,
+                    max_tokens=max_tokens,
+                    base_url=base_url,
+                    response_schema=response_schema,
+                ),
             )
         )
     attempts.append(
         (
             "json_object",
-            _model_completion_options(model, max_tokens=max_tokens, json_object=True),
+            _model_completion_options(
+                model,
+                max_tokens=max_tokens,
+                base_url=base_url,
+                json_object=True,
+            ),
         )
     )
     last_response: Any | None = None
@@ -434,7 +439,7 @@ def _request_json_completion(
         response = client.chat.completions.create(
             model=model,
             messages=messages,
-            temperature=temperature,
+            **request_temperature_kwargs(model, temperature),
             **options,
         )
         last_response = response
@@ -480,11 +485,7 @@ def _extract_usage(response: Any, *, provider: str, model: str, stage: str) -> d
 
 
 def _estimate_cost_usd(model: str, prompt_tokens: int, completion_tokens: int) -> float | None:
-    prices = _TOKEN_PRICES_USD_PER_MILLION.get(model)
-    if prices is None:
-        return None
-    input_price, output_price = prices
-    return round((prompt_tokens / 1_000_000 * input_price) + (completion_tokens / 1_000_000 * output_price), 8)
+    return estimate_cost_usd(model, prompt_tokens, completion_tokens)
 
 
 def _string_list(value: Any, *, max_items: int, max_len: int) -> list[str]:

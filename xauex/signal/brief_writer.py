@@ -10,16 +10,10 @@ from typing import Any
 
 from xauex.signal.assets import AssetProfile
 from xauex.signal.config import SignalConfig
+from xauex.signal.llm_models import completion_options, estimate_cost_usd, request_temperature_kwargs
 from xauex.shared.llm_client import create_chat_client
 
 logger = logging.getLogger(__name__)
-
-_TOKEN_PRICES_USD_PER_MILLION: dict[str, tuple[float, float]] = {
-    'llama-3.1-8b-instant': (0.05, 0.08),
-    'llama-3.3-70b-versatile': (0.59, 0.79),
-    'openai/gpt-oss-20b': (0.075, 0.30),
-    'openai/gpt-oss-120b': (0.15, 0.60),
-}
 
 
 def write_brief(
@@ -81,8 +75,13 @@ def write_brief(
             {'role': 'system', 'content': system},
             {'role': 'user', 'content': prompt},
         ],
-        temperature=0.1,
-        max_tokens=260,
+        **request_temperature_kwargs(config.brief_llm_model, 0.1),
+        **completion_options(
+            config.brief_llm_model,
+            max_tokens=260,
+            base_url=config.brief_llm_base_url,
+            json_object=True,
+        ),
     )
     raw = (response.choices[0].message.content or '').strip()
     if raw.startswith('```'):
@@ -93,7 +92,7 @@ def write_brief(
         logger.error('[BRIEF] Invalid JSON from model: %s', raw[:400])
         parsed = _fallback_brief(signal)
 
-    usage = _extract_usage(response)
+    usage = _extract_usage(response, model_hint=config.brief_llm_model)
     doc = _render_markdown(
         title=str(parsed.get('title') or f'{asset.symbol} {signal.get("action", "HOLD")} Brief'),
         summary_markdown=str(parsed.get('summary_markdown') or _fallback_brief(signal)['summary_markdown']),
@@ -174,11 +173,11 @@ def _render_markdown(
     )
 
 
-def _extract_usage(response: Any) -> dict[str, Any]:
+def _extract_usage(response: Any, *, model_hint: str = '') -> dict[str, Any]:
     usage = getattr(response, 'usage', None)
     if usage is None:
         return {}
-    model = getattr(response, 'model', '')
+    model = getattr(response, 'model', '') or model_hint
     prompt_tokens = int(getattr(usage, 'prompt_tokens', 0) or 0)
     completion_tokens = int(getattr(usage, 'completion_tokens', 0) or 0)
     return {
@@ -191,8 +190,4 @@ def _extract_usage(response: Any) -> dict[str, Any]:
 
 
 def _estimate_cost_usd(model: str, prompt_tokens: int, completion_tokens: int) -> float | None:
-    prices = _TOKEN_PRICES_USD_PER_MILLION.get(model)
-    if prices is None:
-        return None
-    input_price, output_price = prices
-    return round((prompt_tokens / 1_000_000 * input_price) + (completion_tokens / 1_000_000 * output_price), 8)
+    return estimate_cost_usd(model, prompt_tokens, completion_tokens)
