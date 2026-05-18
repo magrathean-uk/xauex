@@ -270,7 +270,7 @@ def parse_signal(
                 {'role': 'user', 'content': _validator_user_prompt(asset, decision_packet, signal)},
             ],
             temperature=0.1,
-            max_tokens=220,
+            max_tokens=900,
             response_schema=_validator_response_schema(),
         )
         if validator_response is not None:

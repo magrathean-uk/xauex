@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 from xauex.signal.assets import resolve_asset
 from xauex.signal.config import SignalConfig
 from xauex.signal.signal_parser import (
@@ -1024,6 +1026,42 @@ def test_parse_signal_blocks_low_confidence_price_bias_conflict(monkeypatch):
     assert signal["price_conflict_guard"]["market_snapshot_overall_bias"] == "SELL"
     assert signal["decision_packet"]["price_features"]["price_bias"] == "BUY"
     assert signal["decision_packet"]["price_conflict_guard"]["policy"] == "PRICE_BIAS_CONFLICT_LOW_CONFIDENCE"
+
+
+def test_parse_signal_gives_gpt55_validator_enough_output_budget(monkeypatch):
+    monkeypatch.setenv("XAUEX_SIGNAL_LLM_API_KEY", "test-key")
+    monkeypatch.setenv("XAUEX_SIGNAL_DIRECTIONAL_STATE_PATH", "")
+    cfg = replace(
+        SignalConfig.from_env(),
+        validator_llm_base_url="https://openrouter.ai/api/v1",
+        validator_llm_model="openai/gpt-5.5",
+    )
+    asset = resolve_asset("XAUUSD")
+    client_factory = _client_factory_for_parser_tests(parser_action="SELL", parser_confidence=0.72)
+
+    monkeypatch.setattr("xauex.signal.signal_parser.create_chat_client", client_factory)
+
+    parse_signal(
+        asset=asset,
+        actions=[{"agent_name": "price_structure", "action_type": "SELL", "content": "macro pressure"}],
+        report_markdown="# Report\nUSD and rates pressure gold.",
+        config=cfg,
+        prediction_payload={
+            "price_features": {"price_bias": "SELL"},
+            "memory_summary": {},
+            "market_snapshot": {"overall_bias": "SELL", "series": {}},
+            "event_flags": {},
+            "input_freshness": {"market_snapshot_state": "fresh", "hard_blocker": False},
+            "context_items": [],
+        },
+        window_label="morning",
+        decision_mode="baseline",
+    )
+
+    validator_call = client_factory.clients[1].chat.completions.calls[0]
+    assert validator_call["model"] == "openai/gpt-5.5"
+    assert validator_call["max_completion_tokens"] == 900
+    assert validator_call["reasoning"] == {"effort": "minimal", "exclude": True}
 
 
 def test_parse_signal_allows_strong_price_bias_conflict(monkeypatch):
