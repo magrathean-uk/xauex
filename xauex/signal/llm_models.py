@@ -28,8 +28,6 @@ MODEL_PRICES_USD_PER_MILLION: dict[str, tuple[float, float]] = {
 STRICT_JSON_SCHEMA_MODELS: set[str] = {
     "openai/gpt-oss-20b",
     "openai/gpt-oss-120b",
-    "anthropic/claude-opus-4.7",
-    "anthropic/claude-opus-4.7-fast",
     "anthropic/claude-sonnet-4.6",
     "openai/gpt-5.5",
     "openai/gpt-5.4",
@@ -54,7 +52,7 @@ NO_TEMPERATURE_MODELS: set[str] = {
 
 
 def estimate_cost_usd(model: str, prompt_tokens: int, completion_tokens: int) -> float | None:
-    prices = MODEL_PRICES_USD_PER_MILLION.get(model)
+    prices = MODEL_PRICES_USD_PER_MILLION.get(model) or MODEL_PRICES_USD_PER_MILLION.get(_price_key(model))
     if prices is None:
         return None
     input_price, output_price = prices
@@ -83,6 +81,8 @@ def completion_options(
     if model.startswith("openai/gpt-oss-"):
         options["reasoning_effort"] = "low"
         options["extra_body"] = {"include_reasoning": False}
+    elif model.startswith("openai/gpt-5."):
+        options["reasoning"] = {"effort": "minimal", "exclude": True}
 
     if response_schema is not None:
         options["response_format"] = {
@@ -112,3 +112,11 @@ def _token_limit_parameter(model: str) -> str:
 
 def _is_openrouter_url(base_url: str | None) -> bool:
     return "openrouter.ai" in str(base_url or "").lower()
+
+
+def _price_key(model: str) -> str:
+    if model.startswith("google/gemini-3.1-flash-lite-"):
+        return "google/gemini-3.1-flash-lite"
+    if model.startswith("google/gemini-3.1-pro-preview-"):
+        return "google/gemini-3.1-pro-preview"
+    return model

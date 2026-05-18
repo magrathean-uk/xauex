@@ -158,7 +158,7 @@ def test_tradingagents_candidate_uses_openrouter_schema_routing(monkeypatch, tmp
     assert graph["degraded"] is False
     assert len(usage) == 6
     first_call = client.chat.completions.calls[0]
-    assert first_call["response_format"]["type"] == "json_schema"
+    assert first_call["response_format"]["type"] == "json_object"
     assert first_call["provider"] == {"require_parameters": True}
     assert first_call["max_tokens"] == 240
     assert "max_completion_tokens" not in first_call

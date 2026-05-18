@@ -633,7 +633,7 @@ def test_request_json_completion_retries_with_json_object_mode_after_invalid_str
     assert client.chat.completions.calls[0]["extra_body"]["include_reasoning"] is False
 
 
-def test_openrouter_opus_schema_request_requires_supported_schema_parameters():
+def test_openrouter_opus_uses_json_object_mode_with_supported_parameters():
     class _Usage:
         prompt_tokens = 8700
         completion_tokens = 140
@@ -690,8 +690,8 @@ def test_openrouter_opus_schema_request_requires_supported_schema_parameters():
 
     assert response is not None
     assert parsed == {"action": "HOLD", "confidence": 0.0}
-    assert mode == "json_schema"
-    assert client.chat.completions.calls[0]["response_format"]["type"] == "json_schema"
+    assert mode == "json_object"
+    assert client.chat.completions.calls[0]["response_format"]["type"] == "json_object"
     assert client.chat.completions.calls[0]["provider"] == {"require_parameters": True}
     assert client.chat.completions.calls[0]["max_tokens"] == 350
     assert "max_completion_tokens" not in client.chat.completions.calls[0]
@@ -760,6 +760,7 @@ def test_openrouter_gpt55_schema_request_omits_unsupported_temperature():
     assert mode == "json_schema"
     assert client.chat.completions.calls[0]["provider"] == {"require_parameters": True}
     assert client.chat.completions.calls[0]["max_completion_tokens"] == 220
+    assert client.chat.completions.calls[0]["reasoning"] == {"effort": "minimal", "exclude": True}
     assert "max_tokens" not in client.chat.completions.calls[0]
     assert "temperature" not in client.chat.completions.calls[0]
 
@@ -770,6 +771,7 @@ def test_new_openrouter_model_prices_are_estimated():
     assert _estimate_cost_usd("anthropic/claude-opus-4.7", 8744, 150) == 0.04747
     assert _estimate_cost_usd("openai/gpt-5.5", 8651, 63) == 0.045145
     assert _estimate_cost_usd("google/gemini-3.1-flash-lite", 3150, 200) == 0.0010875
+    assert _estimate_cost_usd("google/gemini-3.1-flash-lite-20260507", 3150, 200) == 0.0010875
 
 
 def test_build_analyst_debate_returns_bull_and_bear_cases(monkeypatch):
