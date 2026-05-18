@@ -32,6 +32,7 @@ _TOKEN_PRICES_USD_PER_MILLION: dict[str, tuple[float, float]] = {
 # signals against gold during a strong uptrend (the May 2026 incident).
 HARD_STALE_MARKET_SNAPSHOT_SECONDS = 3 * 24 * 3600
 HARD_STALE_MARKET_SNAPSHOT_BUSINESS_DAYS = 2
+PRICE_CONFLICT_MIN_CONFIDENCE = 0.68
 
 
 def parse_signal(
@@ -294,6 +295,12 @@ def parse_signal(
     if candidate_graph is not None:
         signal['candidate_graph'] = candidate_graph
 
+    signal = _apply_price_conflict_guard(
+        asset=asset,
+        signal=signal,
+        decision_packet=decision_packet,
+    )
+
     signal = _apply_directional_persistence(
         asset=asset,
         signal=signal,
@@ -310,6 +317,7 @@ def parse_signal(
         'decision_mode': decision_mode,
         'window_label': decision_packet['window_label'],
         'input_freshness': decision_packet['input_freshness'],
+        'price_features': decision_packet['price_features'],
         'market_snapshot': decision_packet['market_snapshot'],
         'event_flags': decision_packet['event_flags'],
     }
@@ -319,7 +327,72 @@ def parse_signal(
         signal['decision_packet']['candidate_graph'] = _compact_candidate_graph_for_packet(candidate_graph)
     if 'directional_persistence' in signal:
         signal['decision_packet']['directional_persistence'] = signal['directional_persistence']
+    if 'price_conflict_guard' in signal:
+        signal['decision_packet']['price_conflict_guard'] = signal['price_conflict_guard']
     return signal
+
+
+def _apply_price_conflict_guard(
+    *,
+    asset: AssetProfile,
+    signal: dict[str, Any],
+    decision_packet: dict[str, Any],
+    min_confidence: float = PRICE_CONFLICT_MIN_CONFIDENCE,
+) -> dict[str, Any]:
+    """Block mid-confidence trades that contradict structured price bias."""
+    action = _direction_label(signal.get('action'))
+    if action not in {'BUY', 'SELL'}:
+        return signal
+
+    raw_price_features = decision_packet.get('price_features')
+    price_features: dict[str, Any] = raw_price_features if isinstance(raw_price_features, dict) else {}
+    price_bias = _direction_label(price_features.get('price_bias'))
+    if price_bias not in {'BUY', 'SELL'} or price_bias == action:
+        return signal
+
+    confidence = _safe_float(signal.get('confidence'), 0.0)
+    if confidence >= min_confidence:
+        return signal
+
+    raw_market_snapshot = decision_packet.get('market_snapshot')
+    market_snapshot: dict[str, Any] = raw_market_snapshot if isinstance(raw_market_snapshot, dict) else {}
+    guard = {
+        'policy': 'PRICE_BIAS_CONFLICT_LOW_CONFIDENCE',
+        'reason': (
+            f'Blocked {action} at confidence {confidence:.2f}: structured price bias is {price_bias} '
+            f'and threshold is {min_confidence:.2f}.'
+        ),
+        'original_action': action,
+        'original_confidence': round(confidence, 2),
+        'price_bias': price_bias,
+        'market_snapshot_overall_bias': _direction_label(market_snapshot.get('overall_bias')),
+        'min_confidence': round(min_confidence, 2),
+    }
+
+    blocked = dict(signal)
+    blocked['action'] = 'HOLD'
+    blocked['confidence'] = 0.0
+    blocked['stop_loss_distance'] = 0.0
+    blocked['take_profit_distance'] = 0.0
+    if asset.distance_unit == 'usd':
+        blocked['stop_loss_usd'] = 0.0
+        blocked['take_profit_usd'] = 0.0
+    blocked['consensus_state'] = 'blocked'
+    existing_reasoning = str(blocked.get('reasoning') or '').strip()
+    blocked['reasoning'] = (f'{existing_reasoning} {guard["reason"]}'.strip())[:500]
+    blocked['price_conflict_guard'] = guard
+    return blocked
+
+
+def _direction_label(value: Any) -> str:
+    text = str(value or '').strip().upper()
+    if text in {'BUY', 'BULL', 'BULLISH', 'LONG'}:
+        return 'BUY'
+    if text in {'SELL', 'BEAR', 'BEARISH', 'SHORT'}:
+        return 'SELL'
+    if text == 'HOLD':
+        return 'HOLD'
+    return text
 
 
 def _apply_directional_persistence(

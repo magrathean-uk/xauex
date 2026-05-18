@@ -778,7 +778,12 @@ def test_degraded_analyst_debate_does_not_modify_parser_packet():
     assert "debate" not in enriched
 
 
-def _client_factory_for_parser_tests(*, parser_action="SELL", validator_decision="ALIGNED"):
+def _client_factory_for_parser_tests(
+    *,
+    parser_action="SELL",
+    parser_confidence=0.55,
+    validator_decision="ALIGNED",
+):
     class _Usage:
         prompt_tokens = 120
         completion_tokens = 25
@@ -815,8 +820,9 @@ def _client_factory_for_parser_tests(*, parser_action="SELL", validator_decision
                     '"reasoning":"Validator agrees with the proposed trade.","hard_blocker":false}'
                 )
             return _Response(
-                '{"action":"%s","confidence":0.55,"reasoning":"Baseline parser remains directional.",'
-                '"stop_loss_distance":12.0,"take_profit_distance":24.0}' % parser_action
+                '{"action":"%s","confidence":%.2f,"reasoning":"Baseline parser remains directional.",'
+                '"stop_loss_distance":12.0,"take_profit_distance":24.0}'
+                % (parser_action, parser_confidence)
             )
 
     class _Client:
@@ -832,6 +838,119 @@ def _client_factory_for_parser_tests(*, parser_action="SELL", validator_decision
 
     _factory.clients = clients
     return _factory
+
+
+def test_parse_signal_blocks_low_confidence_price_bias_conflict(monkeypatch):
+    monkeypatch.setenv("XAUEX_SIGNAL_LLM_API_KEY", "test-key")
+    monkeypatch.setenv("XAUEX_SIGNAL_DIRECTIONAL_STATE_PATH", "")
+    cfg = SignalConfig.from_env()
+    asset = resolve_asset("XAUUSD")
+    client_factory = _client_factory_for_parser_tests(parser_action="SELL", parser_confidence=0.62)
+
+    monkeypatch.setattr("xauex.signal.signal_parser.create_chat_client", client_factory)
+
+    signal = parse_signal(
+        asset=asset,
+        actions=[{"agent_name": "price_structure", "action_type": "SELL", "content": "macro pressure"}],
+        report_markdown="# Report\nUSD and rates pressure gold.",
+        config=cfg,
+        prediction_payload={
+            "price_features": {
+                "price_bias": "BUY",
+                "daily_trend_bias": -1,
+                "range_position": "LOWER_THIRD",
+                "regime_filter": "NONE",
+            },
+            "memory_summary": {},
+            "market_snapshot": {"overall_bias": "SELL", "series": {}},
+            "event_flags": {},
+            "input_freshness": {"market_snapshot_state": "fresh", "hard_blocker": False},
+            "context_items": [],
+        },
+        window_label="morning",
+        decision_mode="baseline",
+    )
+
+    assert signal["action"] == "HOLD"
+    assert signal["confidence"] == 0.0
+    assert signal["stop_loss_distance"] == 0.0
+    assert signal["take_profit_distance"] == 0.0
+    assert signal["consensus_state"] == "blocked"
+    assert signal["price_conflict_guard"]["policy"] == "PRICE_BIAS_CONFLICT_LOW_CONFIDENCE"
+    assert signal["price_conflict_guard"]["original_action"] == "SELL"
+    assert signal["price_conflict_guard"]["original_confidence"] == 0.62
+    assert signal["price_conflict_guard"]["price_bias"] == "BUY"
+    assert signal["price_conflict_guard"]["market_snapshot_overall_bias"] == "SELL"
+    assert signal["decision_packet"]["price_features"]["price_bias"] == "BUY"
+    assert signal["decision_packet"]["price_conflict_guard"]["policy"] == "PRICE_BIAS_CONFLICT_LOW_CONFIDENCE"
+
+
+def test_parse_signal_allows_strong_price_bias_conflict(monkeypatch):
+    monkeypatch.setenv("XAUEX_SIGNAL_LLM_API_KEY", "test-key")
+    monkeypatch.setenv("XAUEX_SIGNAL_DIRECTIONAL_STATE_PATH", "")
+    cfg = SignalConfig.from_env()
+    asset = resolve_asset("XAUUSD")
+    client_factory = _client_factory_for_parser_tests(parser_action="SELL", parser_confidence=0.68)
+
+    monkeypatch.setattr("xauex.signal.signal_parser.create_chat_client", client_factory)
+
+    signal = parse_signal(
+        asset=asset,
+        actions=[{"agent_name": "price_structure", "action_type": "SELL", "content": "macro pressure"}],
+        report_markdown="# Report\nUSD and rates pressure gold.",
+        config=cfg,
+        prediction_payload={
+            "price_features": {"price_bias": "BUY"},
+            "memory_summary": {},
+            "market_snapshot": {"overall_bias": "SELL", "series": {}},
+            "event_flags": {},
+            "input_freshness": {"market_snapshot_state": "fresh", "hard_blocker": False},
+            "context_items": [],
+        },
+        window_label="morning",
+        decision_mode="baseline",
+    )
+
+    assert signal["action"] == "SELL"
+    assert signal["confidence"] == 0.68
+    assert "price_conflict_guard" not in signal
+
+
+def test_parse_signal_allows_aligned_price_bias(monkeypatch):
+    monkeypatch.setenv("XAUEX_SIGNAL_LLM_API_KEY", "test-key")
+    monkeypatch.setenv("XAUEX_SIGNAL_DIRECTIONAL_STATE_PATH", "")
+    cfg = SignalConfig.from_env()
+    asset = resolve_asset("XAUUSD")
+    client_factory = _client_factory_for_parser_tests(parser_action="SELL", parser_confidence=0.62)
+
+    monkeypatch.setattr("xauex.signal.signal_parser.create_chat_client", client_factory)
+
+    signal = parse_signal(
+        asset=asset,
+        actions=[{"agent_name": "price_structure", "action_type": "SELL", "content": "price and macro pressure"}],
+        report_markdown="# Report\nPrice and rates pressure gold.",
+        config=cfg,
+        prediction_payload={
+            "price_features": {
+                "price_bias": "SELL",
+                "daily_trend_bias": -1,
+                "range_position": "LOWER_THIRD",
+                "regime_filter": "TREND_ALIGNED_LOWER_THIRD_KEPT_SELL",
+            },
+            "memory_summary": {},
+            "market_snapshot": {"overall_bias": "SELL", "series": {}},
+            "event_flags": {},
+            "input_freshness": {"market_snapshot_state": "fresh", "hard_blocker": False},
+            "context_items": [],
+        },
+        window_label="morning",
+        decision_mode="baseline",
+    )
+
+    assert signal["action"] == "SELL"
+    assert signal["confidence"] == 0.62
+    assert signal["decision_packet"]["price_features"]["regime_filter"] == "TREND_ALIGNED_LOWER_THIRD_KEPT_SELL"
+    assert "price_conflict_guard" not in signal
 
 
 def _candidate_graph_result(*, degraded=False, action="BUY"):
