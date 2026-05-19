@@ -31,6 +31,7 @@ build_xauex_protect_stop_price = _MODULE.build_xauex_protect_stop_price
 build_xauex_assurance_profile = _MODULE.build_xauex_assurance_profile
 build_xauex_take_profit_distance = _MODULE.build_xauex_take_profit_distance
 build_xauex_counter_signal_candidate = _MODULE.build_xauex_counter_signal_candidate
+build_xauex_continuation_addon_decision = _MODULE.build_xauex_continuation_addon_decision
 advance_xauex_session_phase = _MODULE.advance_xauex_session_phase
 confirm_xauex_session_phase_transition = _MODULE.confirm_xauex_session_phase_transition
 build_xauex_confirm_decision = _MODULE.build_xauex_confirm_decision
@@ -60,6 +61,9 @@ def test_load_config_includes_xauex_session_manager_settings(monkeypatch):
     monkeypatch.setenv("XAUEX_COUNTER_SIGNAL_ENABLED", "false")
     monkeypatch.setenv("XAUEX_COUNTER_SIGNAL_CONFIDENCE", "0.58")
     monkeypatch.setenv("XAUEX_COUNTER_SIGNAL_RISK_MULTIPLIER", "0.5")
+    monkeypatch.setenv("XAUEX_CONTINUATION_ADDON_ENABLED", "true")
+    monkeypatch.setenv("XAUEX_CONTINUATION_ADDON_MIN_CONFIDENCE", "0.57")
+    monkeypatch.setenv("XAUEX_CONTINUATION_ADDON_RISK_MULTIPLIER", "0.4")
 
     cfg = load_config()
 
@@ -77,6 +81,9 @@ def test_load_config_includes_xauex_session_manager_settings(monkeypatch):
     assert cfg.xauex_counter_signal_enabled is False
     assert cfg.xauex_counter_signal_confidence == 0.58
     assert cfg.xauex_counter_signal_risk_multiplier == 0.5
+    assert cfg.xauex_continuation_addon_enabled is True
+    assert cfg.xauex_continuation_addon_min_confidence == 0.57
+    assert cfg.xauex_continuation_addon_risk_multiplier == 0.4
 
 
 def test_load_config_defaults_health_check_host_to_loopback(monkeypatch):
@@ -523,6 +530,121 @@ def _counter_signal_config() -> SimpleNamespace:
         xauex_session_protect_lock_r=0.30,
         xauex_session_high_confidence_protect_lock_r=0.25,
     )
+
+
+def _continuation_addon_config() -> SimpleNamespace:
+    return SimpleNamespace(
+        xauex_continuation_addon_enabled=True,
+        xauex_continuation_addon_min_confidence=0.55,
+        xauex_continuation_addon_risk_multiplier=0.5,
+    )
+
+
+def _continuation_signal(**overrides):
+    signal = {
+        "action": "SELL",
+        "confidence": 0.56,
+        "consensus_state": "aligned",
+        "validator_status": "reviewed",
+        "directional_persistence": {
+            "policy": "ALIGNED_WITH_LOCK",
+            "previous_state": {"primary_direction": "SELL"},
+        },
+    }
+    signal.update(overrides)
+    return signal
+
+
+def _xauex_open_position(*, phase: str = "PROTECT", direction: str = "SHORT", continuation_addon: bool = False):
+    position_id = "pos-addon" if continuation_addon else "pos-primary"
+    return SimpleNamespace(
+        position_id=position_id,
+        owner="xauex",
+        direction=direction,
+        metadata={
+            "session": {
+                "phase": phase,
+                "continuation_addon": continuation_addon,
+            }
+        },
+    )
+
+
+def test_continuation_addon_allows_protected_aligned_same_direction_signal():
+    decision = build_xauex_continuation_addon_decision(
+        signal=_continuation_signal(),
+        open_positions=[_xauex_open_position()],
+        slot="US_OPEN",
+        config=_continuation_addon_config(),
+    )
+
+    assert decision["allowed"] is True
+    assert decision["reason"] == "CONTINUATION_ADDON_ALLOWED"
+    assert decision["parent_position_id"] == "pos-primary"
+    assert decision["risk_multiplier"] == 0.5
+
+
+def test_continuation_addon_blocks_until_primary_position_is_protected():
+    decision = build_xauex_continuation_addon_decision(
+        signal=_continuation_signal(),
+        open_positions=[_xauex_open_position(phase="OBSERVE")],
+        slot="MIDDAY",
+        config=_continuation_addon_config(),
+    )
+
+    assert decision["allowed"] is False
+    assert decision["reason"] == "CONTINUATION_PARENT_NOT_PROTECTED"
+
+
+def test_continuation_addon_blocks_low_confidence_or_validator_disagreement():
+    decision = build_xauex_continuation_addon_decision(
+        signal=_continuation_signal(
+            confidence=0.48,
+            consensus_state="disagreed",
+            validator_summary="Validator contradicted the trade geometry.",
+        ),
+        open_positions=[_xauex_open_position()],
+        slot="US_OPEN",
+        config=_continuation_addon_config(),
+    )
+
+    assert decision["allowed"] is False
+    assert decision["reason"] == "CONTINUATION_SIGNAL_NOT_ALIGNED"
+
+
+def test_continuation_addon_blocks_second_addon_position():
+    decision = build_xauex_continuation_addon_decision(
+        signal=_continuation_signal(),
+        open_positions=[
+            _xauex_open_position(),
+            _xauex_open_position(continuation_addon=True),
+        ],
+        slot="US_OPEN",
+        config=_continuation_addon_config(),
+    )
+
+    assert decision["allowed"] is False
+    assert decision["reason"] == "CONTINUATION_ADDON_ALREADY_OPEN"
+
+
+def test_continuation_addon_blocks_when_two_xauex_positions_already_exist():
+    decision = build_xauex_continuation_addon_decision(
+        signal=_continuation_signal(),
+        open_positions=[
+            _xauex_open_position(),
+            SimpleNamespace(
+                position_id="pos-recovered",
+                owner="xauex",
+                direction="SHORT",
+                metadata={"session": {"phase": "PROTECT"}},
+            ),
+        ],
+        slot="US_OPEN",
+        config=_continuation_addon_config(),
+    )
+
+    assert decision["allowed"] is False
+    assert decision["reason"] == "CONTINUATION_POSITION_LIMIT_REACHED"
 
 
 def test_counter_signal_candidate_flips_microstructure_veto_to_reduced_risk_sell():

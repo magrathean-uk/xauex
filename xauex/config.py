@@ -106,6 +106,9 @@ class Config:
     xauex_counter_signal_enabled: bool
     xauex_counter_signal_confidence: float
     xauex_counter_signal_risk_multiplier: float
+    xauex_continuation_addon_enabled: bool
+    xauex_continuation_addon_min_confidence: float
+    xauex_continuation_addon_risk_multiplier: float
     xauex_manual_command_path: str
     xauex_manual_command_secret: str
     xauex_manual_command_ledger_path: str
@@ -503,6 +506,25 @@ def load_config(env_file: str = ".env") -> Config:
         1.0,
         0.5,
     )
+    xauex_continuation_addon_enabled = os.getenv("XAUEX_CONTINUATION_ADDON_ENABLED", "true").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    xauex_continuation_addon_min_confidence = collect(
+        _float_range,
+        "XAUEX_CONTINUATION_ADDON_MIN_CONFIDENCE",
+        0.50,
+        0.80,
+        0.55,
+    )
+    xauex_continuation_addon_risk_multiplier = collect(
+        _float_range,
+        "XAUEX_CONTINUATION_ADDON_RISK_MULTIPLIER",
+        0.05,
+        1.0,
+        0.5,
+    )
     xauex_manual_command_path = os.getenv(
         "XAUEX_MANUAL_COMMAND_PATH",
         os.getenv("MIROFISH_MANUAL_COMMAND_PATH", "/var/lib/xauex/manual_trade_cmd.json"),
@@ -733,6 +755,9 @@ def load_config(env_file: str = ".env") -> Config:
         xauex_counter_signal_enabled=xauex_counter_signal_enabled,
         xauex_counter_signal_confidence=xauex_counter_signal_confidence,
         xauex_counter_signal_risk_multiplier=xauex_counter_signal_risk_multiplier,
+        xauex_continuation_addon_enabled=xauex_continuation_addon_enabled,
+        xauex_continuation_addon_min_confidence=xauex_continuation_addon_min_confidence,
+        xauex_continuation_addon_risk_multiplier=xauex_continuation_addon_risk_multiplier,
         xauex_manual_command_path=xauex_manual_command_path,
         xauex_manual_command_secret=xauex_manual_command_secret,
         xauex_manual_command_ledger_path=xauex_manual_command_ledger_path,

@@ -99,6 +99,7 @@ def calculate_xauex_assurance_cash_risk(
     session_slot_multiplier: float,
     counter_signal_risk_multiplier: float,
     microstructure_risk_multiplier: float,
+    continuation_addon_risk_multiplier: float = 1.0,
     minimum_executable_risk: float = 0.0,
 ) -> float:
     budget = max(0.0, float(cash_risk_budget))
@@ -108,7 +109,8 @@ def calculate_xauex_assurance_cash_risk(
         * float(cooldown_multiplier)
         * float(session_slot_multiplier)
         * float(counter_signal_risk_multiplier)
-        * float(microstructure_risk_multiplier),
+        * float(microstructure_risk_multiplier)
+        * float(continuation_addon_risk_multiplier),
         2,
     )
     min_executable = round(max(0.0, float(minimum_executable_risk or 0.0)), 2)
@@ -443,6 +445,127 @@ def build_xauex_counter_signal_candidate(
     candidate["confirm_timestamp_utc"] = str(counter_confirm.get("timestamp_utc") or "")
     candidate["counter_confirm_reason"] = str(counter_confirm.get("reason") or "")
     return candidate
+
+
+def _position_session(position: object) -> Dict[str, object]:
+    if isinstance(position, dict):
+        metadata = position.get("metadata") if isinstance(position.get("metadata"), dict) else {}
+    else:
+        metadata = getattr(position, "metadata", {}) or {}
+    if not isinstance(metadata, dict):
+        return {}
+    session = metadata.get("session")
+    return dict(session) if isinstance(session, dict) else {}
+
+
+def _position_id(position: object) -> str:
+    if isinstance(position, dict):
+        return str(position.get("position_id", "") or "")
+    return str(getattr(position, "position_id", "") or "")
+
+
+def _position_direction(position: object) -> str:
+    if isinstance(position, dict):
+        return _normalise_direction_label(position.get("direction"))
+    return _normalise_direction_label(getattr(position, "direction", ""))
+
+
+def _signal_locked_direction_matches(signal: Dict[str, object], action: str) -> bool:
+    persistence = signal.get("directional_persistence")
+    if not isinstance(persistence, dict):
+        return False
+    policy = str(persistence.get("policy", "") or "").upper()
+    if policy not in {"ALIGNED_WITH_LOCK", "LOCK_DIRECTION"}:
+        return False
+    for state_key in ("next_state", "previous_state"):
+        state = persistence.get(state_key)
+        if not isinstance(state, dict):
+            continue
+        primary = str(state.get("primary_direction", "") or "").upper()
+        if primary:
+            return primary == action
+    return False
+
+
+def build_xauex_continuation_addon_decision(
+    *,
+    signal: Dict[str, object],
+    open_positions: List[object],
+    slot: str,
+    config: Config,
+) -> Dict[str, object]:
+    """Allow one reduced-risk continuation add-on only after the parent trade is protected."""
+    result: Dict[str, object] = {
+        "allowed": False,
+        "reason": "XAUEX_POSITION_OPEN",
+        "parent_position_id": "",
+        "risk_multiplier": 1.0,
+    }
+    xauex_positions = [position for position in open_positions if _position_owner(position) == "xauex"]
+    if not xauex_positions:
+        result["reason"] = "NO_XAUEX_POSITION_OPEN"
+        return result
+    if not bool(getattr(config, "xauex_continuation_addon_enabled", False)):
+        return result
+
+    slot_name = str(slot or "").upper()
+    if slot_name not in {"MIDDAY", "US_OPEN"}:
+        result["reason"] = "CONTINUATION_SLOT_NOT_ELIGIBLE"
+        return result
+
+    action = str(signal.get("action", "HOLD") or "HOLD").upper()
+    if action not in {"BUY", "SELL"}:
+        result["reason"] = "CONTINUATION_NO_DIRECTION"
+        return result
+    direction = "LONG" if action == "BUY" else "SHORT"
+
+    consensus = str(signal.get("consensus_state", "") or "").strip().lower()
+    validator_status = str(signal.get("validator_status", "") or "").strip().lower()
+    if consensus not in {"aligned", "confirmed"} or validator_status != "reviewed":
+        result["reason"] = "CONTINUATION_SIGNAL_NOT_ALIGNED"
+        return result
+    if not _signal_locked_direction_matches(signal, action):
+        result["reason"] = "CONTINUATION_NOT_LOCKED_DIRECTION"
+        return result
+
+    min_confidence = max(
+        0.0,
+        min(1.0, float(getattr(config, "xauex_continuation_addon_min_confidence", 0.55) or 0.55)),
+    )
+    confidence = _safe_signal_float(signal.get("confidence"), 0.0)
+    if confidence < min_confidence:
+        result["reason"] = "CONTINUATION_CONFIDENCE_TOO_LOW"
+        return result
+
+    if any(bool(_position_session(position).get("continuation_addon")) for position in xauex_positions):
+        result["reason"] = "CONTINUATION_ADDON_ALREADY_OPEN"
+        return result
+    if len(xauex_positions) >= 2:
+        result["reason"] = "CONTINUATION_POSITION_LIMIT_REACHED"
+        return result
+    if any(_position_direction(position) != direction for position in xauex_positions):
+        result["reason"] = "CONTINUATION_DIRECTION_CONFLICT"
+        return result
+
+    protected_parent: Optional[object] = None
+    for position in xauex_positions:
+        session = _position_session(position)
+        phase = str(session.get("phase", "OBSERVE") or "OBSERVE").upper()
+        if phase in {"PROTECT", "TRAIL"}:
+            protected_parent = position
+            break
+    if protected_parent is None:
+        result["reason"] = "CONTINUATION_PARENT_NOT_PROTECTED"
+        return result
+
+    result["allowed"] = True
+    result["reason"] = "CONTINUATION_ADDON_ALLOWED"
+    result["parent_position_id"] = _position_id(protected_parent)
+    result["risk_multiplier"] = round(
+        max(0.05, min(1.0, float(getattr(config, "xauex_continuation_addon_risk_multiplier", 0.5) or 0.5))),
+        2,
+    )
+    return result
 
 
 def build_xauex_initial_stop_distance(
@@ -3291,24 +3414,6 @@ class BotOrchestrator:
                     await self.write_state()
                     continue
 
-                if self._xauex_has_open_position():
-                    logger.info("[XAUEX] Existing XAUEX position still open - skipping new slot.")
-                    self._mark_slot_used(
-                        slot=slot,
-                        signal_id=signal_id,
-                        reason="XAUEX_POSITION_OPEN",
-                        signal_time=now_utc,
-                        signal_action=action,
-                        signal_confidence=confidence,
-                        window_label=window_label,
-                        confirm_status=confirm_status,
-                        confirm_reason=confirm_reason,
-                        confirm_timestamp_utc=confirm_timestamp_utc,
-                        terminal=True,
-                    )
-                    await self.write_state()
-                    continue
-
                 if self.symbol_spec is None:
                     logger.warning("[XAUEX] Symbol spec not loaded yet - skipping")
                     self._mark_slot_used(
@@ -3564,6 +3669,58 @@ class BotOrchestrator:
                     await self.write_state()
                     continue
 
+                continuation_addon_decision: Dict[str, object] = {
+                    "allowed": False,
+                    "reason": "NO_XAUEX_POSITION_OPEN",
+                    "parent_position_id": "",
+                    "risk_multiplier": 1.0,
+                }
+                if self._xauex_has_open_position():
+                    continuation_addon_decision = build_xauex_continuation_addon_decision(
+                        signal=sig,
+                        open_positions=self.executor.position_manager.get_open_positions(),
+                        slot=slot,
+                        config=self.config,
+                    )
+                    if not bool(continuation_addon_decision.get("allowed")):
+                        reason = str(continuation_addon_decision.get("reason") or "XAUEX_POSITION_OPEN")
+                        logger.info("[XAUEX] Existing XAUEX position still open - skipping new slot: %s", reason)
+                        self._mark_slot_used(
+                            slot=slot,
+                            signal_id=signal_id,
+                            reason=reason,
+                            signal_time=now_utc,
+                            signal_action=action,
+                            signal_confidence=confidence,
+                            window_label=window_label,
+                            confirm_status=confirm_status,
+                            confirm_reason=confirm_reason,
+                            confirm_timestamp_utc=confirm_timestamp_utc,
+                            terminal=True,
+                        )
+                        await self.write_state()
+                        continue
+                    sig["continuation_addon"] = True
+                    sig["continuation_parent_position_id"] = continuation_addon_decision.get("parent_position_id")
+                    sig["continuation_addon_risk_multiplier"] = continuation_addon_decision.get("risk_multiplier")
+                    self._journal_event(
+                        "continuation_addon_candidate",
+                        {
+                            "slot": slot,
+                            "window_label": window_label,
+                            "parent_position_id": continuation_addon_decision.get("parent_position_id"),
+                            "action": action,
+                            "confidence": confidence,
+                            "risk_multiplier": continuation_addon_decision.get("risk_multiplier"),
+                        },
+                        correlation_id=signal_id,
+                    )
+                    logger.info(
+                        "[XAUEX] Continuation add-on allowed for parent=%s risk_multiplier=%.2f.",
+                        str(continuation_addon_decision.get("parent_position_id") or ""),
+                        _safe_signal_float(continuation_addon_decision.get("risk_multiplier"), 1.0),
+                    )
+
                 gate_result = await self._environment_gate(apply_risk_gates=True)
                 if gate_result is not None:
                     if self._should_emit_repeated_xauex_log(f"environment_gate:{gate_result}"):
@@ -3771,6 +3928,28 @@ class BotOrchestrator:
                         "[XAUEX] Microstructure soft-confirm risk multiplier %.2fx applied.",
                         microstructure_risk_multiplier,
                     )
+                continuation_addon_risk_multiplier = 1.0
+                if bool(sig.get("continuation_addon")):
+                    continuation_addon_risk_multiplier = round(
+                        max(
+                            0.05,
+                            min(
+                                1.0,
+                                _safe_signal_float(
+                                    sig.get(
+                                        "continuation_addon_risk_multiplier",
+                                        getattr(self.config, "xauex_continuation_addon_risk_multiplier", 0.5),
+                                    ),
+                                    0.5,
+                                ),
+                            ),
+                        ),
+                        2,
+                    )
+                    logger.info(
+                        "[XAUEX] Continuation add-on risk multiplier %.2fx applied.",
+                        continuation_addon_risk_multiplier,
+                    )
                 minimum_executable_risk = round(
                     float(self.symbol_spec.volume_min) * float(self.symbol_spec.lot_size) * sl_distance,
                     2,
@@ -3782,6 +3961,7 @@ class BotOrchestrator:
                     session_slot_multiplier=session_slot_multiplier,
                     counter_signal_risk_multiplier=counter_signal_risk_multiplier,
                     microstructure_risk_multiplier=microstructure_risk_multiplier,
+                    continuation_addon_risk_multiplier=continuation_addon_risk_multiplier,
                     minimum_executable_risk=minimum_executable_risk,
                 )
                 lot = calculate_xauex_lot_size_from_cash_risk(
@@ -3879,6 +4059,9 @@ class BotOrchestrator:
                         "counter_signal_risk_multiplier": counter_signal_risk_multiplier,
                         "counter_source_action": str(sig.get("counter_source_action") or ""),
                         "counter_source_confirm_reason": str(sig.get("counter_source_confirm_reason") or ""),
+                        "continuation_addon": bool(sig.get("continuation_addon")),
+                        "continuation_parent_position_id": str(sig.get("continuation_parent_position_id") or ""),
+                        "continuation_addon_risk_multiplier": continuation_addon_risk_multiplier,
                         "allowed_cash_risk": assurance_cash_risk,
                         "actual_cash_risk": actual_cash_risk,
                         "target_rr": assurance.target_rr,
