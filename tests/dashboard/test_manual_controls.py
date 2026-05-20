@@ -402,6 +402,53 @@ def test_dashboard_payload_exposes_window_statuses_and_candidate_metrics(monkeyp
     assert payload["candidate_metrics"]["false_negative_wins"] == 2
 
 
+def test_dashboard_window_display_shows_hold_for_no_directional_signal(monkeypatch, tmp_path):
+    dashboard_app = _load_dashboard_module(monkeypatch, tmp_path)
+    client = dashboard_app.app.test_client()
+
+    dashboard_app.STATE_PATH.write_text(
+        json.dumps(
+            {
+                "meta": {"bot_status": "RUNNING", "last_updated_utc": "2026-04-07T01:02:03Z"},
+                "account": {"balance": 12345.67, "equity": 12400.1, "open_pnl": 54.43},
+                "risk": {
+                    "daily_pnl": 12.5,
+                    "weekly_pnl": 34.5,
+                    "xauex_signal_runs_london": [
+                        {
+                            "slot": "MIDDAY",
+                            "date_london": "2026-04-07",
+                            "signal_id": "2026-04-07T10:25:00Z",
+                            "action": "HOLD",
+                            "reason": "HOLD",
+                            "confirm_status": "SKIP",
+                            "confirm_reason": "NO_DIRECTIONAL_SIGNAL",
+                            "confirm_timestamp_utc": "2026-04-07T10:29:00Z",
+                            "terminal": True,
+                        },
+                    ],
+                },
+                "runtime": {},
+                "open_positions": [],
+                "closed_trades_today": [],
+                "signal_history": [],
+                "shadow_signal_history": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    response = client.get("/api/dashboard")
+
+    assert response.status_code == 200
+    payload = response.get_json()["data"]
+    midday = payload["windows"][1]
+    assert midday["confirm_status"] == "SKIP"
+    assert midday["confirm_reason"] == "NO_DIRECTIONAL_SIGNAL"
+    assert midday["display_status"] == "HOLD"
+    assert midday["display_reason"] == ""
+
+
 def test_diagnostics_endpoint_returns_structured_snapshot(monkeypatch, tmp_path):
     dashboard_app = _load_dashboard_module(monkeypatch, tmp_path)
     client = dashboard_app.app.test_client()

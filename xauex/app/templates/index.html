@@ -509,12 +509,14 @@
         return '<div class="empty">No window data yet.</div>';
       }
       return windows.map((w) => {
-        const status = String(w.confirm_status || "idle").toLowerCase();
+        const displayStatus = String(w.display_status || w.confirm_status || "idle").toUpperCase();
+        const displayReason = w.display_reason ?? w.confirm_reason ?? "";
+        const status = displayStatus.toLowerCase();
         return `
           <div class="window">
             <div class="window-name">${w.slot || w.window_label || "—"}</div>
             <div class="window-time">Signal ${w.signal_time_local || "—"} · Entry ${w.entry_window_local || "—"}</div>
-            <div class="window-status ${status}">${(w.confirm_status || "idle").toUpperCase()}${w.confirm_reason ? ` · ${w.confirm_reason}` : ""}</div>
+            <div class="window-status ${status}">${displayStatus}${displayReason ? ` · ${displayReason}` : ""}</div>
             ${w.outcome ? `<div class="window-time">${w.outcome}</div>` : ""}
           </div>
         `;

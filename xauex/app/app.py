@@ -214,6 +214,22 @@ def _window_runs_for_today(risk: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return latest
 
 
+def _window_display_fields(
+    *,
+    confirm_status: Any,
+    confirm_reason: Any,
+    outcome: Any,
+    action: Any,
+) -> tuple[str, str]:
+    status_text = str(confirm_status or "WAITING").upper()
+    reason_text = str(confirm_reason or "").upper()
+    outcome_text = str(outcome or "").upper()
+    action_text = str(action or "").upper()
+    if status_text == "SKIP" and reason_text == "NO_DIRECTIONAL_SIGNAL" and "HOLD" in {outcome_text, action_text}:
+        return "HOLD", ""
+    return status_text, reason_text
+
+
 def _build_window_statuses(risk: dict[str, Any], signal: dict[str, Any]) -> list[dict[str, Any]]:
     latest_runs = _window_runs_for_today(risk)
     active_window = str(signal.get("window_label") or "current").lower()
@@ -223,10 +239,21 @@ def _build_window_statuses(risk: dict[str, Any], signal: dict[str, Any]) -> list
         confirm_status = run.get("confirm_status")
         confirm_reason = run.get("confirm_reason")
         confirm_timestamp = run.get("confirm_timestamp_utc")
+        action = run.get("action")
         if not confirm_status and active_window == window.window_label:
             confirm_status = signal.get("confirm_status") or "PENDING"
             confirm_reason = signal.get("confirm_reason") or "WAITING_FOR_CONFIRM"
             confirm_timestamp = signal.get("confirm_timestamp_utc")
+            action = signal.get("action")
+        outcome = run.get("reason") or ("PENDING" if active_window == window.window_label else "WAITING")
+        raw_confirm_status = confirm_status or ("PENDING" if active_window == window.window_label else "WAITING")
+        raw_confirm_reason = confirm_reason or ("WAITING_FOR_CONFIRM" if active_window == window.window_label else "")
+        display_status, display_reason = _window_display_fields(
+            confirm_status=raw_confirm_status,
+            confirm_reason=raw_confirm_reason,
+            outcome=outcome,
+            action=action,
+        )
         statuses.append(
             {
                 "slot": window.slot,
@@ -237,9 +264,11 @@ def _build_window_statuses(risk: dict[str, Any], signal: dict[str, Any]) -> list
                 "confirm_time_local": window.confirm_time_local,
                 "entry_window_local": f"{window.entry_start_local}-{window.entry_end_local}",
                 "signal_id": run.get("signal_id"),
-                "outcome": run.get("reason") or ("PENDING" if active_window == window.window_label else "WAITING"),
-                "confirm_status": confirm_status or ("PENDING" if active_window == window.window_label else "WAITING"),
-                "confirm_reason": confirm_reason or ("WAITING_FOR_CONFIRM" if active_window == window.window_label else ""),
+                "outcome": outcome,
+                "confirm_status": raw_confirm_status,
+                "confirm_reason": raw_confirm_reason,
+                "display_status": display_status,
+                "display_reason": display_reason,
                 "confirm_timestamp_utc": _fmt_ts(confirm_timestamp),
                 "terminal": bool(run.get("terminal", False)),
             }
