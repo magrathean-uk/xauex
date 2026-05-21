@@ -1,0 +1,8 @@
+# Optional legacy AI/document stack.
+# Install this in addition to requirements.txt only when working on old
+# CAMEL/OASIS/PDF experiments; it pulls large ML packages such as torch.
+
+zep-cloud==3.20.0
+camel-oasis==0.2.5
+camel-ai==0.2.90
+PyMuPDF>=1.27.2.2

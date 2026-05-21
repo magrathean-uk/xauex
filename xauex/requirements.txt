@@ -1,9 +1,1 @@
-ctrader-open-api
-protobuf
-python-dotenv
-aiohttp>=3.13.5
-textual>=8.2.3
-service_identity>=24.1.0
-pytest>=9.0.3
-pytest-asyncio
-duka
+-r ../requirements.txt
