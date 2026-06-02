@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -33,6 +34,7 @@ def _build_orchestrator() -> object:
         xauex_entry_second_start_london="11:30",
         xauex_entry_second_end_london="11:35",
         xauex_max_trades_per_day=3,
+        xauex_event_journal_path="",
     )
     orchestrator.risk_state = RiskState()
     orchestrator.risk_state.xauex_signal_runs_london = []
@@ -199,6 +201,41 @@ def test_non_terminal_reasons_do_not_block_slot():
         signal_time=now,
     )
     assert orch._has_run_slot_been_used_today("MORNING", now_utc=now) is True
+
+
+def test_terminal_directional_skip_records_blocked_trade_candidate(tmp_path):
+    orch = _build_orchestrator()
+    journal_path = tmp_path / "events.jsonl"
+    orch.config.xauex_event_journal_path = str(journal_path)
+    now = datetime(2026, 4, 7, 8, 2, tzinfo=ZoneInfo("Europe/London")).astimezone(timezone.utc)
+
+    orch._mark_slot_used(
+        slot="MORNING",
+        signal_id="signal-1",
+        reason="ASSURANCE_RISK_BELOW_MIN_LOT",
+        signal_time=now,
+        signal_action="SELL",
+        signal_confidence=0.60,
+        window_label="morning",
+        confirm_status="CONFIRMED",
+        confirm_reason="CONFIRMED",
+        terminal=True,
+        blocked_trade={
+            "entry_price": 4501.98,
+            "stop_loss": 4519.44,
+            "take_profit": 4475.79,
+            "minimum_executable_risk": 17.46,
+        },
+    )
+
+    events = [json.loads(line) for line in journal_path.read_text(encoding="utf-8").splitlines()]
+    blocked = [event for event in events if event["event_type"] == "blocked_trade_candidate"]
+
+    assert len(blocked) == 1
+    assert blocked[0]["correlation_id"] == "signal-1"
+    assert blocked[0]["payload"]["reason"] == "ASSURANCE_RISK_BELOW_MIN_LOT"
+    assert blocked[0]["payload"]["signal_action"] == "SELL"
+    assert blocked[0]["payload"]["blocked_trade"]["entry_price"] == 4501.98
 
 
 def test_stale_previous_day_signal_does_not_consume_morning_slot():

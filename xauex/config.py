@@ -109,6 +109,9 @@ class Config:
     xauex_continuation_addon_enabled: bool
     xauex_continuation_addon_min_confidence: float
     xauex_continuation_addon_risk_multiplier: float
+    xauex_min_lot_canary_enabled: bool
+    xauex_min_lot_canary_min_confidence: float
+    xauex_min_lot_canary_max_per_day: int
     xauex_manual_command_path: str
     xauex_manual_command_secret: str
     xauex_manual_command_ledger_path: str
@@ -525,6 +528,26 @@ def load_config(env_file: str = ".env") -> Config:
         1.0,
         0.5,
     )
+    xauex_min_lot_canary_enabled = os.getenv("XAUEX_MIN_LOT_CANARY_ENABLED", "true").lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    xauex_min_lot_canary_min_confidence = collect(
+        _float_range,
+        "XAUEX_MIN_LOT_CANARY_MIN_CONFIDENCE",
+        0.0,
+        1.0,
+        float(os.getenv("XAUEX_MIN_LOT_CANARY_MIN_CONFIDENCE", "0.58")),
+    )
+    xauex_min_lot_canary_max_per_day = collect(
+        _int_range,
+        "XAUEX_MIN_LOT_CANARY_MAX_PER_DAY",
+        0,
+        3,
+        int(os.getenv("XAUEX_MIN_LOT_CANARY_MAX_PER_DAY", "1")),
+    )
     xauex_manual_command_path = os.getenv(
         "XAUEX_MANUAL_COMMAND_PATH",
         os.getenv("MIROFISH_MANUAL_COMMAND_PATH", "/var/lib/xauex/manual_trade_cmd.json"),
@@ -758,6 +781,9 @@ def load_config(env_file: str = ".env") -> Config:
         xauex_continuation_addon_enabled=xauex_continuation_addon_enabled,
         xauex_continuation_addon_min_confidence=xauex_continuation_addon_min_confidence,
         xauex_continuation_addon_risk_multiplier=xauex_continuation_addon_risk_multiplier,
+        xauex_min_lot_canary_enabled=xauex_min_lot_canary_enabled,
+        xauex_min_lot_canary_min_confidence=xauex_min_lot_canary_min_confidence,
+        xauex_min_lot_canary_max_per_day=xauex_min_lot_canary_max_per_day,
         xauex_manual_command_path=xauex_manual_command_path,
         xauex_manual_command_secret=xauex_manual_command_secret,
         xauex_manual_command_ledger_path=xauex_manual_command_ledger_path,

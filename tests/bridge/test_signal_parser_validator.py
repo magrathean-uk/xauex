@@ -9,6 +9,7 @@ from xauex.signal.signal_parser import (
     _build_decision_packet,
     _enrich_decision_packet_with_debate,
     _model_completion_options,
+    _parse_json_response,
     _request_json_completion,
     _validator_system_prompt,
     parse_signal,
@@ -633,6 +634,16 @@ def test_request_json_completion_retries_with_json_object_mode_after_invalid_str
     assert client.chat.completions.calls[1]["response_format"]["type"] == "json_object"
     assert client.chat.completions.calls[0]["max_completion_tokens"] == 700
     assert client.chat.completions.calls[0]["extra_body"]["include_reasoning"] is False
+
+
+def test_parse_json_response_handles_empty_choices_as_unavailable(caplog):
+    class _Response:
+        choices = []
+
+    parsed = _parse_json_response(_Response())
+
+    assert parsed is None
+    assert "empty choices" in caplog.text.lower()
 
 
 def test_openrouter_opus_uses_json_object_mode_with_supported_parameters():

@@ -212,6 +212,21 @@ def test_assurance_cash_risk_lifts_approved_trade_to_broker_minimum_when_budget_
     assert cash_risk == 25.0
 
 
+def test_assurance_cash_risk_does_not_lift_low_assurance_trade_to_broker_minimum():
+    cash_risk = calculate_xauex_assurance_cash_risk(
+        cash_risk_budget=29.41,
+        assurance_risk_multiplier=0.25,
+        cooldown_multiplier=1.0,
+        session_slot_multiplier=1.0,
+        counter_signal_risk_multiplier=1.0,
+        microstructure_risk_multiplier=1.0,
+        minimum_executable_risk=25.0,
+        allow_minimum_executable_risk_lift=False,
+    )
+
+    assert cash_risk == 7.35
+
+
 def test_assurance_cash_risk_does_not_lift_to_minimum_when_budget_cannot_cover_it():
     cash_risk = calculate_xauex_assurance_cash_risk(
         cash_risk_budget=20.0,

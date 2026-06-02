@@ -101,6 +101,7 @@ def calculate_xauex_assurance_cash_risk(
     microstructure_risk_multiplier: float,
     continuation_addon_risk_multiplier: float = 1.0,
     minimum_executable_risk: float = 0.0,
+    allow_minimum_executable_risk_lift: bool = True,
 ) -> float:
     budget = max(0.0, float(cash_risk_budget))
     reduced_risk = round(
@@ -114,7 +115,7 @@ def calculate_xauex_assurance_cash_risk(
         2,
     )
     min_executable = round(max(0.0, float(minimum_executable_risk or 0.0)), 2)
-    if 0.0 < reduced_risk < min_executable <= budget:
+    if allow_minimum_executable_risk_lift and 0.0 < reduced_risk < min_executable <= budget:
         return min_executable
     return reduced_risk
 
@@ -568,6 +569,100 @@ def build_xauex_continuation_addon_decision(
     return result
 
 
+def build_xauex_min_lot_canary_decision(
+    *,
+    signal: Dict[str, object],
+    assurance: XauexAssuranceProfile,
+    cash_risk_budget: float,
+    minimum_executable_risk: float,
+    canaries_used_today: int,
+    config: Config,
+) -> Dict[str, object]:
+    """Decide whether a low-assurance infra-degraded signal may lift to min lot."""
+    min_confidence = max(
+        0.0,
+        min(1.0, float(getattr(config, "xauex_min_lot_canary_min_confidence", 0.58) or 0.58)),
+    )
+    max_per_day = max(0, int(getattr(config, "xauex_min_lot_canary_max_per_day", 1) or 0))
+    result: Dict[str, object] = {
+        "allowed": False,
+        "reason": "CANARY_NOT_EVALUATED",
+        "allow_minimum_executable_risk_lift": False,
+        "min_confidence": round(min_confidence, 2),
+        "max_per_day": max_per_day,
+        "canaries_used_today": max(0, int(canaries_used_today or 0)),
+        "minimum_executable_risk": round(max(0.0, float(minimum_executable_risk or 0.0)), 2),
+        "cash_risk_budget": round(max(0.0, float(cash_risk_budget or 0.0)), 2),
+    }
+
+    if not bool(getattr(config, "xauex_min_lot_canary_enabled", True)):
+        result["reason"] = "CANARY_DISABLED"
+        return result
+
+    action = str(signal.get("action", "HOLD") or "HOLD").upper()
+    if action not in {"BUY", "SELL"}:
+        result["reason"] = "CANARY_NO_DIRECTIONAL_SIGNAL"
+        return result
+
+    if not bool(getattr(assurance, "allow_trade", False)) or str(getattr(assurance, "bucket", "")).lower() != "low":
+        result["reason"] = "CANARY_NOT_LOW_ASSURANCE"
+        return result
+
+    confirm_status = str(signal.get("confirm_status", "") or "").upper()
+    if confirm_status != "CONFIRMED":
+        result["reason"] = "CANARY_NOT_CONFIRMED"
+        return result
+
+    confidence = _safe_signal_float(signal.get("confidence"), 0.0)
+    if confidence < min_confidence:
+        result["reason"] = "CANARY_CONFIDENCE_TOO_LOW"
+        result["confidence"] = round(confidence, 2)
+        return result
+
+    validator_status = str(signal.get("validator_status", "") or "").strip().lower()
+    if validator_status != "unavailable":
+        result["reason"] = "CANARY_VALIDATOR_NOT_UNAVAILABLE"
+        result["validator_status"] = validator_status
+        return result
+
+    consensus = str(signal.get("consensus_state", "") or "").strip().lower()
+    if consensus not in {"unreviewed", ""}:
+        result["reason"] = "CANARY_CONSENSUS_NOT_UNREVIEWED"
+        result["consensus_state"] = consensus
+        return result
+
+    packet = signal.get("decision_packet") if isinstance(signal.get("decision_packet"), dict) else {}
+    freshness = packet.get("input_freshness") if isinstance(packet.get("input_freshness"), dict) else {}
+    if bool(freshness.get("hard_blocker")):
+        result["reason"] = "CANARY_INPUT_HARD_BLOCKER"
+        return result
+    snapshot_state = str(freshness.get("market_snapshot_state", "") or "").strip().lower()
+    if snapshot_state == "blocked":
+        result["reason"] = "CANARY_INPUT_BLOCKED"
+        result["market_snapshot_state"] = snapshot_state
+        return result
+
+    if int(result["canaries_used_today"]) >= max_per_day:
+        result["reason"] = "CANARY_DAILY_LIMIT_REACHED"
+        return result
+
+    if float(result["minimum_executable_risk"]) <= 0.0:
+        result["reason"] = "CANARY_MIN_RISK_INVALID"
+        return result
+    if float(result["minimum_executable_risk"]) > float(result["cash_risk_budget"]):
+        result["reason"] = "CANARY_MIN_RISK_EXCEEDS_BUDGET"
+        return result
+
+    result["allowed"] = True
+    result["reason"] = "MIN_LOT_CANARY_VALIDATOR_UNAVAILABLE"
+    result["allow_minimum_executable_risk_lift"] = True
+    result["confidence"] = round(confidence, 2)
+    result["validator_status"] = validator_status
+    result["consensus_state"] = consensus
+    result["market_snapshot_state"] = snapshot_state
+    return result
+
+
 def build_xauex_initial_stop_distance(
     *,
     signal_stop: float,
@@ -626,7 +721,14 @@ def build_xauex_assurance_profile(signal: Dict[str, object], config: Config) -> 
         return _blocked_assurance("INPUT_HARD_BLOCKER")
 
     weak_validator = _validator_summary_is_weak(validator_summary)
+    direct_validator_contradiction = _validator_summary_is_direct_contradiction(validator_summary)
     confirm_status = str(signal.get("confirm_status", "") or "").strip().upper()
+    if (
+        confidence < 0.55
+        and consensus in {"disagreed", "conflicted", "blocked"}
+        and direct_validator_contradiction
+    ):
+        return _blocked_assurance("LOW_ASSURANCE_VALIDATOR_DISAGREEMENT")
     if (
         (confidence < 0.30 or confirm_status != "CONFIRMED")
         and confidence < 0.45
@@ -760,6 +862,11 @@ def _validator_summary_is_weak(summary: str) -> bool:
             "unsupported",
         )
     )
+
+
+def _validator_summary_is_direct_contradiction(summary: str) -> bool:
+    text = str(summary or "").lower()
+    return "contradict" in text
 
 
 def advance_xauex_session_phase(
@@ -2583,6 +2690,15 @@ class BotOrchestrator:
             and bool(item.get("terminal", True))
         )
 
+    def _xauex_min_lot_canaries_today(self, now_utc: Optional[datetime] = None) -> int:
+        self._reset_xauex_trade_count_if_new_london_day(now_utc)
+        return sum(
+            1
+            for item in self.risk_state.xauex_signal_runs_london
+            if str(item.get("date_london", "")) == self._today_london(now_utc)
+            and bool(item.get("minimum_lot_canary", False))
+        )
+
     def _slot_terminal_for_today(self, slot: str, *, now_utc: Optional[datetime] = None) -> bool:
         self._reset_xauex_trade_count_if_new_london_day(now_utc)
         now_utc = now_utc or datetime.now(timezone.utc)
@@ -2621,6 +2737,7 @@ class BotOrchestrator:
         confirm_reason: Optional[str] = None,
         confirm_timestamp_utc: Optional[str] = None,
         terminal: bool = True,
+        minimum_lot_canary: bool = False,
     ) -> None:
         self._reset_xauex_trade_count_if_new_london_day(signal_time)
         self.risk_state.xauex_signal_runs_london.append(
@@ -2637,6 +2754,7 @@ class BotOrchestrator:
                 "confirm_reason": confirm_reason,
                 "confirm_timestamp_utc": confirm_timestamp_utc,
                 "terminal": terminal,
+                "minimum_lot_canary": bool(minimum_lot_canary),
                 "recorded_at_utc": signal_time.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             }
         )
@@ -2667,6 +2785,8 @@ class BotOrchestrator:
         confirm_reason: Optional[str] = None,
         confirm_timestamp_utc: Optional[str] = None,
         terminal: bool = True,
+        minimum_lot_canary: bool = False,
+        blocked_trade: Optional[Dict[str, object]] = None,
     ) -> None:
         self._record_xauex_signal_run(
             slot=slot,
@@ -2681,7 +2801,22 @@ class BotOrchestrator:
             confirm_reason=confirm_reason,
             confirm_timestamp_utc=confirm_timestamp_utc,
             terminal=terminal,
+            minimum_lot_canary=minimum_lot_canary,
         )
+        if terminal and reason != "ORDER_PLACED" and str(signal_action or "").upper() in {"BUY", "SELL"}:
+            payload: Dict[str, object] = {
+                "slot": slot,
+                "window_label": window_label,
+                "reason": reason,
+                "signal_action": str(signal_action or "").upper(),
+                "signal_confidence": signal_confidence,
+                "confirm_status": confirm_status,
+                "confirm_reason": confirm_reason,
+                "confirm_timestamp_utc": confirm_timestamp_utc,
+            }
+            if blocked_trade:
+                payload["blocked_trade"] = dict(blocked_trade)
+            self._journal_event("blocked_trade_candidate", payload, correlation_id=signal_id)
         self._last_xauex_signal_id_by_slot[slot] = signal_id
 
     def _refresh_signal_window_tracking(self, *, slot: str, signal_id: str, signal_time: datetime) -> None:
@@ -3954,6 +4089,18 @@ class BotOrchestrator:
                     float(self.symbol_spec.volume_min) * float(self.symbol_spec.lot_size) * sl_distance,
                     2,
                 )
+                canary_decision = build_xauex_min_lot_canary_decision(
+                    signal=sig,
+                    assurance=assurance,
+                    cash_risk_budget=cash_risk_budget,
+                    minimum_executable_risk=minimum_executable_risk,
+                    canaries_used_today=self._xauex_min_lot_canaries_today(now_utc),
+                    config=self.config,
+                )
+                allow_minimum_executable_risk_lift = (
+                    assurance.risk_multiplier >= 1.0
+                    or bool(canary_decision.get("allow_minimum_executable_risk_lift"))
+                )
                 assurance_cash_risk = calculate_xauex_assurance_cash_risk(
                     cash_risk_budget=cash_risk_budget,
                     assurance_risk_multiplier=assurance.risk_multiplier,
@@ -3963,7 +4110,23 @@ class BotOrchestrator:
                     microstructure_risk_multiplier=microstructure_risk_multiplier,
                     continuation_addon_risk_multiplier=continuation_addon_risk_multiplier,
                     minimum_executable_risk=minimum_executable_risk,
+                    allow_minimum_executable_risk_lift=allow_minimum_executable_risk_lift,
                 )
+                minimum_lot_canary = (
+                    bool(canary_decision.get("allowed"))
+                    and assurance.risk_multiplier < 1.0
+                    and minimum_executable_risk > 0
+                    and assurance_cash_risk == minimum_executable_risk
+                )
+                if minimum_lot_canary:
+                    logger.info(
+                        "[XAUEX] Minimum-lot canary enabled for %s: min_risk=%.2f budget=%.2f used=%s/%s",
+                        signal_id,
+                        minimum_executable_risk,
+                        cash_risk_budget,
+                        canary_decision.get("canaries_used_today"),
+                        canary_decision.get("max_per_day"),
+                    )
                 lot = calculate_xauex_lot_size_from_cash_risk(
                     cash_risk=assurance_cash_risk,
                     stop_distance=sl_distance,
@@ -3991,6 +4154,20 @@ class BotOrchestrator:
                         confirm_reason=confirm_reason,
                         confirm_timestamp_utc=confirm_timestamp_utc,
                         terminal=True,
+                        blocked_trade={
+                            "entry_price": round(current_price, 2),
+                            "stop_loss": round(stop_loss_price, 2),
+                            "take_profit": round(take_profit_price, 2),
+                            "sl_distance": round(sl_distance, 2),
+                            "tp_distance": round(tp_distance, 2),
+                            "cash_risk_budget": cash_risk_budget,
+                            "assurance_cash_risk": assurance_cash_risk,
+                            "minimum_executable_risk": minimum_executable_risk,
+                            "assurance_bucket": assurance.bucket,
+                            "assurance_score": assurance.score,
+                            "assurance_reason": assurance.reason,
+                            "canary_decision": canary_decision,
+                        },
                     )
                     await self.write_state()
                     continue
@@ -4017,6 +4194,20 @@ class BotOrchestrator:
                         confirm_reason=confirm_reason,
                         confirm_timestamp_utc=confirm_timestamp_utc,
                         terminal=True,
+                        blocked_trade={
+                            "entry_price": round(current_price, 2),
+                            "stop_loss": round(stop_loss_price, 2),
+                            "take_profit": round(take_profit_price, 2),
+                            "lot": lot,
+                            "sl_distance": round(sl_distance, 2),
+                            "tp_distance": round(tp_distance, 2),
+                            "actual_cash_risk": actual_cash_risk,
+                            "remaining_daily_risk": remaining_daily_risk,
+                            "cash_risk_budget": cash_risk_budget,
+                            "minimum_executable_risk": minimum_executable_risk,
+                            "minimum_lot_canary": minimum_lot_canary,
+                            "canary_decision": canary_decision,
+                        },
                     )
                     await self.write_state()
                     continue
@@ -4062,6 +4253,9 @@ class BotOrchestrator:
                         "continuation_addon": bool(sig.get("continuation_addon")),
                         "continuation_parent_position_id": str(sig.get("continuation_parent_position_id") or ""),
                         "continuation_addon_risk_multiplier": continuation_addon_risk_multiplier,
+                        "minimum_lot_canary": minimum_lot_canary,
+                        "minimum_lot_canary_reason": str(canary_decision.get("reason") or ""),
+                        "minimum_lot_canary_used_today": canary_decision.get("canaries_used_today"),
                         "allowed_cash_risk": assurance_cash_risk,
                         "actual_cash_risk": actual_cash_risk,
                         "target_rr": assurance.target_rr,
@@ -4190,6 +4384,7 @@ class BotOrchestrator:
                     confirm_reason=confirm_reason,
                     confirm_timestamp_utc=confirm_timestamp_utc,
                     terminal=True,
+                    minimum_lot_canary=minimum_lot_canary and pos_id is not None,
                 )
                 await self.write_state()
             except Exception:

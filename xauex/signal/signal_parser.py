@@ -1150,7 +1150,19 @@ def _combine_usage(*, provider: str, stages: list[dict[str, Any]]) -> dict[str, 
 
 
 def _parse_json_response(response: Any) -> dict[str, Any] | None:
-    raw = (response.choices[0].message.content or '').strip()
+    choices = getattr(response, 'choices', None)
+    if not choices:
+        logger.warning('[PARSER] Model response contained empty choices.')
+        return None
+    message = getattr(choices[0], 'message', None)
+    raw_content = getattr(message, 'content', None)
+    if raw_content is None:
+        logger.warning('[PARSER] Model response choice contained no message content.')
+        return None
+    raw = str(raw_content).strip()
+    if not raw:
+        logger.warning('[PARSER] Model response content was empty.')
+        return None
     if raw.startswith('```'):
         raw = raw.split('\n', 1)[-1].rsplit('```', 1)[0].strip()
     try:

@@ -30,6 +30,7 @@ build_xauex_initial_stop_distance = _MODULE.build_xauex_initial_stop_distance
 build_xauex_protect_stop_price = _MODULE.build_xauex_protect_stop_price
 build_xauex_assurance_profile = _MODULE.build_xauex_assurance_profile
 build_xauex_take_profit_distance = _MODULE.build_xauex_take_profit_distance
+build_xauex_min_lot_canary_decision = _MODULE.build_xauex_min_lot_canary_decision
 build_xauex_counter_signal_candidate = _MODULE.build_xauex_counter_signal_candidate
 build_xauex_continuation_addon_decision = _MODULE.build_xauex_continuation_addon_decision
 advance_xauex_session_phase = _MODULE.advance_xauex_session_phase
@@ -64,6 +65,9 @@ def test_load_config_includes_xauex_session_manager_settings(monkeypatch):
     monkeypatch.setenv("XAUEX_CONTINUATION_ADDON_ENABLED", "true")
     monkeypatch.setenv("XAUEX_CONTINUATION_ADDON_MIN_CONFIDENCE", "0.57")
     monkeypatch.setenv("XAUEX_CONTINUATION_ADDON_RISK_MULTIPLIER", "0.4")
+    monkeypatch.setenv("XAUEX_MIN_LOT_CANARY_ENABLED", "true")
+    monkeypatch.setenv("XAUEX_MIN_LOT_CANARY_MIN_CONFIDENCE", "0.58")
+    monkeypatch.setenv("XAUEX_MIN_LOT_CANARY_MAX_PER_DAY", "1")
 
     cfg = load_config()
 
@@ -84,6 +88,9 @@ def test_load_config_includes_xauex_session_manager_settings(monkeypatch):
     assert cfg.xauex_continuation_addon_enabled is True
     assert cfg.xauex_continuation_addon_min_confidence == 0.57
     assert cfg.xauex_continuation_addon_risk_multiplier == 0.4
+    assert cfg.xauex_min_lot_canary_enabled is True
+    assert cfg.xauex_min_lot_canary_min_confidence == 0.58
+    assert cfg.xauex_min_lot_canary_max_per_day == 1
 
 
 def test_load_config_defaults_health_check_host_to_loopback(monkeypatch):
@@ -246,6 +253,42 @@ def test_assurance_profile_blocks_low_confidence_validator_disagreement():
     assert profile.reason == "LOW_ASSURANCE_VALIDATOR_DISAGREEMENT"
 
 
+def test_assurance_profile_blocks_confirmed_low_confidence_direct_contradiction():
+    cfg = SimpleNamespace(
+        xauex_low_confidence_lot_multiplier=0.25,
+        xauex_session_low_confidence_protect_r=0.7,
+        xauex_session_protect_r=0.85,
+        xauex_session_high_confidence_protect_r=1.0,
+        xauex_session_trail_r=1.35,
+        xauex_session_low_confidence_protect_lock_r=0.35,
+        xauex_session_protect_lock_r=0.30,
+        xauex_session_high_confidence_protect_lock_r=0.25,
+    )
+    signal = {
+        "action": "SELL",
+        "confidence": 0.43,
+        "consensus_state": "disagreed",
+        "validator_status": "reviewed",
+        "validator_summary": (
+            "SELL is directly contradicted by softer USD and lower Treasury/real yields "
+            "while recent memory also shows a SELL_2 loss streak without a fresh bearish macro offset."
+        ),
+        "confirm_status": "CONFIRMED",
+        "decision_packet": {
+            "input_freshness": {
+                "market_snapshot_state": "warning",
+                "hard_blocker": False,
+            }
+        },
+    }
+
+    profile = build_xauex_assurance_profile(signal, cfg)
+
+    assert profile.allow_trade is False
+    assert profile.risk_multiplier == 0.0
+    assert profile.reason == "LOW_ASSURANCE_VALIDATOR_DISAGREEMENT"
+
+
 def test_assurance_profile_allows_confirmed_low_confidence_signal_at_reduced_risk():
     cfg = SimpleNamespace(
         xauex_low_confidence_lot_multiplier=0.25,
@@ -341,6 +384,118 @@ def test_assurance_profile_allows_aligned_high_confidence_with_larger_target():
     assert profile.risk_multiplier == 1.5
     assert profile.target_rr == 2.5
     assert profile.protect_lock_r == 0.25
+
+
+def _min_lot_canary_config(**overrides) -> SimpleNamespace:
+    config = SimpleNamespace(
+        xauex_min_lot_canary_enabled=True,
+        xauex_min_lot_canary_min_confidence=0.58,
+        xauex_min_lot_canary_max_per_day=1,
+    )
+    for key, value in overrides.items():
+        setattr(config, key, value)
+    return config
+
+
+def _low_assurance_profile() -> SimpleNamespace:
+    return SimpleNamespace(
+        bucket="low",
+        allow_trade=True,
+        reason="LOW_ASSURANCE_REDUCED_RISK",
+        risk_multiplier=0.25,
+    )
+
+
+def _canary_signal(**overrides) -> dict:
+    signal = {
+        "action": "SELL",
+        "confidence": 0.60,
+        "confirm_status": "CONFIRMED",
+        "validator_status": "unavailable",
+        "consensus_state": "unreviewed",
+        "decision_packet": {
+            "input_freshness": {
+                "hard_blocker": False,
+                "market_snapshot_state": "warning",
+            }
+        },
+    }
+    signal.update(overrides)
+    return signal
+
+
+def test_min_lot_canary_allows_confirmed_validator_unavailable_low_assurance():
+    decision = build_xauex_min_lot_canary_decision(
+        signal=_canary_signal(),
+        assurance=_low_assurance_profile(),
+        cash_risk_budget=50.0,
+        minimum_executable_risk=17.46,
+        canaries_used_today=0,
+        config=_min_lot_canary_config(),
+    )
+
+    assert decision["allowed"] is True
+    assert decision["reason"] == "MIN_LOT_CANARY_VALIDATOR_UNAVAILABLE"
+    assert decision["allow_minimum_executable_risk_lift"] is True
+
+
+def test_min_lot_canary_blocks_reviewed_disagreement_and_daily_reuse():
+    reviewed = build_xauex_min_lot_canary_decision(
+        signal=_canary_signal(
+            validator_status="reviewed",
+            consensus_state="disagreed",
+            validator_summary="The proposed SELL signal contradicts macro drivers.",
+        ),
+        assurance=_low_assurance_profile(),
+        cash_risk_budget=50.0,
+        minimum_executable_risk=17.46,
+        canaries_used_today=0,
+        config=_min_lot_canary_config(),
+    )
+    reused = build_xauex_min_lot_canary_decision(
+        signal=_canary_signal(),
+        assurance=_low_assurance_profile(),
+        cash_risk_budget=50.0,
+        minimum_executable_risk=17.46,
+        canaries_used_today=1,
+        config=_min_lot_canary_config(),
+    )
+
+    assert reviewed["allowed"] is False
+    assert reviewed["reason"] == "CANARY_VALIDATOR_NOT_UNAVAILABLE"
+    assert reused["allowed"] is False
+    assert reused["reason"] == "CANARY_DAILY_LIMIT_REACHED"
+
+
+def test_min_lot_canary_blocks_hard_freshness_or_unaffordable_minimum_risk():
+    hard_stale = build_xauex_min_lot_canary_decision(
+        signal=_canary_signal(
+            decision_packet={
+                "input_freshness": {
+                    "hard_blocker": True,
+                    "market_snapshot_state": "blocked",
+                }
+            }
+        ),
+        assurance=_low_assurance_profile(),
+        cash_risk_budget=50.0,
+        minimum_executable_risk=17.46,
+        canaries_used_today=0,
+        config=_min_lot_canary_config(),
+    )
+    unaffordable = build_xauex_min_lot_canary_decision(
+        signal=_canary_signal(),
+        assurance=_low_assurance_profile(),
+        cash_risk_budget=15.0,
+        minimum_executable_risk=17.46,
+        canaries_used_today=0,
+        config=_min_lot_canary_config(),
+    )
+
+    assert hard_stale["allowed"] is False
+    assert hard_stale["reason"] == "CANARY_INPUT_HARD_BLOCKER"
+    assert unaffordable["allowed"] is False
+    assert unaffordable["reason"] == "CANARY_MIN_RISK_EXCEEDS_BUDGET"
 
 
 def test_take_profit_distance_expands_with_assurance_target():
