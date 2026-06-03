@@ -7,7 +7,9 @@ from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import as_completed
 from datetime import datetime, timedelta, timezone
 from io import StringIO
+import json
 import logging
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -157,8 +159,11 @@ def build_market_snapshot(
             key, meta, latest, exc = future.result()
             series_results[key] = (meta, latest, exc)
 
+        archived_series_cache: dict[str, dict[str, Any]] | None = None
         series_payload: dict[str, Any] = {}
         missing_series: list[str] = []
+        cache_fallback_series_count = 0
+        cache_fallback_archives: set[str] = set()
         ages: list[float] = []
         daily_ages: list[float] = []
         daily_business_ages: list[int] = []
@@ -170,9 +175,25 @@ def build_market_snapshot(
                 continue
             result_meta, latest, exc = result
             if exc is not None or latest is None:
-                logger.warning('[MARKET] Failed to fetch %s (%s): %s', key, result_meta['series_id'], exc)
-                missing_series.append(key)
-                continue
+                if archived_series_cache is None:
+                    archived_series_cache = _load_archived_fred_series_cache(config)
+                cached_latest = archived_series_cache.get(key) if archived_series_cache else None
+                if cached_latest is None:
+                    logger.warning('[MARKET] Failed to fetch %s (%s): %s', key, result_meta['series_id'], exc)
+                    missing_series.append(key)
+                    continue
+                latest = cached_latest
+                cache_fallback_series_count += 1
+                cache_source_archive = str(latest.get('cache_source_archive') or '')
+                if cache_source_archive:
+                    cache_fallback_archives.add(cache_source_archive)
+                logger.warning(
+                    '[MARKET] Failed to fetch %s (%s): %s; using archived fallback from %s',
+                    key,
+                    result_meta['series_id'],
+                    exc,
+                    cache_source_archive or 'unknown archive',
+                )
             ages.append(latest['age_seconds'])
             stale_blocks_live_window = result_meta.get('stale_blocks_live_window', 'true') != 'false'
             business_age_days = _latest_business_age_days(latest)
@@ -197,6 +218,10 @@ def build_market_snapshot(
             }
             if business_age_days is not None:
                 row_payload['business_age_days'] = business_age_days
+            if latest.get('cache_fallback'):
+                row_payload['cache_fallback'] = True
+                if latest.get('cache_source_archive'):
+                    row_payload['cache_source_archive'] = latest['cache_source_archive']
             series_payload[key] = row_payload
 
         fedwatch = fedwatch_future.result()
@@ -209,6 +234,8 @@ def build_market_snapshot(
         daily_publishing_max_business_age_days=int(max(daily_business_ages)) if daily_business_ages else None,
         missing_series_count=len(missing_series),
         stale_block_series_count=block_stale_series_count,
+        cache_fallback_series_count=cache_fallback_series_count,
+        cache_fallback_archives=sorted(cache_fallback_archives),
         window_label=window_label,
     )
     freshness['fedwatch_state'] = str(fedwatch.get('status', 'unknown') or 'unknown')
@@ -270,6 +297,99 @@ def _fetch_fred_series_payload(
         client.close()
 
 
+def _load_archived_fred_series_cache(config: SignalConfig, *, max_archives: int = 50) -> dict[str, dict[str, Any]]:
+    archive_root = Path(str(getattr(config, 'archive_dir', '') or ''))
+    if not archive_root.exists():
+        return {}
+    try:
+        archive_dirs = sorted(
+            (path for path in archive_root.iterdir() if path.is_dir()),
+            key=lambda path: path.name,
+            reverse=True,
+        )
+    except OSError as exc:
+        logger.warning('[MARKET] Failed to scan archived market snapshots in %s: %s', archive_root, exc)
+        return {}
+
+    now_utc = datetime.now(timezone.utc)
+    cached: dict[str, dict[str, Any]] = {}
+    for archive_dir in archive_dirs[:max_archives]:
+        payload_path = archive_dir / 'prediction_payload.json'
+        try:
+            data = json.loads(payload_path.read_text(encoding='utf-8'))
+        except Exception:
+            continue
+        market_snapshot = data.get('market_snapshot') if isinstance(data, dict) else None
+        raw_series = market_snapshot.get('series') if isinstance(market_snapshot, dict) else None
+        if not isinstance(raw_series, dict) or not raw_series:
+            continue
+        for key, meta in _FRED_SERIES.items():
+            if key in cached:
+                continue
+            row = raw_series.get(key)
+            normalized = _normalize_archived_series_row(
+                key=key,
+                meta=meta,
+                row=row,
+                archive_dir=archive_dir,
+                now_utc=now_utc,
+            )
+            if normalized is not None:
+                cached[key] = normalized
+        if len(cached) == len(_FRED_SERIES):
+            break
+    if cached:
+        logger.info('[MARKET] Loaded %d archived FRED fallback series from %s', len(cached), archive_root)
+    return cached
+
+
+def _normalize_archived_series_row(
+    *,
+    key: str,
+    meta: dict[str, str],
+    row: Any,
+    archive_dir: Path,
+    now_utc: datetime,
+) -> dict[str, Any] | None:
+    if not isinstance(row, dict):
+        return None
+    series_id = str(row.get('series_id', '') or '').strip()
+    if series_id and series_id != meta['series_id']:
+        return None
+    observed = _parse_observation_datetime(str(row.get('date_utc', '') or ''))
+    if observed is None:
+        return None
+    value = _coerce_float(row.get('value'))
+    previous_value = _coerce_float(row.get('previous_value'))
+    change_1d = _coerce_float(row.get('change_1d'))
+    if value is None:
+        return None
+    if previous_value is None:
+        previous_value = value
+    if change_1d is None:
+        change_1d = value - previous_value
+    age_seconds = max(0.0, (now_utc - observed).total_seconds())
+    date_utc = observed.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    return {
+        'value': round(value, 4),
+        'previous_value': round(previous_value, 4),
+        'change_1d': round(change_1d, 4),
+        'date_utc': date_utc,
+        'age_seconds': age_seconds,
+        'business_age_days': _business_days_since_observation(date_utc, now_utc=now_utc),
+        'cache_fallback': True,
+        'cache_source_archive': str(archive_dir),
+        'cache_series_key': key,
+    }
+
+
+def _coerce_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _assess_market_snapshot_freshness(
     *,
     market_snapshot_age_seconds: int | None,
@@ -277,6 +397,8 @@ def _assess_market_snapshot_freshness(
     daily_publishing_max_business_age_days: int | None = None,
     missing_series_count: int,
     stale_block_series_count: int = 1,
+    cache_fallback_series_count: int = 0,
+    cache_fallback_archives: list[str] | None = None,
     window_label: str,
 ) -> dict[str, Any]:
     active_window = window_label in _ACTIVE_WINDOWS
@@ -313,6 +435,13 @@ def _assess_market_snapshot_freshness(
             state = 'warning'
         notes.append(f'{missing_series_count} structured market series are missing.')
 
+    if cache_fallback_series_count > 0:
+        if state == 'fresh':
+            state = 'warning'
+        notes.append(
+            f'{cache_fallback_series_count} structured market series reused from archived fallback after source fetch failures.'
+        )
+
     if not notes:
         notes.append('Structured market snapshot is fresh enough for decision support.')
 
@@ -323,6 +452,8 @@ def _assess_market_snapshot_freshness(
         'daily_publishing_max_business_age_days': daily_publishing_max_business_age_days,
         'missing_series_count': missing_series_count,
         'stale_block_series_count': stale_block_series_count,
+        'cache_fallback_series_count': cache_fallback_series_count,
+        'cache_fallback_archives': cache_fallback_archives or [],
         'market_snapshot_state': state,
         'hard_blocker': hard_blocker,
         'summary': ' '.join(notes),
@@ -362,6 +493,24 @@ def _fetch_fred_series(client: httpx.Client, series_id: str) -> dict[str, Any]:
             now_utc=now_utc,
         ),
     }
+
+
+def _parse_observation_datetime(text: str) -> datetime | None:
+    value = str(text or '').strip()
+    if not value:
+        return None
+    try:
+        if value.endswith('Z'):
+            observed = datetime.fromisoformat(value.replace('Z', '+00:00'))
+        elif 'T' in value:
+            observed = datetime.fromisoformat(value)
+        else:
+            observed = datetime.strptime(value[:10], '%Y-%m-%d').replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+    if observed.tzinfo is None:
+        observed = observed.replace(tzinfo=timezone.utc)
+    return observed.astimezone(timezone.utc)
 
 
 def _latest_business_age_days(latest: dict[str, Any]) -> int | None:

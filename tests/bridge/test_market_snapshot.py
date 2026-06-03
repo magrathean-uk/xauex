@@ -1,5 +1,6 @@
+import json
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import threading
 import time
 
@@ -623,9 +624,9 @@ def test_build_market_snapshot_returns_non_blocking_unsupported_snapshot(monkeyp
     assert snapshot["input_freshness"]["policy_context_summary"] == "Official Fed policy context is only evaluated for XAUUSD."
 
 
-def test_build_market_snapshot_blocks_live_window_when_series_fail(monkeypatch):
+def test_build_market_snapshot_blocks_live_window_when_series_fail(monkeypatch, tmp_path):
     monkeypatch.setenv("XAUEX_SIGNAL_LLM_API_KEY", "test-key")
-    cfg = SignalConfig.from_env()
+    cfg = replace(SignalConfig.from_env(), archive_dir=str(tmp_path / "empty_archive"))
 
     fake_rows = {
         "DTWEXBGS": {"value": 121.0, "previous_value": 121.3, "change_1d": -0.3, "date_utc": "2026-04-14T00:00:00Z", "age_seconds": 3600.0},
@@ -681,6 +682,129 @@ def test_build_market_snapshot_blocks_live_window_when_series_fail(monkeypatch):
     assert snapshot["input_freshness"]["market_snapshot_state"] == "blocked"
     assert snapshot["input_freshness"]["hard_blocker"] is True
     assert snapshot["input_freshness"]["missing_series_count"] == 2
+
+
+def test_build_market_snapshot_reuses_latest_archived_series_on_fetch_failure(monkeypatch, tmp_path):
+    monkeypatch.setenv("XAUEX_SIGNAL_LLM_API_KEY", "test-key")
+    archive_root = tmp_path / "signal_runs"
+    cfg = replace(SignalConfig.from_env(), source_timeout_seconds=1.0, archive_dir=str(archive_root))
+    now_utc = datetime.now(timezone.utc)
+    observation_utc = (now_utc - timedelta(days=1)).strftime("%Y-%m-%dT00:00:00Z")
+    archived_series = {
+        key: {
+            "label": meta["label"],
+            "series_id": meta["series_id"],
+            "value": 100.0,
+            "previous_value": 99.5,
+            "change_1d": 0.5,
+            "date_utc": observation_utc,
+            "age_seconds": 86400.0,
+            "bias": "SELL",
+            "business_age_days": 1,
+        }
+        for key, meta in _FRED_SERIES.items()
+    }
+    stale_empty_archive = archive_root / "20260603T122605Z_xauusd_baseline"
+    stale_empty_archive.mkdir(parents=True)
+    (stale_empty_archive / "prediction_payload.json").write_text(
+        json.dumps({"market_snapshot": {"series": {}}}),
+        encoding="utf-8",
+    )
+    usable_archive = archive_root / "20260602T122516Z_xauusd_baseline"
+    usable_archive.mkdir()
+    (usable_archive / "prediction_payload.json").write_text(
+        json.dumps({"market_snapshot": {"series": archived_series}}),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        "xauex.signal.market_snapshot._fetch_fred_series",
+        lambda client, series_id: (_ for _ in ()).throw(RuntimeError(f"timeout for {series_id}")),
+    )
+    monkeypatch.setattr(
+        "xauex.signal.market_snapshot.fetch_policy_context",
+        lambda config: {"status": "available", "available": True, "summary": "Policy context available."},
+    )
+    monkeypatch.setattr(
+        "xauex.signal.market_snapshot.fetch_fedwatch_snapshot",
+        lambda config: {"status": "unavailable", "available": False, "summary": ""},
+    )
+    monkeypatch.setattr(
+        "xauex.signal.market_snapshot.fetch_cot_snapshot",
+        lambda config: {"status": "unavailable", "available": False, "summary": ""},
+    )
+
+    snapshot = build_market_snapshot(
+        asset=resolve_asset("XAUUSD"),
+        config=cfg,
+        context_items=[],
+        window_label="morning",
+    )
+
+    freshness = snapshot["input_freshness"]
+    assert snapshot["missing_series"] == []
+    assert freshness["missing_series_count"] == 0
+    assert freshness["cache_fallback_series_count"] == len(_FRED_SERIES)
+    assert freshness["market_snapshot_state"] == "warning"
+    assert freshness["hard_blocker"] is False
+    assert all(row["cache_fallback"] is True for row in snapshot["series"].values())
+
+
+def test_build_market_snapshot_blocks_when_archived_fallback_is_too_stale(monkeypatch, tmp_path):
+    monkeypatch.setenv("XAUEX_SIGNAL_LLM_API_KEY", "test-key")
+    archive_root = tmp_path / "signal_runs"
+    cfg = replace(SignalConfig.from_env(), source_timeout_seconds=1.0, archive_dir=str(archive_root))
+    observation_utc = (datetime.now(timezone.utc) - timedelta(days=10)).strftime("%Y-%m-%dT00:00:00Z")
+    archived_series = {
+        key: {
+            "label": meta["label"],
+            "series_id": meta["series_id"],
+            "value": 100.0,
+            "previous_value": 99.5,
+            "change_1d": 0.5,
+            "date_utc": observation_utc,
+            "age_seconds": float(10 * 24 * 3600),
+            "bias": "SELL",
+            "business_age_days": 8,
+        }
+        for key, meta in _FRED_SERIES.items()
+    }
+    usable_archive = archive_root / "20260602T122516Z_xauusd_baseline"
+    usable_archive.mkdir(parents=True)
+    (usable_archive / "prediction_payload.json").write_text(
+        json.dumps({"market_snapshot": {"series": archived_series}}),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        "xauex.signal.market_snapshot._fetch_fred_series",
+        lambda client, series_id: (_ for _ in ()).throw(RuntimeError(f"timeout for {series_id}")),
+    )
+    monkeypatch.setattr(
+        "xauex.signal.market_snapshot.fetch_policy_context",
+        lambda config: {"status": "available", "available": True, "summary": "Policy context available."},
+    )
+    monkeypatch.setattr(
+        "xauex.signal.market_snapshot.fetch_fedwatch_snapshot",
+        lambda config: {"status": "unavailable", "available": False, "summary": ""},
+    )
+    monkeypatch.setattr(
+        "xauex.signal.market_snapshot.fetch_cot_snapshot",
+        lambda config: {"status": "unavailable", "available": False, "summary": ""},
+    )
+
+    snapshot = build_market_snapshot(
+        asset=resolve_asset("XAUUSD"),
+        config=cfg,
+        context_items=[],
+        window_label="morning",
+    )
+
+    freshness = snapshot["input_freshness"]
+    assert freshness["cache_fallback_series_count"] == len(_FRED_SERIES)
+    assert freshness["stale_block_series_count"] >= 3
+    assert freshness["market_snapshot_state"] == "blocked"
+    assert freshness["hard_blocker"] is True
 
 
 def test_build_market_snapshot_warns_when_only_one_series_is_long_stale(monkeypatch):
