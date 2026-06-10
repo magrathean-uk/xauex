@@ -12,6 +12,7 @@ from xauex.signal.market_snapshot import (
     _business_days_since_observation,
     build_market_snapshot,
 )
+import xauex.signal.market_snapshot as market_snapshot_module
 
 
 def test_usd_major_index_uses_current_fred_substitute():
@@ -538,6 +539,11 @@ def test_build_market_snapshot_fetches_fred_series_in_parallel(monkeypatch):
         fake_fetch_fred_series,
     )
     monkeypatch.setattr(
+        market_snapshot_module,
+        "_fetch_fed_h15_treasury_fallback",
+        lambda config: {},
+    )
+    monkeypatch.setattr(
         "xauex.signal.market_snapshot.fetch_policy_context",
         lambda config: {
             "status": "available",
@@ -649,6 +655,11 @@ def test_build_market_snapshot_blocks_live_window_when_series_fail(monkeypatch, 
         fake_fetch_fred_series,
     )
     monkeypatch.setattr(
+        market_snapshot_module,
+        "_fetch_fed_h15_treasury_fallback",
+        lambda config: {},
+    )
+    monkeypatch.setattr(
         "xauex.signal.market_snapshot.fetch_policy_context",
         lambda config: {
             "status": "available",
@@ -722,6 +733,11 @@ def test_build_market_snapshot_reuses_latest_archived_series_on_fetch_failure(mo
         lambda client, series_id: (_ for _ in ()).throw(RuntimeError(f"timeout for {series_id}")),
     )
     monkeypatch.setattr(
+        market_snapshot_module,
+        "_fetch_fed_h15_treasury_fallback",
+        lambda config: {},
+    )
+    monkeypatch.setattr(
         "xauex.signal.market_snapshot.fetch_policy_context",
         lambda config: {"status": "available", "available": True, "summary": "Policy context available."},
     )
@@ -748,6 +764,121 @@ def test_build_market_snapshot_reuses_latest_archived_series_on_fetch_failure(mo
     assert freshness["market_snapshot_state"] == "warning"
     assert freshness["hard_blocker"] is False
     assert all(row["cache_fallback"] is True for row in snapshot["series"].values())
+
+
+def test_build_market_snapshot_uses_fed_h15_treasury_fallback_when_fred_times_out(monkeypatch, tmp_path):
+    monkeypatch.setenv("XAUEX_SIGNAL_LLM_API_KEY", "test-key")
+    archive_root = tmp_path / "signal_runs"
+    cfg = replace(SignalConfig.from_env(), source_timeout_seconds=1.0, archive_dir=str(archive_root))
+    stale_observation_utc = (datetime.now(timezone.utc) - timedelta(days=10)).strftime("%Y-%m-%dT00:00:00Z")
+    archived_series = {
+        key: {
+            "label": meta["label"],
+            "series_id": meta["series_id"],
+            "value": 100.0,
+            "previous_value": 99.5,
+            "change_1d": 0.5,
+            "date_utc": stale_observation_utc,
+            "age_seconds": float(10 * 24 * 3600),
+            "bias": "SELL",
+            "business_age_days": 8,
+        }
+        for key, meta in _FRED_SERIES.items()
+    }
+    archive_dir = archive_root / "20260609T122603Z_xauusd_baseline"
+    archive_dir.mkdir(parents=True)
+    (archive_dir / "prediction_payload.json").write_text(
+        json.dumps({"market_snapshot": {"series": archived_series}}),
+        encoding="utf-8",
+    )
+    h15_rows = {
+        "us2y_yield": {
+            "value": 4.15,
+            "previous_value": 4.17,
+            "change_1d": -0.02,
+            "date_utc": "2026-06-08T00:00:00Z",
+            "age_seconds": 86400.0,
+            "business_age_days": 1,
+            "source": "federal_reserve_h15",
+        },
+        "us10y_yield": {
+            "value": 4.56,
+            "previous_value": 4.55,
+            "change_1d": 0.01,
+            "date_utc": "2026-06-08T00:00:00Z",
+            "age_seconds": 86400.0,
+            "business_age_days": 1,
+            "source": "federal_reserve_h15",
+        },
+        "us10y_real_yield": {
+            "value": 2.21,
+            "previous_value": 2.19,
+            "change_1d": 0.02,
+            "date_utc": "2026-06-08T00:00:00Z",
+            "age_seconds": 86400.0,
+            "business_age_days": 1,
+            "source": "federal_reserve_h15",
+        },
+        "us5y_breakeven_inflation": {
+            "value": 2.47,
+            "previous_value": 2.48,
+            "change_1d": -0.01,
+            "date_utc": "2026-06-08T00:00:00Z",
+            "age_seconds": 86400.0,
+            "business_age_days": 1,
+            "source": "federal_reserve_h15_derived",
+        },
+        "us10y_breakeven_inflation": {
+            "value": 2.35,
+            "previous_value": 2.36,
+            "change_1d": -0.01,
+            "date_utc": "2026-06-08T00:00:00Z",
+            "age_seconds": 86400.0,
+            "business_age_days": 1,
+            "source": "federal_reserve_h15_derived",
+        },
+    }
+
+    monkeypatch.setattr(
+        "xauex.signal.market_snapshot._fetch_fred_series",
+        lambda client, series_id: (_ for _ in ()).throw(RuntimeError(f"timeout for {series_id}")),
+    )
+    monkeypatch.setattr(
+        market_snapshot_module,
+        "_fetch_fed_h15_treasury_fallback",
+        lambda config: h15_rows,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "xauex.signal.market_snapshot.fetch_policy_context",
+        lambda config: {"status": "available", "available": True, "summary": "Policy context available."},
+    )
+    monkeypatch.setattr(
+        "xauex.signal.market_snapshot.fetch_fedwatch_snapshot",
+        lambda config: {"status": "unavailable", "available": False, "summary": ""},
+    )
+    monkeypatch.setattr(
+        "xauex.signal.market_snapshot.fetch_cot_snapshot",
+        lambda config: {"status": "unavailable", "available": False, "summary": ""},
+    )
+
+    snapshot = build_market_snapshot(
+        asset=resolve_asset("XAUUSD"),
+        config=cfg,
+        context_items=[],
+        window_label="morning",
+    )
+
+    freshness = snapshot["input_freshness"]
+    assert snapshot["series"]["us2y_yield"]["source"] == "federal_reserve_h15"
+    assert snapshot["series"]["us10y_breakeven_inflation"]["source"] == "federal_reserve_h15_derived"
+    assert snapshot["series"]["vix"]["cache_fallback"] is True
+    assert freshness["fed_h15_fallback_series_count"] == 5
+    assert freshness["stale_block_series_count"] == 2
+    assert freshness["missing_series_count"] == 0
+    assert freshness["daily_publishing_max_business_age_days"] == 1
+    assert freshness["market_snapshot_state"] == "warning"
+    assert freshness["hard_blocker"] is False
 
 
 def test_build_market_snapshot_blocks_when_archived_fallback_is_too_stale(monkeypatch, tmp_path):
@@ -779,6 +910,11 @@ def test_build_market_snapshot_blocks_when_archived_fallback_is_too_stale(monkey
     monkeypatch.setattr(
         "xauex.signal.market_snapshot._fetch_fred_series",
         lambda client, series_id: (_ for _ in ()).throw(RuntimeError(f"timeout for {series_id}")),
+    )
+    monkeypatch.setattr(
+        market_snapshot_module,
+        "_fetch_fed_h15_treasury_fallback",
+        lambda config: {},
     )
     monkeypatch.setattr(
         "xauex.signal.market_snapshot.fetch_policy_context",

@@ -6,10 +6,12 @@ from csv import DictReader
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import as_completed
 from datetime import datetime, timedelta, timezone
+from html.parser import HTMLParser
 from io import StringIO
 import json
 import logging
 from pathlib import Path
+import re
 from typing import Any
 
 import httpx
@@ -29,6 +31,7 @@ _MARKET_SNAPSHOT_BLOCK_AGE_SECONDS = 7 * 24 * 3600
 _MARKET_SNAPSHOT_BLOCK_STALE_SERIES_COUNT = 3
 _MARKET_SNAPSHOT_WARNING_MISSING_COUNT = 1
 _MARKET_SNAPSHOT_BLOCK_MISSING_COUNT = 2
+_FED_H15_URL = 'https://www.federalreserve.gov/releases/h15/'
 
 _FRED_SERIES: dict[str, dict[str, str]] = {
     'usd_broad_index': {
@@ -160,10 +163,12 @@ def build_market_snapshot(
             series_results[key] = (meta, latest, exc)
 
         archived_series_cache: dict[str, dict[str, Any]] | None = None
+        fed_h15_series_cache: dict[str, dict[str, Any]] | None = None
         series_payload: dict[str, Any] = {}
         missing_series: list[str] = []
         cache_fallback_series_count = 0
         cache_fallback_archives: set[str] = set()
+        fed_h15_fallback_series_count = 0
         ages: list[float] = []
         daily_ages: list[float] = []
         daily_business_ages: list[int] = []
@@ -175,25 +180,38 @@ def build_market_snapshot(
                 continue
             result_meta, latest, exc = result
             if exc is not None or latest is None:
-                if archived_series_cache is None:
-                    archived_series_cache = _load_archived_fred_series_cache(config)
-                cached_latest = archived_series_cache.get(key) if archived_series_cache else None
-                if cached_latest is None:
-                    logger.warning('[MARKET] Failed to fetch %s (%s): %s', key, result_meta['series_id'], exc)
-                    missing_series.append(key)
-                    continue
-                latest = cached_latest
-                cache_fallback_series_count += 1
-                cache_source_archive = str(latest.get('cache_source_archive') or '')
-                if cache_source_archive:
-                    cache_fallback_archives.add(cache_source_archive)
-                logger.warning(
-                    '[MARKET] Failed to fetch %s (%s): %s; using archived fallback from %s',
-                    key,
-                    result_meta['series_id'],
-                    exc,
-                    cache_source_archive or 'unknown archive',
-                )
+                if fed_h15_series_cache is None:
+                    fed_h15_series_cache = _fetch_fed_h15_treasury_fallback(config)
+                h15_latest = fed_h15_series_cache.get(key) if fed_h15_series_cache else None
+                if h15_latest is not None:
+                    latest = h15_latest
+                    fed_h15_fallback_series_count += 1
+                    logger.warning(
+                        '[MARKET] Failed to fetch %s (%s): %s; using Federal Reserve H.15 fallback',
+                        key,
+                        result_meta['series_id'],
+                        exc,
+                    )
+                else:
+                    if archived_series_cache is None:
+                        archived_series_cache = _load_archived_fred_series_cache(config)
+                    cached_latest = archived_series_cache.get(key) if archived_series_cache else None
+                    if cached_latest is None:
+                        logger.warning('[MARKET] Failed to fetch %s (%s): %s', key, result_meta['series_id'], exc)
+                        missing_series.append(key)
+                        continue
+                    latest = cached_latest
+                    cache_fallback_series_count += 1
+                    cache_source_archive = str(latest.get('cache_source_archive') or '')
+                    if cache_source_archive:
+                        cache_fallback_archives.add(cache_source_archive)
+                    logger.warning(
+                        '[MARKET] Failed to fetch %s (%s): %s; using archived fallback from %s',
+                        key,
+                        result_meta['series_id'],
+                        exc,
+                        cache_source_archive or 'unknown archive',
+                    )
             ages.append(latest['age_seconds'])
             stale_blocks_live_window = result_meta.get('stale_blocks_live_window', 'true') != 'false'
             business_age_days = _latest_business_age_days(latest)
@@ -201,9 +219,17 @@ def build_market_snapshot(
                 # Series we expect to publish daily (yields, breakevens, VIX,
                 # BTC). Track their max age separately so the hard-stale
                 # guard ignores normal weekly-publish lag on slow series.
-                daily_ages.append(latest['age_seconds'])
-                if business_age_days is not None:
-                    daily_business_ages.append(business_age_days)
+                #
+                # Archive fallback rows still contribute to
+                # stale_block_series_count below, but they do not define the
+                # parser's stricter "fresh daily source" aggregate. This lets
+                # fresh H.15 Treasury rows repair the rate complex while old
+                # archived VIX/BTC remain a warning unless enough stale series
+                # accumulate to cross the hard-block threshold.
+                if not latest.get('cache_fallback'):
+                    daily_ages.append(latest['age_seconds'])
+                    if business_age_days is not None:
+                        daily_business_ages.append(business_age_days)
             if latest['age_seconds'] >= _MARKET_SNAPSHOT_BLOCK_AGE_SECONDS and stale_blocks_live_window:
                 block_stale_series_count += 1
             row_payload = {
@@ -222,6 +248,8 @@ def build_market_snapshot(
                 row_payload['cache_fallback'] = True
                 if latest.get('cache_source_archive'):
                     row_payload['cache_source_archive'] = latest['cache_source_archive']
+            if latest.get('source'):
+                row_payload['source'] = latest['source']
             series_payload[key] = row_payload
 
         fedwatch = fedwatch_future.result()
@@ -236,6 +264,7 @@ def build_market_snapshot(
         stale_block_series_count=block_stale_series_count,
         cache_fallback_series_count=cache_fallback_series_count,
         cache_fallback_archives=sorted(cache_fallback_archives),
+        fed_h15_fallback_series_count=fed_h15_fallback_series_count,
         window_label=window_label,
     )
     freshness['fedwatch_state'] = str(fedwatch.get('status', 'unknown') or 'unknown')
@@ -343,6 +372,189 @@ def _load_archived_fred_series_cache(config: SignalConfig, *, max_archives: int 
     return cached
 
 
+def _fetch_fed_h15_treasury_fallback(config: SignalConfig) -> dict[str, dict[str, Any]]:
+    timeout_seconds = float(getattr(config, 'source_timeout_seconds', 20.0) or 20.0)
+    headers = {'User-Agent': str(getattr(config, 'source_user_agent', '') or 'XAUEX-Signal/2.0')}
+    try:
+        with httpx.Client(timeout=timeout_seconds, headers=headers, follow_redirects=True) as client:
+            response = client.get(_FED_H15_URL)
+            response.raise_for_status()
+    except Exception as exc:
+        logger.warning('[MARKET] Federal Reserve H.15 fallback fetch failed: %s', exc)
+        return {}
+    try:
+        return _parse_fed_h15_treasury_rows(response.text)
+    except Exception as exc:
+        logger.warning('[MARKET] Federal Reserve H.15 fallback parse failed: %s', exc)
+        return {}
+
+
+def _parse_fed_h15_treasury_rows(html: str, *, now_utc: datetime | None = None) -> dict[str, dict[str, Any]]:
+    parser = _FedH15TableParser()
+    parser.feed(html)
+    rows = [row for row in parser.rows if row]
+    if not rows:
+        return {}
+    dates = [_parse_fed_h15_date(value) for value in rows[0][1:]]
+    if not any(dates):
+        return {}
+
+    nominal: dict[str, dict[str, Any]] = {}
+    real: dict[str, dict[str, Any]] = {}
+    section = ''
+    current_time = now_utc or datetime.now(timezone.utc)
+    for row in rows[1:]:
+        label = row[0].lower()
+        if label.startswith('nominal'):
+            section = 'nominal'
+            continue
+        if label.startswith('inflation indexed'):
+            section = 'real'
+            continue
+        if label.startswith('inflation-indexed long-term'):
+            section = ''
+            continue
+        if section not in {'nominal', 'real'}:
+            continue
+        if label not in {'2-year', '5-year', '10-year'}:
+            continue
+        latest_pair = _latest_two_h15_values(dates, row[1:])
+        if latest_pair is None:
+            continue
+        (previous_date, previous_value), (latest_date, latest_value) = latest_pair
+        payload = _market_row_from_observations(
+            latest_date=latest_date,
+            latest_value=latest_value,
+            previous_date=previous_date,
+            previous_value=previous_value,
+            now_utc=current_time,
+            source='federal_reserve_h15',
+        )
+        target = nominal if section == 'nominal' else real
+        target[label] = payload
+
+    output: dict[str, dict[str, Any]] = {}
+    if '2-year' in nominal:
+        output['us2y_yield'] = dict(nominal['2-year'])
+    if '10-year' in nominal:
+        output['us10y_yield'] = dict(nominal['10-year'])
+    if '10-year' in real:
+        output['us10y_real_yield'] = dict(real['10-year'])
+    if '5-year' in nominal and '5-year' in real:
+        output['us5y_breakeven_inflation'] = _derived_h15_breakeven(
+            nominal['5-year'],
+            real['5-year'],
+            now_utc=current_time,
+        )
+    if '10-year' in nominal and '10-year' in real:
+        output['us10y_breakeven_inflation'] = _derived_h15_breakeven(
+            nominal['10-year'],
+            real['10-year'],
+            now_utc=current_time,
+        )
+    return output
+
+
+class _FedH15TableParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.rows: list[list[str]] = []
+        self._current_row: list[str] | None = None
+        self._in_cell = False
+        self._cell_chunks: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag == 'tr':
+            self._current_row = []
+        if self._current_row is not None and tag in {'th', 'td'}:
+            self._in_cell = True
+            self._cell_chunks = []
+
+    def handle_data(self, data: str) -> None:
+        if self._in_cell:
+            self._cell_chunks.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if self._in_cell and tag in {'th', 'td'} and self._current_row is not None:
+            text = ' '.join(''.join(self._cell_chunks).replace('\xa0', ' ').split())
+            self._current_row.append(text)
+            self._in_cell = False
+            self._cell_chunks = []
+        if tag == 'tr' and self._current_row is not None:
+            self.rows.append(self._current_row)
+            self._current_row = None
+
+
+def _parse_fed_h15_date(value: str) -> datetime | None:
+    match = re.fullmatch(r'(\d{4})([A-Za-z]{3})(\d{1,2})', str(value or '').strip())
+    if not match:
+        return None
+    year, month_text, day = match.groups()
+    try:
+        return datetime.strptime(f'{year}-{month_text}-{day}', '%Y-%b-%d').replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def _latest_two_h15_values(
+    dates: list[datetime | None],
+    values: list[str],
+) -> tuple[tuple[datetime, float], tuple[datetime, float]] | None:
+    observations: list[tuple[datetime, float]] = []
+    for date_value, raw_value in zip(dates, values):
+        if date_value is None:
+            continue
+        parsed_value = _coerce_float(str(raw_value).replace(',', '').strip())
+        if parsed_value is None:
+            continue
+        observations.append((date_value, parsed_value))
+    if len(observations) < 2:
+        return None
+    return observations[-2], observations[-1]
+
+
+def _market_row_from_observations(
+    *,
+    latest_date: datetime,
+    latest_value: float,
+    previous_date: datetime,
+    previous_value: float,
+    now_utc: datetime,
+    source: str,
+) -> dict[str, Any]:
+    date_utc = latest_date.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    return {
+        'value': round(latest_value, 4),
+        'previous_value': round(previous_value, 4),
+        'change_1d': round(latest_value - previous_value, 4),
+        'date_utc': date_utc,
+        'age_seconds': max(0.0, (now_utc - latest_date).total_seconds()),
+        'business_age_days': _business_days_since_observation(date_utc, now_utc=now_utc),
+        'source': source,
+    }
+
+
+def _derived_h15_breakeven(
+    nominal: dict[str, Any],
+    real: dict[str, Any],
+    *,
+    now_utc: datetime,
+) -> dict[str, Any]:
+    latest_date = _parse_observation_datetime(str(nominal.get('date_utc', '') or ''))
+    if latest_date is None:
+        latest_date = now_utc
+    latest_value = float(nominal['value']) - float(real['value'])
+    previous_value = float(nominal['previous_value']) - float(real['previous_value'])
+    return _market_row_from_observations(
+        latest_date=latest_date,
+        latest_value=latest_value,
+        previous_date=latest_date,
+        previous_value=previous_value,
+        now_utc=now_utc,
+        source='federal_reserve_h15_derived',
+    )
+
+
 def _normalize_archived_series_row(
     *,
     key: str,
@@ -399,6 +611,7 @@ def _assess_market_snapshot_freshness(
     stale_block_series_count: int = 1,
     cache_fallback_series_count: int = 0,
     cache_fallback_archives: list[str] | None = None,
+    fed_h15_fallback_series_count: int = 0,
     window_label: str,
 ) -> dict[str, Any]:
     active_window = window_label in _ACTIVE_WINDOWS
@@ -442,6 +655,13 @@ def _assess_market_snapshot_freshness(
             f'{cache_fallback_series_count} structured market series reused from archived fallback after source fetch failures.'
         )
 
+    if fed_h15_fallback_series_count > 0:
+        if state == 'fresh':
+            state = 'warning'
+        notes.append(
+            f'{fed_h15_fallback_series_count} Treasury market series reused from Federal Reserve H.15 fallback after FRED fetch failures.'
+        )
+
     if not notes:
         notes.append('Structured market snapshot is fresh enough for decision support.')
 
@@ -454,6 +674,7 @@ def _assess_market_snapshot_freshness(
         'stale_block_series_count': stale_block_series_count,
         'cache_fallback_series_count': cache_fallback_series_count,
         'cache_fallback_archives': cache_fallback_archives or [],
+        'fed_h15_fallback_series_count': fed_h15_fallback_series_count,
         'market_snapshot_state': state,
         'hard_blocker': hard_blocker,
         'summary': ' '.join(notes),
