@@ -113,6 +113,7 @@ Monit alert checks installed from this repo:
 
 - `xauex-morning-summary`
 - `xauex-trade-alerts`
+- `xauex-signal-stall`
 
 Retired and intentionally not installed:
 
@@ -137,7 +138,7 @@ The install path is `ops/install_systemd.sh`. That script is the source of truth
 - Service install or host ingress issue:
   Check `ops/install_systemd.sh`, `ops/check_host_layout.sh`, `ops/xauex-dashboard.caddy`, and the matching unit/wrapper.
 - Alert email behavior wrong:
-  Check `ops/monitoring/45-xauex-notify.monit`, `ops/monitoring/check_xauex_morning_summary.py`, and `ops/monitoring/check_xauex_trade_alerts.py`.
+  Check `ops/monitoring/45-xauex-notify.monit`, `ops/monitoring/check_xauex_morning_summary.py`, `ops/monitoring/check_xauex_trade_alerts.py`, and `ops/monitoring/check_xauex_signal_stall.py`.
 
 ## Test Map
 
@@ -147,6 +148,8 @@ The install path is `ops/install_systemd.sh`. That script is the source of truth
   Dashboard/API behavior for the live Flask app.
 - `tests/test_xauex_trade_alerts.py`
   Monit trade-open alert behavior.
+- `tests/test_xauex_signal_stall_alerts.py`
+  Monit repeated source-blocked HOLD and degraded source fallback alert behavior.
 - `tests/test_xauex_runtime_monitor.py`
   Runtime-monitor check behavior.
 - `tests/test_terminal_dashboards.py`

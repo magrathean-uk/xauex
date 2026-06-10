@@ -7,3 +7,8 @@ check program xauex-trade-alerts with path "/usr/local/lib/monitoring/check_xaue
   every 1 cycles
   if status != 0 then alert
   group jobs
+
+check program xauex-signal-stall with path "/usr/local/lib/monitoring/check_xauex_signal_stall.py --recipient bolyki@bolyki.eu"
+  every 1 cycles
+  if status != 0 then alert
+  group jobs

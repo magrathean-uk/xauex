@@ -91,6 +91,7 @@ Installed monitoring files:
 - `/usr/local/lib/monitoring/check_xauex_runtime.sh`
 - `/usr/local/lib/monitoring/check_xauex_morning_summary.py`
 - `/usr/local/lib/monitoring/check_xauex_trade_alerts.py`
+- `/usr/local/lib/monitoring/check_xauex_signal_stall.py`
 
 Retired files removed by the installer if present:
 
@@ -149,7 +150,7 @@ bash status.sh
 Targeted post-rebuild checks:
 
 ```bash
-python3 -m pytest tests/test_xauex_trade_alerts.py tests/test_xauex_runtime_monitor.py tests/dashboard/test_manual_controls.py tests/bridge/test_signal_writer.py -q
+python3 -m pytest tests/test_xauex_trade_alerts.py tests/test_xauex_signal_stall_alerts.py tests/test_xauex_runtime_monitor.py tests/dashboard/test_manual_controls.py tests/bridge/test_signal_writer.py -q
 python3 -m pytest xauex/tests/test_session_manager.py xauex/tests/test_xauex_signal_policy.py xauex/tests/test_trailing_integration.py -q
 ```
 

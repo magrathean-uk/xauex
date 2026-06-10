@@ -48,7 +48,11 @@ fi
 echo
 echo '=== XAUEX Monit Checks ==='
 if command -v monit >/dev/null 2>&1; then
-  monit summary 2>/dev/null | grep -Ei 'xauex|trade-alert|morning-summary|dashboard|runtime' || echo 'No XAUEX Monit checks found.'
+  MONIT_SUMMARY="$(monit summary 2>/dev/null || true)"
+  if [[ -z "$MONIT_SUMMARY" ]] && command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+    MONIT_SUMMARY="$(sudo -n monit summary 2>/dev/null || true)"
+  fi
+  printf '%s\n' "$MONIT_SUMMARY" | grep -Ei 'xauex|trade-alert|morning-summary|signal-stall|dashboard|runtime' || echo 'No XAUEX Monit checks found.'
 else
   echo 'Monit not installed.'
 fi

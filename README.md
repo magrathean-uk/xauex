@@ -65,6 +65,7 @@ Monit owns alert-style email checks:
 
 - `xauex-morning-summary`: one decision email per morning cycle.
 - `xauex-trade-alerts`: trade-open alerts.
+- `xauex-signal-stall`: repeated source-blocked HOLD and degraded source fallback alerts.
 - runtime/dashboard/service checks configured outside this repo plus the repo Monit snippets under `ops/monitoring/`.
 
 ## Host And Dashboard Model
@@ -130,7 +131,7 @@ monit summary
 Targeted tests used for dashboard/runtime checks:
 
 ```bash
-python3 -m pytest tests/test_xauex_trade_alerts.py tests/test_xauex_runtime_monitor.py tests/dashboard/test_manual_controls.py tests/bridge/test_signal_writer.py -q
+python3 -m pytest tests/test_xauex_trade_alerts.py tests/test_xauex_signal_stall_alerts.py tests/test_xauex_runtime_monitor.py tests/dashboard/test_manual_controls.py tests/bridge/test_signal_writer.py -q
 ```
 
 ## Security And Hygiene

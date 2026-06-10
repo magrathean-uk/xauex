@@ -129,7 +129,7 @@ def test_installed_monitoring_scripts_find_repo_package(tmp_path: Path) -> None:
     install_dir = tmp_path / "usr" / "local" / "lib" / "monitoring"
     install_dir.mkdir(parents=True)
 
-    for script_name in ("check_xauex_trade_alerts.py", "check_xauex_morning_summary.py"):
+    for script_name in ("check_xauex_trade_alerts.py", "check_xauex_morning_summary.py", "check_xauex_signal_stall.py"):
         source = Path("ops/monitoring") / script_name
         target = install_dir / script_name
         target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")

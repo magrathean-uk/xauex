@@ -49,6 +49,7 @@ Alerting:
 - Monit handles alert emails.
 - `xauex-morning-summary`: one morning decision email.
 - `xauex-trade-alerts`: trade-open emails.
+- `xauex-signal-stall`: repeated source-blocked HOLD and degraded source fallback emails.
 - Service failure emails use the host `systemd-email-alert@...` wiring where units declare `OnFailure=`.
 
 Retired:
@@ -250,7 +251,7 @@ Use `midday` or `us_open` for other windows.
 Targeted checks:
 
 ```bash
-python3 -m pytest tests/test_xauex_trade_alerts.py tests/test_xauex_runtime_monitor.py tests/dashboard/test_manual_controls.py tests/bridge/test_signal_writer.py -q
+python3 -m pytest tests/test_xauex_trade_alerts.py tests/test_xauex_signal_stall_alerts.py tests/test_xauex_runtime_monitor.py tests/dashboard/test_manual_controls.py tests/bridge/test_signal_writer.py -q
 python3 -m pytest xauex/tests/test_session_manager.py xauex/tests/test_xauex_signal_policy.py xauex/tests/test_trailing_integration.py -q
 ```
 
