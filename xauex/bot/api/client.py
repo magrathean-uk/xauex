@@ -345,9 +345,14 @@ class ApiClient:
                     resp.raise_for_status()
                     result = await resp.json()
 
-            access_token  = result["access_token"]
-            refresh_token = result["refresh_token"]
-            expiry        = int(time.time()) + result["expires_in"]
+            access_token  = result.get("access_token")
+            refresh_token = result.get("refresh_token")
+            if not access_token or not refresh_token:
+                raise RuntimeError(
+                    "Token endpoint returned no tokens "
+                    f"(errorCode={result.get('errorCode')!r}, description={result.get('description')!r})"
+                )
+            expiry        = int(time.time()) + int(result.get("expires_in", 3600))
 
             env_path = ".env"
             _atomic_update_env(

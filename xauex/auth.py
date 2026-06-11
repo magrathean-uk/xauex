@@ -205,6 +205,11 @@ async def refresh_token(config) -> None:
             data = await resp.json()
 
     access_token = data.get("access_token")
+    if not access_token:
+        raise RuntimeError(
+            "Token refresh returned no access_token "
+            f"(errorCode={data.get('errorCode')!r}, description={data.get('description')!r})"
+        )
     new_refresh = data.get("refresh_token", refresh_tok)
     expires_in = int(data.get("expires_in", 3600))
     expiry_ts = int(time.time()) + expires_in
@@ -218,6 +223,13 @@ async def refresh_token(config) -> None:
             "CTRADER_TOKEN_EXPIRY": str(expiry_ts),
         },
     )
+    # cTrader rotates the refresh token on every use, so the live config must
+    # pick up the new credentials immediately — otherwise a second refresh in
+    # the same process (e.g. ApiClient.refresh_token_if_needed right after
+    # startup) replays the burned token and crash-loops the bot.
+    config.ctrader_access_token = access_token
+    config.ctrader_refresh_token = new_refresh
+    config.ctrader_token_expiry = expiry_ts
     logger.info("[TOKEN] Refreshed. New expiry in %d seconds.", expires_in)
 
 
