@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import subprocess
+import sys
 from email.message import EmailMessage
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -490,6 +491,12 @@ def main() -> int:
             )
         )
         print(json.dumps([str(path) for path in updated], indent=2))
+        try:
+            from xauex.analyst.gate_economics import replay_pending_gate_economics
+
+            asyncio.run(replay_pending_gate_economics())
+        except Exception as exc:
+            print(f'[SHADOW] Gate-economics replay failed: {exc}', file=sys.stderr)
         return 0
     if args.command == 'report':
         subject, body = send_shadow_trial_report(

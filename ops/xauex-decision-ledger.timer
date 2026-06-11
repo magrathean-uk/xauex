@@ -1,0 +1,10 @@
+[Unit]
+Description=Build the XAUEX decision ledger after the London force-flat boundary
+
+[Timer]
+OnCalendar=Mon-Fri *-*-* 15:10:00 Europe/London
+Persistent=true
+Unit=xauex-decision-ledger.service
+
+[Install]
+WantedBy=timers.target

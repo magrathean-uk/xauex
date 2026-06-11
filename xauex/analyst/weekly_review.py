@@ -24,6 +24,7 @@ STATE_PATH = os.environ.get("XAUEX_STATE_FILE", os.environ.get("STATE_FILE_PATH"
 JOURNAL_PATH = os.environ.get("XAUEX_JOURNAL_OUTPUT", "/var/lib/xauex/trade_journal.json")
 SCORES_PATH = os.environ.get("XAUEX_SCORES_OUTPUT", "/var/lib/xauex/setup_scores.json")
 OUTPUT_PATH = os.environ.get("XAUEX_WEEKLY_OUTPUT", "/var/lib/xauex/weekly_review.json")
+GATE_ECONOMICS_PATH = os.environ.get("XAUEX_GATE_ECONOMICS_PATH", "/var/lib/xauex/gate_economics.json")
 MARKDOWN_OUTPUT_PATH = os.environ.get("XAUEX_WEEKLY_MARKDOWN_OUTPUT", "/var/lib/xauex/weekly_review.md")
 REVIEW_MODE = os.environ.get("XAUEX_WEEKLY_REVIEW_MODE", "previous_week").strip().lower()
 
@@ -243,12 +244,20 @@ def build_review_prompt(
 
     signals_text = f"{len(signals)} signals in history (last 12 shown in state)"
     shadow_text = f"{len(shadow)} shadow signals in history"
-    candidate_text = (
-        f"candidate lane total={candidate_metrics.get('total', 0)} "
-        f"completed={candidate_metrics.get('completed', 0)} "
-        f"false_negative_wins={candidate_metrics.get('false_negative_wins', 0)} "
-        f"expectancy_usd={candidate_metrics.get('expectancy_usd', 0.0)}"
-    )
+    candidate_text = f"candidate lane total={candidate_metrics.get('total', 0)}"
+    gate_economics = read_json_file(GATE_ECONOMICS_PATH) or {}
+    gate_reasons = gate_economics.get("by_reason") or {}
+    if gate_reasons:
+        gate_lines = ", ".join(
+            f"{reason}: n={stats.get('n', 0)} expectancy={stats.get('expectancy_r', 0.0)}R"
+            f" missed_usd={stats.get('missed_usd_min_lot', 0.0)}"
+            for reason, stats in list(gate_reasons.items())[:6]
+        )
+        gate_text = (
+            f"replayed blocked trades over {gate_economics.get('window_days', 90)}d — {gate_lines}"
+        )
+    else:
+        gate_text = "no replayed blocked trades yet"
 
     return f"""You are a senior trading analyst reviewing an automated XAUUSD bot's performance for the week of {week_start_str} to {week_end_str}.
 
@@ -269,6 +278,7 @@ SIGNAL ACTIVITY:
   Primary strategy: {signals_text}
   Shadow strategy: {shadow_text}
   Candidate lane: {candidate_text}
+  Blocked-trade economics: {gate_text}
 
 Provide a strategic weekly review covering:
 1. Overall performance: win rate, RR quality, patterns in outcomes — but ALWAYS lead with the direction breakdown if a skew alert fires.

@@ -183,6 +183,12 @@
 
     .empty { color: var(--faint); font-style: italic; padding: 16px 0; text-align: center; }
 
+    .ledger-chip { font-size: 11px; padding: 2px 8px; border-radius: 4px; display: inline-block; font-family: ui-monospace, monospace; }
+    .ledger-chip.traded { background: rgba(52, 211, 153, 0.15); color: var(--green); }
+    .ledger-chip.hold { background: rgba(148, 163, 184, 0.15); color: var(--muted); }
+    .ledger-chip.blocked { background: rgba(251, 113, 133, 0.15); color: var(--red); }
+    .ledger-chip.gap { background: rgba(251, 191, 36, 0.15); color: var(--gold); }
+
     /* Manual trade */
     .manual-card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 18px 20px; margin-top: 16px; }
     .manual-locked .manual-form, .manual-locked .manual-actions { opacity: 0.5; pointer-events: none; }
@@ -289,6 +295,11 @@
       <div class="card span-12">
         <h2>Today&apos;s Windows</h2>
         <div id="windows" class="windows"></div>
+      </div>
+
+      <div class="card span-12">
+        <h2>Window Decisions — why no trade</h2>
+        <div id="decision-ledger"></div>
       </div>
 
       <div class="card span-12">
@@ -523,6 +534,52 @@
       }).join("");
     };
 
+    const renderDecisionLedger = (ledger) => {
+      const days = Array.isArray(ledger?.days) ? ledger.days : [];
+      if (!days.length) {
+        return '<div class="empty">No decision ledger yet — it builds Mon–Fri at 15:10 London.</div>';
+      }
+      const esc = (text) => String(text ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
+      const chip = (rec) => {
+        if (!rec) return '<span class="ledger-chip hold">—</span>';
+        const outcome = String(rec.outcome || "").toUpperCase();
+        const cls = outcome === "TRADED" ? "traded"
+          : outcome === "HOLD" ? "hold"
+          : (outcome === "NO_SIGNAL" || outcome === "NOT_CONSUMED") ? "gap"
+          : "blocked";
+        const reason = rec.reason && rec.reason !== outcome ? `: ${esc(rec.reason)}` : "";
+        const detail = esc((rec.reason_chain || []).join("\n"));
+        return `<span class="ledger-chip ${cls}" title="${detail}">${outcome}${reason}</span>`;
+      };
+      const rows = days.map((d) => `
+        <tr>
+          <td>${esc(d.date_london)}</td>
+          <td>${chip(d.windows?.morning)}</td>
+          <td>${chip(d.windows?.midday)}</td>
+          <td>${chip(d.windows?.us_open)}</td>
+        </tr>`).join("");
+      const totals = ledger.totals || {};
+      const reasons = Object.entries(totals.by_reason || {})
+        .filter(([reason]) => reason !== "ORDER_PLACED")
+        .slice(0, 6)
+        .map(([reason, count]) => `${esc(reason)} × ${count}`)
+        .join(" · ");
+      const econ = ledger.gate_economics?.by_reason || {};
+      const econLine = Object.entries(econ)
+        .slice(0, 4)
+        .map(([reason, stats]) => `${esc(reason)}: ${Number(stats?.expectancy_r ?? 0).toFixed(2)}R × ${stats?.n ?? 0}`)
+        .join(" · ");
+      return `
+        <table>
+          <thead><tr><th>Date</th><th>Morning</th><th>Midday</th><th>US Open</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+        <div class="quote-hint" style="margin-top: 8px;">
+          ${totals.traded ?? 0}/${totals.windows ?? 0} windows traded over ${ledger.lookback_days ?? 30} days${reasons ? ` · top blockers: ${reasons}` : ""}
+        </div>
+        ${econLine ? `<div class="quote-hint">Blocked-trade expectancy (replayed): ${econLine}</div>` : ""}`;
+    };
+
     const renderChart = (chart, quote) => {
       const values = Array.isArray(chart?.recent_h1_closes)
         ? chart.recent_h1_closes.map(Number).filter(Number.isFinite)
@@ -682,6 +739,7 @@
         document.getElementById("weekly-halt").textContent = data.account?.weekly_halted ? "HALTED" : "ok";
 
         document.getElementById("windows").innerHTML = renderWindows(data.windows || []);
+        document.getElementById("decision-ledger").innerHTML = renderDecisionLedger(data.decision_ledger || {});
 
         const quote = data.quote || {};
         const bid = Number(quote.bid), ask = Number(quote.ask), mid = Number(quote.mid);

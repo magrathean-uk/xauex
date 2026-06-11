@@ -27,6 +27,8 @@ RISK_PATH = Path(os.getenv("RISK_STATE_PATH", "/var/lib/xauex/risk_state.json"))
 BRIEF_PATH = Path(os.getenv("XAUEX_SIGNAL_BRIEF_OUTPUT_PATH", "/var/lib/xauex/latest_signal_brief.md"))
 BRIEF_META_PATH = BRIEF_PATH.with_suffix(".json")
 EVIDENCE_PATH = Path(os.getenv("XAUEX_SIGNAL_EVIDENCE_OUTPUT_PATH", "/var/lib/xauex/latest_signal_evidence.json"))
+DECISION_LEDGER_PATH = Path(os.getenv("XAUEX_DECISION_LEDGER_PATH", "/var/lib/xauex/decision_ledger.json"))
+GATE_ECONOMICS_PATH = Path(os.getenv("XAUEX_GATE_ECONOMICS_PATH", "/var/lib/xauex/gate_economics.json"))
 XAUEX_API_URL = os.getenv("XAUEX_API_URL", "http://10.8.0.1:8088").rstrip("/")
 MAX_SIGNAL_HISTORY = 12
 MAX_CHART_POINTS = 20
@@ -506,6 +508,20 @@ def _build_direct_report_context() -> dict[str, Any]:
     }
 
 
+def _build_decision_ledger_summary(max_days: int = 10) -> dict[str, Any]:
+    ledger = _load_json(DECISION_LEDGER_PATH, {})
+    if not isinstance(ledger, dict) or not ledger:
+        return {}
+    days = ledger.get("days") or []
+    return {
+        "generated_at_utc": ledger.get("generated_at_utc"),
+        "lookback_days": ledger.get("lookback_days"),
+        "days": days[:max_days],
+        "totals": ledger.get("totals", {}) or {},
+        "gate_economics": _load_json(GATE_ECONOMICS_PATH, {}) or {},
+    }
+
+
 def _build_payload() -> dict[str, Any]:
     state = _load_json(STATE_PATH, {})
     cmd = _load_json(CMD_PATH, {})
@@ -562,6 +578,7 @@ def _build_payload() -> dict[str, Any]:
         "evidence": evidence,
         "manual_trade_status": manual_trade_status,
         "candidate_metrics": runtime.get("candidate_metrics", {}) or {},
+        "decision_ledger": _build_decision_ledger_summary(),
         "manual_command_pending": MANUAL_CMD_PATH.exists(),
         "auth": _dashboard_auth_payload(),
         "links": {

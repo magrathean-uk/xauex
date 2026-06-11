@@ -108,6 +108,7 @@ install_if_changed "$REPO_ROOT/ops/run_xauex_shadow_compare.sh" /usr/local/bin/x
 install_if_changed "$REPO_ROOT/ops/run_xauex_shadow_evaluate.sh" /usr/local/bin/xauex-run-shadow-evaluate 755
 install_if_changed "$REPO_ROOT/ops/run_trade_journal.sh" /usr/local/bin/xauex-run-trade-journal 755
 install_if_changed "$REPO_ROOT/ops/run_weekly_review.sh" /usr/local/bin/xauex-run-weekly-review 755
+install_if_changed "$REPO_ROOT/ops/run_decision_ledger.sh" /usr/local/bin/xauex-run-decision-ledger 755
 install_if_changed "$REPO_ROOT/ops/run_xauex_web.sh" /usr/local/bin/xauex-run-web 755
 install_if_changed "$REPO_ROOT/ops/enforce_log_budget.sh" /usr/local/bin/xauex-enforce-log-budget 755
 install_if_changed "$REPO_ROOT/ops/check_host_layout.sh" /usr/local/bin/xauex-check-host-layout 755
@@ -117,7 +118,7 @@ install_if_changed "$REPO_ROOT/ops/monitoring/check_xauex_trade_alerts.py" /usr/
 install_if_changed "$REPO_ROOT/ops/monitoring/check_xauex_signal_stall.py" /usr/local/lib/monitoring/check_xauex_signal_stall.py 755
 install_if_changed "$REPO_ROOT/ops/monitoring/45-xauex-notify.monit" /etc/monit/conf-enabled/45-xauex-notify.monit 644
 
-for unit in xauex.service xauex-signal.service xauex-signal.timer xauex-window-signal@.service xauex-window-confirm@.service xauex-shadow-compare.service xauex-shadow-compare.timer xauex-shadow-evaluate.service xauex-shadow-evaluate.timer xauex-start.timer xauex-stop.service xauex-stop.timer xauex-trade-journal.service xauex-trade-journal.timer xauex-weekly-review.service xauex-weekly-review.timer xauex-web.service; do
+for unit in xauex.service xauex-signal.service xauex-signal.timer xauex-window-signal@.service xauex-window-confirm@.service xauex-shadow-compare.service xauex-shadow-compare.timer xauex-shadow-evaluate.service xauex-shadow-evaluate.timer xauex-start.timer xauex-stop.service xauex-stop.timer xauex-trade-journal.service xauex-trade-journal.timer xauex-decision-ledger.service xauex-decision-ledger.timer xauex-weekly-review.service xauex-weekly-review.timer xauex-web.service; do
   if [[ "$unit" == "xauex.service" ]]; then
     render_unit_if_changed "$unit" 1
   else
@@ -164,7 +165,7 @@ systemctl restart systemd-journald
 systemctl disable xauex.service >/dev/null 2>&1 || true
 systemctl disable xauex-signal.timer >/dev/null 2>&1 || true
 systemctl disable oracle-dashboard.service mirofish-backend.service mirofish-bridge.service mirofish-bridge.timer >/dev/null 2>&1 || true
-systemctl enable xauex-window-signal@morning.timer xauex-window-signal@midday.timer xauex-window-signal@us_open.timer xauex-window-confirm@morning.timer xauex-window-confirm@midday.timer xauex-window-confirm@us_open.timer xauex-shadow-compare.timer xauex-shadow-evaluate.timer xauex-start.timer xauex-stop.timer xauex-trade-journal.timer xauex-weekly-review.timer xauex-web.service
+systemctl enable xauex-window-signal@morning.timer xauex-window-signal@midday.timer xauex-window-signal@us_open.timer xauex-window-confirm@morning.timer xauex-window-confirm@midday.timer xauex-window-confirm@us_open.timer xauex-shadow-compare.timer xauex-shadow-evaluate.timer xauex-start.timer xauex-stop.timer xauex-trade-journal.timer xauex-decision-ledger.timer xauex-weekly-review.timer xauex-web.service
 systemctl restart xauex-web.service
 for _ in {1..30}; do
   if ss -ltn | grep -q '127.0.0.1:8089'; then
@@ -183,6 +184,7 @@ systemctl restart xauex-shadow-evaluate.timer
 systemctl restart xauex-start.timer
 systemctl restart xauex-stop.timer
 systemctl restart xauex-trade-journal.timer
+systemctl restart xauex-decision-ledger.timer
 systemctl restart xauex-weekly-review.timer
 if command -v caddy >/dev/null 2>&1; then
   systemctl reload caddy >/dev/null 2>&1 || systemctl restart caddy >/dev/null 2>&1 || true

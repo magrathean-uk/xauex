@@ -1,0 +1,18 @@
+[Unit]
+Description=XAUEX why-no-trade decision ledger
+After=network-online.target xauex-trade-journal.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=__RUN_USER__
+WorkingDirectory=__REPO_ROOT__
+EnvironmentFile=__REPO_ROOT__/xauex/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=__REPO_ROOT__/ops/run_decision_ledger.sh
+TimeoutStartSec=300
+StandardOutput=append:/var/log/xauex/analyst.log
+StandardError=append:/var/log/xauex/analyst.log
+
+[Install]
+WantedBy=multi-user.target
