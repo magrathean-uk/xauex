@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-from csv import DictReader
 from datetime import date, datetime, timezone
-from io import StringIO
 import html
 import logging
 import re
@@ -12,6 +10,8 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 import httpx
+
+from xauex.signal.fred_fetch import fetch_fred_rows
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +22,6 @@ _FRED_SERIES_IDS = {
 }
 
 _FOMC_CALENDAR_URL = "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm"
-_FRED_CSV_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
 _US_POLICY_TIMEZONE = ZoneInfo("America/New_York")
 
 _MONTHS = {
@@ -257,19 +256,7 @@ def _fetch_text(client: httpx.Client, url: str) -> str:
 
 
 def _fetch_fred_latest_value(client: httpx.Client, series_id: str) -> float:
-    response = client.get(_FRED_CSV_URL.format(series_id=series_id))
-    response.raise_for_status()
-    reader = DictReader(StringIO(response.text))
-    rows: list[tuple[str, float]] = []
-    for row in reader:
-        raw_value = str(row.get(series_id, "") or "").strip()
-        date_value = str(row.get("DATE", row.get("observation_date", "")) or "").strip()
-        if not raw_value or raw_value == ".":
-            continue
-        try:
-            rows.append((date_value, float(raw_value)))
-        except ValueError:
-            continue
+    rows = fetch_fred_rows(client, series_id)
     if not rows:
         raise RuntimeError(f"Insufficient FRED rows for {series_id}")
     return rows[-1][1]

@@ -42,6 +42,8 @@ class Config:
     level_proximity_dollars: float
     execution_timeframe: str
     news_block_minutes: int
+    news_block_minutes_before: int
+    news_block_minutes_after: int
     weekly_stop_pct: float
     daily_stop_pct: float
     max_consecutive_losses: int
@@ -76,6 +78,7 @@ class Config:
     xauex_mode: bool
     xauex_signal_path: str
     xauex_signal_max_age_seconds: int
+    xauex_defer_grace_minutes: int
     xauex_entry_timezone: str
     xauex_entry_start_london: str
     xauex_entry_end_london: str
@@ -238,6 +241,18 @@ def load_config(env_file: str = ".env") -> Config:
     level_proximity_dollars = collect(_float_range, "LEVEL_PROXIMITY_DOLLARS", 0.5, 50.0, 3.0)
     execution_timeframe    = collect(_one_of, "EXECUTION_TIMEFRAME", ("M5", "M15", "M30", "H1"), "H1")
     news_block_minutes     = collect(_int_range,   "NEWS_BLOCK_MINUTES", 5, 120, 30)
+    # Asymmetric news blackout: positioning ahead of a release is blind risk
+    # (full pre-block), but the post-release repricing is tradeable once the
+    # confirm-pass spread check passes. Legacy NEWS_BLOCK_MINUTES sets both.
+    _legacy_news_block_set = os.getenv("NEWS_BLOCK_MINUTES") is not None
+    news_block_minutes_before = collect(
+        _int_range, "NEWS_BLOCK_MINUTES_BEFORE", 0, 120,
+        news_block_minutes if _legacy_news_block_set else 30,
+    )
+    news_block_minutes_after = collect(
+        _int_range, "NEWS_BLOCK_MINUTES_AFTER", 0, 120,
+        news_block_minutes if _legacy_news_block_set else 10,
+    )
     weekly_stop_pct        = collect(_float_range, "WEEKLY_STOP_PCT", 0.5, 20.0, 5.0)
     daily_stop_pct         = collect(_float_range, "DAILY_STOP_PCT", 0.25, 10.0, 2.0)
     max_consecutive_losses = collect(_int_range,   "MAX_CONSECUTIVE_LOSSES", 1, 10, 3)
@@ -331,6 +346,16 @@ def load_config(env_file: str = ".env") -> Config:
         30,
         3600,
         int(os.getenv("MIROFISH_SIGNAL_MAX_AGE_SECONDS", "300")),
+    )
+    # Deferred-signal grace: a microstructure-deferred signal may still confirm
+    # this many minutes after its entry window closes (at soft-confirm risk).
+    # 0 disables the grace path.
+    xauex_defer_grace_minutes = collect(
+        _int_range,
+        "XAUEX_DEFER_GRACE_MINUTES",
+        0,
+        30,
+        5,
     )
     xauex_entry_timezone = os.getenv("XAUEX_ENTRY_TIMEZONE", os.getenv("MIROFISH_ENTRY_TIMEZONE", "Europe/London"))
     xauex_entry_start_london = os.getenv("XAUEX_ENTRY_START_LONDON", os.getenv("MIROFISH_ENTRY_START_LONDON", "08:00"))
@@ -714,6 +739,8 @@ def load_config(env_file: str = ".env") -> Config:
         level_proximity_dollars=level_proximity_dollars,
         execution_timeframe=execution_timeframe,
         news_block_minutes=news_block_minutes,
+        news_block_minutes_before=news_block_minutes_before,
+        news_block_minutes_after=news_block_minutes_after,
         weekly_stop_pct=weekly_stop_pct,
         daily_stop_pct=daily_stop_pct,
         max_consecutive_losses=max_consecutive_losses,
@@ -760,6 +787,7 @@ def load_config(env_file: str = ".env") -> Config:
         xauex_risk_cap_percent=xauex_risk_cap_percent,
         xauex_confirm_spread_max_dollars=xauex_confirm_spread_max_dollars,
         xauex_confirm_max_age_seconds=xauex_confirm_max_age_seconds,
+        xauex_defer_grace_minutes=xauex_defer_grace_minutes,
         xauex_require_pattern_match=xauex_require_pattern_match,
         xauex_confidence_full_threshold=xauex_confidence_full_threshold,
         xauex_confidence_medium_threshold=xauex_confidence_medium_threshold,

@@ -71,7 +71,7 @@ cat > "{mail_capture}"
 
     rc = MODULE.run_once(
         recipient="bolyki@bolyki.eu",
-        now=datetime(2026, 4, 21, 8, 7, tzinfo=MODULE.LONDON_TZ),
+        now=datetime(2026, 4, 21, 8, 12, tzinfo=MODULE.LONDON_TZ),
         state_path=state_path,
         cmd_path=cmd_path,
         sent_state_path=sent_state_path,
@@ -92,7 +92,7 @@ cat > "{mail_capture}"
 
     rc_again = MODULE.run_once(
         recipient="bolyki@bolyki.eu",
-        now=datetime(2026, 4, 21, 8, 8, tzinfo=MODULE.LONDON_TZ),
+        now=datetime(2026, 4, 21, 8, 13, tzinfo=MODULE.LONDON_TZ),
         state_path=state_path,
         cmd_path=cmd_path,
         sent_state_path=sent_state_path,
@@ -198,7 +198,7 @@ def test_morning_summary_uses_smtp_when_no_sendmail_is_provided(tmp_path: Path, 
 
     rc = MODULE.run_once(
         recipient="bolyki@bolyki.eu",
-        now=datetime(2026, 4, 21, 8, 7, tzinfo=MODULE.LONDON_TZ),
+        now=datetime(2026, 4, 21, 8, 12, tzinfo=MODULE.LONDON_TZ),
         state_path=state_path,
         cmd_path=cmd_path,
         sent_state_path=sent_state_path,
@@ -269,7 +269,7 @@ cat > "{mail_capture}"
 
     rc = MODULE.run_once(
         recipient="bolyki@bolyki.eu",
-        now=datetime(2026, 4, 21, 13, 37, tzinfo=MODULE.LONDON_TZ),
+        now=datetime(2026, 4, 21, 13, 58, tzinfo=MODULE.LONDON_TZ),
         state_path=state_path,
         cmd_path=cmd_path,
         sent_state_path=sent_state_path,

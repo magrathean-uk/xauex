@@ -73,12 +73,12 @@ check_window_timer_layout() {
   local signal_specs=(
     "morning|Mon-Fri *-*-* 07:55:00 Europe/London|xauex-window-signal@morning.service"
     "midday|Mon-Fri *-*-* 11:25:00 Europe/London|xauex-window-signal@midday.service"
-    "us_open|Mon-Fri *-*-* 08:25:00 America/New_York|xauex-window-signal@us_open.service"
+    "us_open|Mon-Fri *-*-* 08:40:00 America/New_York|xauex-window-signal@us_open.service"
   )
   local confirm_specs=(
     "morning|Mon-Fri *-*-* 07:59:00 Europe/London|xauex-window-confirm@morning.service"
     "midday|Mon-Fri *-*-* 11:29:00 Europe/London|xauex-window-confirm@midday.service"
-    "us_open|Mon-Fri *-*-* 08:29:00 America/New_York|xauex-window-confirm@us_open.service"
+    "us_open|Mon-Fri *-*-* 08:44:00 America/New_York|xauex-window-confirm@us_open.service"
   )
   local legacy_templates=(
     "$SYSTEMD_DIR/xauex-window-signal@.timer"

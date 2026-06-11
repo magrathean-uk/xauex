@@ -65,17 +65,23 @@ def is_news_clear(
     events: List[NewsEvent],
     block_minutes: int,
     block_currencies: Optional[frozenset] = None,
+    *,
+    block_minutes_before: Optional[int] = None,
+    block_minutes_after: Optional[int] = None,
 ) -> bool:
     """
     Pure function. Returns True if clear of HIGH events for the blocked currencies.
-    Block window is symmetric: [event_time - block_minutes, event_time + block_minutes].
+    Block window is [event_time - before, event_time + after]; both sides default
+    to the symmetric block_minutes when not given.
     """
     allowed = block_currencies or DEFAULT_BLOCK_CURRENCIES
-    window = timedelta(minutes=block_minutes)
+    before = timedelta(minutes=block_minutes if block_minutes_before is None else block_minutes_before)
+    after = timedelta(minutes=block_minutes if block_minutes_after is None else block_minutes_after)
     for event in events:
         if event.currency.upper() not in allowed or event.impact.upper() != "HIGH":
             continue
-        if abs(now_utc - event.time_utc) <= window:
+        delta = now_utc - event.time_utc
+        if -before <= delta <= after:
             return False
     return True
 
@@ -202,8 +208,13 @@ class NewsFilter:
         if not self.feed_available:
             return False, "NEWS_FEED_UNAVAILABLE"
 
-        block = getattr(self.config, 'news_block_minutes', 30)
-        window = timedelta(minutes=block)
+        legacy_block = getattr(self.config, 'news_block_minutes', 30)
+        block_before = getattr(self.config, 'news_block_minutes_before', None)
+        block_after = getattr(self.config, 'news_block_minutes_after', None)
+        before_minutes = legacy_block if block_before is None else block_before
+        after_minutes = legacy_block if block_after is None else block_after
+        before = timedelta(minutes=before_minutes)
+        after = timedelta(minutes=after_minutes)
 
         configured = getattr(self.config, 'news_block_currencies', None)
         if configured:
@@ -214,10 +225,11 @@ class NewsFilter:
         for event in self.events:
             if event.currency.upper() not in allowed or event.impact.upper() != "HIGH":
                 continue
-            if abs(now_utc - event.time_utc) <= window:
+            delta = now_utc - event.time_utc
+            if -before <= delta <= after:
                 logger.info(
                     f'[NEWS] Trade blocked. Event: "{event.title}" ({event.currency}) at '
-                    f'{event.time_utc.isoformat()}. Window: ±{block}min.'
+                    f'{event.time_utc.isoformat()}. Window: -{before_minutes}/+{after_minutes}min.'
                 )
                 return False, event.title
 

@@ -97,7 +97,7 @@ LIVE_WINDOWS: tuple[LiveWindow, ...] = (
         signal_time_local="07:55",
         confirm_time_local="07:59",
         entry_start_local="08:00",
-        entry_end_local="08:05",
+        entry_end_local="08:10",
         description="London morning opening window for the first XAUEX session of the day.",
         holding_horizon="London morning impulse through the early cash-session flow.",
         dominant_drivers=(
@@ -113,7 +113,7 @@ LIVE_WINDOWS: tuple[LiveWindow, ...] = (
         signal_time_local="11:25",
         confirm_time_local="11:29",
         entry_start_local="11:30",
-        entry_end_local="11:35",
+        entry_end_local="11:40",
         description="Late-London continuation window after the morning move has revealed its character.",
         holding_horizon="Late London continuation into the pre-US handoff.",
         dominant_drivers=(
@@ -126,10 +126,15 @@ LIVE_WINDOWS: tuple[LiveWindow, ...] = (
         slot="US_OPEN",
         window_label="us_open",
         timezone="America/New_York",
-        signal_time_local="08:25",
-        confirm_time_local="08:29",
-        entry_start_local="08:30",
-        entry_end_local="08:35",
+        # 08:30 ET is the US macro release minute (CPI/NFP/PPI). Signalling at
+        # 08:25 decided blind right before a known catalyst, and entering at
+        # 08:30 sat entirely inside the news gate's blackout of the release —
+        # so US_OPEN could never trade a US-data day. Signal now reads the
+        # post-release tape and entry starts after the first reprice.
+        signal_time_local="08:40",
+        confirm_time_local="08:44",
+        entry_start_local="08:45",
+        entry_end_local="08:55",
         description="US open impulse window around the New York cash and macro handoff.",
         holding_horizon="US cash-open burst and the first post-open reprice.",
         dominant_drivers=(

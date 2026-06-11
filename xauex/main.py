@@ -23,7 +23,7 @@ from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional, List, Dict, Tuple
+from typing import Any, Optional, List, Dict, Tuple
 from zoneinfo import ZoneInfo
 
 from xauex.config import Config, load_config
@@ -271,6 +271,8 @@ def build_xauex_confirm_decision(
     trend_snapshot: Optional[Dict[str, object]],
     shadow_signal: Optional[Dict[str, object]],
     config: Config,
+    signal_max_age_override_seconds: Optional[int] = None,
+    grace_entry: bool = False,
 ) -> Dict[str, object]:
     action = str(signal.get("action", "HOLD") or "HOLD").upper()
     confirm_timestamp_utc = now_utc.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -294,7 +296,10 @@ def build_xauex_confirm_decision(
 
     signal_age_seconds = max(0, int((now_utc.astimezone(timezone.utc) - signal_time).total_seconds()))
     result["signal_age_seconds"] = signal_age_seconds
-    if signal_age_seconds > int(getattr(config, "xauex_signal_max_age_seconds", 300) or 300):
+    signal_max_age_seconds = int(getattr(config, "xauex_signal_max_age_seconds", 300) or 300)
+    if signal_max_age_override_seconds is not None:
+        signal_max_age_seconds = max(signal_max_age_seconds, int(signal_max_age_override_seconds))
+    if signal_age_seconds > signal_max_age_seconds:
         result["reason"] = "STALE_SIGNAL"
         return result
 
@@ -344,7 +349,9 @@ def build_xauex_confirm_decision(
     if opposing_trend or opposing_shadow:
         if strong_aligned and (was_microstructure_deferred or microstructure_defer_count > 0):
             result["status"] = "CONFIRMED"
-            result["reason"] = "MICROSTRUCTURE_SOFT_CONFIRMED"
+            result["reason"] = (
+                "MICROSTRUCTURE_SOFT_CONFIRMED_GRACE" if grace_entry else "MICROSTRUCTURE_SOFT_CONFIRMED"
+            )
             result["microstructure_policy"] = "soft_confirmed"
             result["microstructure_deferred"] = True
             result["microstructure_soft_confirmed"] = True
@@ -1190,12 +1197,9 @@ class BotOrchestrator:
         self._manual_trade_status: Dict[str, object] = {}
         self._latest_quote: Dict[str, object] = {}
         self._candidate_signal_history: deque = deque(maxlen=24)
-        self._candidate_metrics: Dict[str, object] = {
-            "total": 0,
-            "completed": 0,
-            "false_negative_wins": 0,
-            "expectancy_usd": 0.0,
-        }
+        # Outcome analytics for blocked candidates live in the decision ledger
+        # and gate-economics jobs (xauex/analyst/); only the raw counter stays.
+        self._candidate_metrics: Dict[str, object] = {"total": 0}
         self.last_tick_time = time.monotonic()
 
         self._recent_h1_closes: deque = deque(maxlen=80)
@@ -2655,6 +2659,48 @@ class BotOrchestrator:
     def _xauex_entry_slot(self, now_utc: datetime) -> Optional[str]:
         return active_entry_slot(now_utc.astimezone(timezone.utc))
 
+    def _xauex_defer_grace_minutes(self) -> int:
+        try:
+            return max(0, int(getattr(self.config, "xauex_defer_grace_minutes", 5) or 0))
+        except (TypeError, ValueError):
+            return 5
+
+    def _xauex_grace_entry_slot(self, now_utc: datetime, sig: Dict[str, Any]) -> Optional[str]:
+        """Slot for a deferred signal inside the post-window grace period.
+
+        A strong signal that conflicts with microstructure is deferred for a
+        later confirm pass; without grace, a retry landing after the entry
+        window closes silently dies with ENTRY_WINDOW_CLOSED.
+        """
+        was_deferred = bool(sig.get("microstructure_deferred")) or int(
+            sig.get("microstructure_defer_count") or 0
+        ) > 0
+        if not was_deferred:
+            return None
+        grace_minutes = self._xauex_defer_grace_minutes()
+        if grace_minutes <= 0:
+            return None
+        now = now_utc.astimezone(timezone.utc)
+        if now.astimezone(ZoneInfo("Europe/London")).weekday() >= 5:
+            return None
+        for window in all_live_windows():
+            entry_end = window.entry_end_dt_utc(now)
+            if entry_end <= now < entry_end + timedelta(minutes=grace_minutes):
+                return window.slot
+        return None
+
+    def _xauex_signal_age_limit_seconds(self, *, slot: str, grace_entry: bool, now_utc: datetime) -> int:
+        base = int(getattr(self.config, "xauex_signal_max_age_seconds", 300) or 300)
+        if not grace_entry:
+            return base
+        window = get_live_window(slot=slot)
+        if window is None:
+            return base
+        now = now_utc.astimezone(timezone.utc)
+        budget_end = window.entry_end_dt_utc(now) + timedelta(minutes=self._xauex_defer_grace_minutes())
+        budget = (budget_end - window.signal_dt_utc(now)).total_seconds()
+        return max(base, int(budget))
+
     def _today_london(self, now_utc: Optional[datetime] = None) -> str:
         now_utc = now_utc or datetime.now(timezone.utc)
         return london_trade_day(now_utc.astimezone(timezone.utc))
@@ -3389,6 +3435,18 @@ class BotOrchestrator:
             window_label = str(sig.get("window_label") or "").lower() or "current"
             now_utc = datetime.now(timezone.utc)
             slot = self._xauex_entry_slot(now_utc)
+            grace_entry = False
+            if slot is None:
+                grace_slot = self._xauex_grace_entry_slot(now_utc, sig)
+                if grace_slot is not None:
+                    slot = grace_slot
+                    grace_entry = True
+                    if self._should_emit_repeated_xauex_log(f"grace_entry:{slot}"):
+                        logger.info(
+                            "[XAUEX] Deferred signal %s re-entering %s within the post-window grace period.",
+                            signal_id,
+                            slot,
+                        )
             if slot is None:
                 entry_gate = self._xauex_entry_window_gate(now_utc)
                 if entry_gate == "TOO_EARLY":
@@ -3480,7 +3538,12 @@ class BotOrchestrator:
             try:
                 ts = datetime.fromisoformat(signal_id.replace("Z", "+00:00"))
                 age = (now_utc - ts).total_seconds()
-                if age > self.config.xauex_signal_max_age_seconds:
+                signal_age_limit = self._xauex_signal_age_limit_seconds(
+                    slot=slot,
+                    grace_entry=grace_entry,
+                    now_utc=now_utc,
+                )
+                if age > signal_age_limit:
                     terminal_stale = self._stale_signal_should_consume_slot(
                         slot=slot,
                         signal_time=ts.astimezone(timezone.utc),
@@ -3489,7 +3552,7 @@ class BotOrchestrator:
                     logger.info(
                         "[XAUEX] Signal is %.0fs old (max %ds) - stale, skipping",
                         age,
-                        self.config.xauex_signal_max_age_seconds,
+                        signal_age_limit,
                     )
                     self._mark_slot_used(
                         slot=slot,
@@ -3622,6 +3685,14 @@ class BotOrchestrator:
                         trend_snapshot=self._trend_snapshot,
                         shadow_signal=self._shadow_last_signal,
                         config=self.config,
+                        signal_max_age_override_seconds=(
+                            self._xauex_signal_age_limit_seconds(
+                                slot=slot, grace_entry=True, now_utc=now_utc
+                            )
+                            if grace_entry
+                            else None
+                        ),
+                        grace_entry=grace_entry,
                     )
                     confirm_status = str(confirm["status"] or "SKIP").upper()
                     confirm_reason = str(confirm["reason"] or "UNKNOWN")
@@ -4055,7 +4126,9 @@ class BotOrchestrator:
                         "[XAUEX] Counter-signal risk multiplier %.2fx applied.",
                         counter_signal_risk_multiplier,
                     )
-                microstructure_soft_confirmed = str(sig.get("confirm_reason", "")).upper() == "MICROSTRUCTURE_SOFT_CONFIRMED"
+                microstructure_soft_confirmed = str(sig.get("confirm_reason", "")).upper().startswith(
+                    "MICROSTRUCTURE_SOFT_CONFIRMED"
+                )
                 microstructure_risk_multiplier = 1.0
                 if microstructure_soft_confirmed:
                     microstructure_risk_multiplier = _XAUEX_MICROSTRUCTURE_SOFT_RISK_MULTIPLIER

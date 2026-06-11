@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-from csv import DictReader
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import as_completed
 from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
-from io import StringIO
 import json
 import logging
+import os
 from pathlib import Path
 import re
 from typing import Any
@@ -20,6 +19,7 @@ from xauex.signal.assets import AssetProfile
 from xauex.signal.cftc_cot import fetch_cot_snapshot
 from xauex.signal.config import SignalConfig
 from xauex.signal.fedwatch import fetch_fedwatch_snapshot
+from xauex.signal.fred_fetch import fetch_fred_rows
 from xauex.signal.policy_context import fetch_policy_context
 from xauex.signal.polymarket import fetch_polymarket_snapshot
 
@@ -32,6 +32,11 @@ _MARKET_SNAPSHOT_BLOCK_STALE_SERIES_COUNT = 3
 _MARKET_SNAPSHOT_WARNING_MISSING_COUNT = 1
 _MARKET_SNAPSHOT_BLOCK_MISSING_COUNT = 2
 _FED_H15_URL = 'https://www.federalreserve.gov/releases/h15/'
+
+
+def _fomc_recent_policy() -> str:
+    value = str(os.getenv('XAUEX_FOMC_RECENT_POLICY', 'warning') or 'warning').strip().lower()
+    return value if value in ('warning', 'block') else 'warning'
 
 _FRED_SERIES: dict[str, dict[str, str]] = {
     'usd_broad_index': {
@@ -277,12 +282,14 @@ def build_market_snapshot(
     # FOMC decision-day blackout. Gold reacts violently to Fed statements, dots,
     # and press conferences. Even when the London morning is hours before the
     # 18:00-19:00 UTC release, positioning ahead of the event produces large
-    # whipsaws that our signal cannot meaningfully forecast. Likewise the
-    # morning after a decision is still digesting the statement. Treat both as
-    # hard blockers so the parser returns HOLD and the bot declines the slot.
+    # whipsaws that our signal cannot meaningfully forecast. Decision day stays
+    # a hard blocker. The day after defaults to a warning instead: warning
+    # already suppresses keyword-fallback rescues and reduces assurance, but
+    # lets high-confidence signals trade the post-FOMC repricing.
     fomc_window = str(policy_context.get('fomc_window_state', '') or '').lower()
     freshness['fomc_window_state'] = fomc_window
-    if fomc_window in ('today', 'recent'):
+    fomc_recent_blocks = _fomc_recent_policy() == 'block'
+    if fomc_window == 'today' or (fomc_window == 'recent' and fomc_recent_blocks):
         freshness['state'] = 'blocked'
         freshness['market_snapshot_state'] = 'blocked'
         freshness['hard_blocker'] = True
@@ -291,6 +298,13 @@ def build_market_snapshot(
             if fomc_window == 'today'
             else 'Day after FOMC decision - blocking entries while market digests.'
         )
+        existing_summary = str(freshness.get('summary', '') or '').strip()
+        freshness['summary'] = f'{fomc_note} {existing_summary}'.strip()
+    elif fomc_window == 'recent':
+        if str(freshness.get('market_snapshot_state', '') or '') == 'fresh':
+            freshness['state'] = 'warning'
+            freshness['market_snapshot_state'] = 'warning'
+        fomc_note = 'Day after FOMC decision - warning state, reduced assurance.'
         existing_summary = str(freshness.get('summary', '') or '').strip()
         freshness['summary'] = f'{fomc_note} {existing_summary}'.strip()
 
@@ -682,20 +696,7 @@ def _assess_market_snapshot_freshness(
 
 
 def _fetch_fred_series(client: httpx.Client, series_id: str) -> dict[str, Any]:
-    url = f'https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}'
-    response = client.get(url)
-    response.raise_for_status()
-    reader = DictReader(StringIO(response.text))
-    rows = []
-    for row in reader:
-        value = str(row.get(series_id, '') or '').strip()
-        date_value = str(row.get('DATE', row.get('observation_date', '')) or '').strip()
-        if not value or value == '.':
-            continue
-        try:
-            rows.append((date_value, float(value)))
-        except ValueError:
-            continue
+    rows = fetch_fred_rows(client, series_id)
     if len(rows) < 2:
         raise RuntimeError(f'Insufficient FRED rows for {series_id}')
     date_value, latest = rows[-1]

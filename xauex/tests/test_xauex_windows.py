@@ -59,20 +59,22 @@ def test_entry_slot_selection_includes_morning_midday_and_us_open_windows():
 
     assert orch._xauex_entry_slot(_dt("2026-04-07T07:59")) is None
     assert orch._xauex_entry_slot(_dt("2026-04-07T08:02")) == "MORNING"
-    assert orch._xauex_entry_slot(_dt("2026-04-07T08:06")) is None
+    assert orch._xauex_entry_slot(_dt("2026-04-07T08:09")) == "MORNING"
+    assert orch._xauex_entry_slot(_dt("2026-04-07T08:11")) is None
 
     assert orch._xauex_entry_slot(_dt("2026-04-07T11:27")) is None
     assert orch._xauex_entry_slot(_dt("2026-04-07T11:32")) == "MIDDAY"
     assert orch._xauex_entry_slot(_dt("2026-04-07T11:40")) is None
 
-    assert orch._xauex_entry_slot(datetime(2026, 4, 7, 12, 27, tzinfo=timezone.utc)) is None
-    assert orch._xauex_entry_slot(datetime(2026, 4, 7, 12, 32, tzinfo=timezone.utc)) == "US_OPEN"
-    assert orch._xauex_entry_slot(datetime(2026, 4, 7, 12, 40, tzinfo=timezone.utc)) is None
+    # US_OPEN entry is 08:45-08:55 New York — after the 08:30 ET data minute.
+    assert orch._xauex_entry_slot(datetime(2026, 4, 7, 12, 32, tzinfo=timezone.utc)) is None
+    assert orch._xauex_entry_slot(datetime(2026, 4, 7, 12, 47, tzinfo=timezone.utc)) == "US_OPEN"
+    assert orch._xauex_entry_slot(datetime(2026, 4, 7, 12, 56, tzinfo=timezone.utc)) is None
 
 
 def test_us_open_slot_handles_new_york_dst_without_breaking_london_day_count():
     orch = _build_orchestrator()
-    now = datetime(2026, 11, 3, 13, 32, tzinfo=timezone.utc)
+    now = datetime(2026, 11, 3, 13, 47, tzinfo=timezone.utc)
 
     assert orch._xauex_entry_slot(now) == "US_OPEN"
     assert orch._today_london(now) == "2026-11-03"

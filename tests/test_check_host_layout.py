@@ -115,7 +115,7 @@ WantedBy=timers.target
     )
     write_timer(
         "xauex-window-signal@us_open.timer",
-        "Mon-Fri *-*-* 08:25:00 America/New_York",
+        "Mon-Fri *-*-* 08:40:00 America/New_York",
         "xauex-window-signal@us_open.service",
     )
     write_timer(
@@ -130,7 +130,7 @@ WantedBy=timers.target
     )
     write_timer(
         "xauex-window-confirm@us_open.timer",
-        "Mon-Fri *-*-* 08:29:00 America/New_York",
+        "Mon-Fri *-*-* 08:44:00 America/New_York",
         "xauex-window-confirm@us_open.service",
     )
 
