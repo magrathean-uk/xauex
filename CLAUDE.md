@@ -9,7 +9,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Run tests**: `python3 -m pytest` or `make -C xauex test`
 - **Run specific test**: `python3 -m pytest tests/path/to/test_file.py::test_name -v`
 - **Lint**: `make -C xauex lint` (ruff + mypy)
-- **Rust extension**: `make -C xauex build && make -C xauex install` (requires maturin)
+- **Rust extension**: `make -C xauex build && make -C xauex install` (requires maturin). The extension is `xauex/tick_parser/` (PyO3), which parses Dukascopy CSV ticks into H1 OHLC bars for backtesting.
+- **Other Make targets** (in `xauex/Makefile`): `test-fast` (stop on first failure), `backtest`/`download` (require `DATE_FROM`/`DATE_TO`), `auth` (cTrader OAuth2 flow), `dashboard` (TUI), `logs` (tail bot log), `clean`.
 
 ## Architecture Overview
 
@@ -60,10 +61,11 @@ When behavior looks wrong in code but tests pass, check these files first.
 ## Testing
 
 - **All tests**: `python3 -m pytest`
-- **Narrower subsets** (before full suite):
+- **Test layout**: `pytest.ini` sets `testpaths = tests, xauex/tests`. Narrower subsets (before full suite):
   - Dashboard/API: `tests/dashboard/`
-  - Signal: `tests/bridge/`
-  - Bot/runtime: `xauex/tests/`
+  - Signal pipeline: `tests/bridge/`
+  - Runtime contracts: `tests/runtime/`; security: `tests/security/`
+  - Bot/runtime unit tests: `xauex/tests/`
 - **Run single test**: `python3 -m pytest tests/path/to/test.py::test_name -v`
 - **Fast mode** (stop on first failure): `make -C xauex test-fast` or `pytest -x`
 - **Async tests**: Use `@pytest.mark.asyncio`; `pytest.ini` sets `asyncio_mode = auto`
@@ -72,7 +74,7 @@ When behavior looks wrong in code but tests pass, check these files first.
 ## Deployment & Operations
 
 - **Systemd units**: See `ops/install_systemd.sh` (source of truth for what gets installed and what retired units are removed).
-- **Key services**: `xauex-web.service`, `xauex.service`, `xauex-window-signal@*.timer`, `xauex-window-confirm@*.timer`, `xauex-shadow-compare.timer`, `xauex-shadow-evaluate.timer`, `xauex-trade-journal.timer`, `xauex-weekly-review.timer`.
+- **Key services**: `xauex-web.service`, `xauex.service`, `xauex-window-signal@*.timer`, `xauex-window-confirm@*.timer`, `xauex-shadow-compare.timer`, `xauex-shadow-evaluate.timer`, `xauex-trade-journal.timer`, `xauex-decision-ledger.timer`, `xauex-weekly-review.timer`.
 - **Monitoring**: Monit owns alert emails via `ops/monitoring/45-xauex-notify.monit`.
 - **Rebuild docs**: `docs/REBUILD.md` — fresh host setup.
 - **Runbook**: `ops/RUNBOOK.md` — live host operations.
@@ -89,7 +91,7 @@ When behavior looks wrong in code but tests pass, check these files first.
 
 - `.env` and `xauex/.env`: Machine-specific (broker credentials, API keys); never commit.
 - `.gitignore`: Ignores `.env`, virtualenvs, logs, caches, compiled files, and the old `NEW/` and `frontend/` directories.
-- Required packages in `requirements.txt`: Flask, httpx, aiohttp, ctrader-open-api, qdrant-client, Textual (TUI), Rich (dashboards).
+- Required packages in `requirements.txt`: Flask, httpx, aiohttp, ctrader-open-api, qdrant-client (semantic memory), Textual (TUI), Rich (dashboards), openai (LLM in `direct_predictor.py`), pydantic, schedule, waitress.
 
 ## Useful References
 
