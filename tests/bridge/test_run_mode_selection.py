@@ -15,6 +15,41 @@ def test_signal_config_loads_required_llm_settings(monkeypatch):
     assert cfg.llm_api_key == "test-key"
 
 
+def test_signal_runner_loads_repo_env_explicitly(monkeypatch, capsys):
+    captured = {}
+
+    def fake_load_dotenv(path=None, *args, **kwargs):
+        captured["path"] = path
+        return True
+
+    monkeypatch.setattr(signal_run, "load_dotenv", fake_load_dotenv)
+    monkeypatch.setattr(
+        signal_run,
+        "_parse_args",
+        lambda: SimpleNamespace(
+            asset="XAUUSD",
+            news=None,
+            news_text=None,
+            auto_context=False,
+            lookback_hours=72,
+            max_sources=10,
+            max_items_per_source=4,
+            include_manual_sources=False,
+            list_sources=True,
+            dump_context=None,
+            dry_run=True,
+            output=None,
+            window_label=None,
+        ),
+    )
+    monkeypatch.setattr(signal_run, "get_sources", lambda *args, **kwargs: [])
+
+    signal_run.main()
+
+    assert Path(captured["path"]) == Path(signal_run.__file__).resolve().parents[2] / ".env"
+    assert capsys.readouterr().out.strip() == "[]"
+
+
 def test_signal_config_exposes_qdrant_memory_settings(monkeypatch):
     monkeypatch.setenv("XAUEX_SIGNAL_LLM_API_KEY", "test-key")
     monkeypatch.setenv("XAUEX_SIGNAL_QDRANT_ENABLED", "1")

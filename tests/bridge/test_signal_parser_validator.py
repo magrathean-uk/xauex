@@ -571,6 +571,68 @@ def test_non_reasoning_models_keep_requested_completion_budget():
     assert "extra_body" not in options
 
 
+def test_direct_gemini35_flash_uses_strict_schema_without_openrouter_provider_hint():
+    class _Usage:
+        prompt_tokens = 120
+        completion_tokens = 18
+        total_tokens = 138
+
+    class _Message:
+        content = '{"action":"HOLD","confidence":0.0}'
+
+    class _Choice:
+        message = _Message()
+
+    class _Response:
+        choices = [_Choice()]
+        usage = _Usage()
+
+    class _Completions:
+        def __init__(self):
+            self.calls = []
+
+        def create(self, **kwargs):
+            self.calls.append(kwargs)
+            return _Response()
+
+    class _Client:
+        def __init__(self):
+            self.chat = type("Chat", (), {"completions": _Completions()})()
+
+    client = _Client()
+
+    response, parsed, mode = _request_json_completion(
+        client=client,
+        model="gemini-3.5-flash",
+        base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+        messages=[{"role": "system", "content": "Return JSON."}],
+        temperature=0.1,
+        max_tokens=350,
+        response_schema={
+            "name": "signal_decision",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string"},
+                    "confidence": {"type": "number"},
+                },
+                "required": ["action", "confidence"],
+                "additionalProperties": False,
+            },
+        },
+    )
+
+    assert response is not None
+    assert parsed == {"action": "HOLD", "confidence": 0.0}
+    assert mode == "json_schema"
+    assert client.chat.completions.calls[0]["response_format"]["type"] == "json_schema"
+    assert client.chat.completions.calls[0]["max_tokens"] == 1200
+    assert client.chat.completions.calls[0]["reasoning_effort"] == "low"
+    assert "max_completion_tokens" not in client.chat.completions.calls[0]
+    assert "provider" not in client.chat.completions.calls[0]
+
+
 def test_request_json_completion_retries_with_json_object_mode_after_invalid_strict_response():
     class _Usage:
         prompt_tokens = 120
@@ -785,6 +847,8 @@ def test_new_openrouter_model_prices_are_estimated():
     assert _estimate_cost_usd("openai/gpt-5.5", 8651, 63) == 0.045145
     assert _estimate_cost_usd("google/gemini-3.1-flash-lite", 3150, 200) == 0.0010875
     assert _estimate_cost_usd("google/gemini-3.1-flash-lite-20260507", 3150, 200) == 0.0010875
+    assert _estimate_cost_usd("gemini-3.5-flash", 3150, 200) == 0.006525
+    assert _estimate_cost_usd("google/gemini-3.5-flash", 3150, 200) == 0.006525
 
 
 def test_build_analyst_debate_returns_bull_and_bear_cases(monkeypatch):

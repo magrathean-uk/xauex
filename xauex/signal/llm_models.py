@@ -17,6 +17,7 @@ MODEL_PRICES_USD_PER_MILLION: dict[str, tuple[float, float]] = {
     "openai/gpt-5.4": (2.50, 15.00),
     "openai/gpt-5.4-mini": (0.75, 4.50),
     "openai/gpt-5.4-nano": (0.20, 1.25),
+    "gemini-3.5-flash": (1.50, 9.00),
     "google/gemini-3.1-pro-preview": (2.00, 12.00),
     "google/gemini-3.1-flash-lite": (0.25, 1.50),
     "moonshotai/kimi-k2.6": (0.73, 3.49),
@@ -33,6 +34,8 @@ STRICT_JSON_SCHEMA_MODELS: set[str] = {
     "openai/gpt-5.4",
     "openai/gpt-5.4-mini",
     "openai/gpt-5.4-nano",
+    "gemini-3.5-flash",
+    "google/gemini-3.5-flash",
     "google/gemini-3.1-pro-preview",
     "google/gemini-3.1-flash-lite",
     "moonshotai/kimi-k2.6",
@@ -76,6 +79,8 @@ def completion_options(
     json_object: bool = False,
 ) -> dict[str, Any]:
     visible_tokens = max(max_tokens, 700) if model.startswith("openai/gpt-oss-") else max_tokens
+    if _is_gemini_35_flash(model):
+        visible_tokens = max(visible_tokens, 1200)
     options: dict[str, Any] = {_token_limit_parameter(model): visible_tokens}
 
     if model.startswith("openai/gpt-oss-"):
@@ -83,6 +88,8 @@ def completion_options(
         options["extra_body"] = {"include_reasoning": False}
     elif model.startswith("openai/gpt-5."):
         options["reasoning"] = {"effort": "minimal", "exclude": True}
+    elif _is_gemini_35_flash(model):
+        options["reasoning_effort"] = "low"
 
     if response_schema is not None:
         options["response_format"] = {
@@ -105,7 +112,7 @@ def request_temperature_kwargs(model: str, temperature: float) -> dict[str, floa
 
 
 def _token_limit_parameter(model: str) -> str:
-    if model.startswith(("anthropic/", "deepseek/", "google/", "moonshotai/", "qwen/", "z-ai/")):
+    if model.startswith(("anthropic/", "deepseek/", "gemini-", "google/", "moonshotai/", "qwen/", "z-ai/")):
         return "max_tokens"
     return "max_completion_tokens"
 
@@ -114,7 +121,13 @@ def _is_openrouter_url(base_url: str | None) -> bool:
     return "openrouter.ai" in str(base_url or "").lower()
 
 
+def _is_gemini_35_flash(model: str) -> bool:
+    return model in {"gemini-3.5-flash", "google/gemini-3.5-flash"}
+
+
 def _price_key(model: str) -> str:
+    if model.startswith("google/gemini-3.5-flash"):
+        return "gemini-3.5-flash"
     if model.startswith("google/gemini-3.1-flash-lite-"):
         return "google/gemini-3.1-flash-lite"
     if model.startswith("google/gemini-3.1-pro-preview-"):

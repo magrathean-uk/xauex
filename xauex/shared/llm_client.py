@@ -3,10 +3,22 @@
 from __future__ import annotations
 
 import json
+import os
 from types import SimpleNamespace
 from typing import Any
 
 import httpx
+
+try:  # pragma: no cover - exercised via monkeypatch when dependency is absent
+    from google.auth.transport.requests import Request as GoogleAuthRequest
+    from google.oauth2 import service_account
+except ImportError:  # pragma: no cover - host dependency/configuration dependent
+    GoogleAuthRequest = None
+    service_account = None
+
+
+GOOGLE_SERVICE_ACCOUNT_SENTINEL = "google-service-account"
+GOOGLE_CLOUD_PLATFORM_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
 
 
 def create_chat_client(*, api_key: str, base_url: str, timeout: float = 120.0) -> Any:
@@ -24,7 +36,7 @@ class _OpenAICompatibleClient:
             raise ValueError("base_url is required")
         self._http = httpx.Client(
             headers={
-                "Authorization": f"Bearer {api_key}",
+                "Authorization": _authorization_header(api_key),
                 "Content-Type": "application/json",
             },
             timeout=timeout,
@@ -110,3 +122,50 @@ def _error_detail(response: httpx.Response) -> str:
     if isinstance(error, dict):
         return str(error.get("message") or response.text).strip()
     return response.text.strip()
+
+
+def _authorization_header(api_key: str) -> str:
+    if _is_google_service_account_key(api_key):
+        return f"Bearer {_google_service_account_token(api_key)}"
+    return f"Bearer {api_key}"
+
+
+def _is_google_service_account_key(api_key: str) -> bool:
+    raw = str(api_key or "").strip()
+    return raw == GOOGLE_SERVICE_ACCOUNT_SENTINEL or raw.startswith(f"{GOOGLE_SERVICE_ACCOUNT_SENTINEL}:")
+
+
+def _google_service_account_token(api_key: str) -> str:
+    if service_account is None or GoogleAuthRequest is None:
+        raise RuntimeError(
+            "google-auth is required for google-service-account LLM auth. "
+            "Install requirements.txt in the active virtualenv."
+        )
+    credential_path = _google_service_account_path(api_key)
+    credentials = service_account.Credentials.from_service_account_file(
+        credential_path,
+        scopes=[GOOGLE_CLOUD_PLATFORM_SCOPE],
+    )
+    credentials.refresh(GoogleAuthRequest())
+    token = str(getattr(credentials, "token", "") or "").strip()
+    if not token:
+        raise RuntimeError("Google service-account auth did not return an access token")
+    return token
+
+
+def _google_service_account_path(api_key: str) -> str:
+    raw = str(api_key or "").strip()
+    prefix = f"{GOOGLE_SERVICE_ACCOUNT_SENTINEL}:"
+    if raw.startswith(prefix) and raw[len(prefix):].strip():
+        return raw[len(prefix):].strip()
+    credential_path = (
+        os.getenv("XAUEX_GOOGLE_APPLICATION_CREDENTIALS")
+        or os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+        or ""
+    ).strip()
+    if not credential_path:
+        raise RuntimeError(
+            "Set GOOGLE_APPLICATION_CREDENTIALS or XAUEX_GOOGLE_APPLICATION_CREDENTIALS "
+            "when using google-service-account LLM auth."
+        )
+    return credential_path

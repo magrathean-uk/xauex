@@ -26,6 +26,7 @@ logging.basicConfig(
     force=True,
 )
 logger = logging.getLogger(__name__)
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _parse_args() -> argparse.Namespace:
@@ -51,7 +52,7 @@ def _parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
-    load_dotenv()
+    load_dotenv(REPO_ROOT / ".env")
     args = _parse_args()
     asset = resolve_asset(args.asset)
     explicit_window_label = getattr(args, "window_label", None)
