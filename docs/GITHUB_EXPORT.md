@@ -27,6 +27,9 @@ Excluded:
 
 ## Recommended Publish Steps
 
+GitHub is storage only for this host. Pushes are manual, and the host must not
+run automatic GitHub pull/deploy or VPS-to-GitHub sync services.
+
 Current HTTPS remote:
 
 ```bash
