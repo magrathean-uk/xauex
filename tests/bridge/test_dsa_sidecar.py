@@ -3,7 +3,6 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 import httpx
-import pytest
 
 from xauex.signal.dsa_sidecar import (
     DsaDecision,
