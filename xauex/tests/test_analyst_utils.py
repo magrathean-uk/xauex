@@ -56,3 +56,81 @@ def test_resolve_llm_settings_defaults_to_groq_base_url(monkeypatch, tmp_path):
     _, base_url, _ = _utils._resolve_llm_settings()
 
     assert base_url == "https://api.groq.com/openai/v1"
+
+
+def test_call_llm_uses_gemini_analyst_output_budget(monkeypatch):
+    captured: dict[str, object] = {}
+
+    class _FakeResponse:
+        choices = [type("_Choice", (), {"message": type("_Message", (), {"content": "weekly review"})()})()]
+        usage = type("_Usage", (), {"completion_tokens": 12, "prompt_tokens": 30, "total_tokens": 42})()
+
+    class _FakeCompletions:
+        def create(self, **kwargs):
+            captured["create_kwargs"] = kwargs
+            return _FakeResponse()
+
+    class _FakeClient:
+        def __init__(self):
+            self.chat = type("_Chat", (), {"completions": _FakeCompletions()})()
+
+    monkeypatch.setenv("XAUEX_ANALYST_API_KEY", "google-service-account")
+    monkeypatch.setenv("XAUEX_ANALYST_BASE_URL", "https://aiplatform.googleapis.com/v1/projects/p/locations/global/endpoints/openapi")
+    monkeypatch.setenv("XAUEX_ANALYST_MODEL", "google/gemini-3.5-flash")
+    monkeypatch.setattr(_utils, "OpenAI", None)
+    monkeypatch.setattr(_utils, "create_chat_client", lambda **kwargs: _FakeClient())
+
+    result = _utils.call_llm("weekly prompt")
+
+    assert result == "weekly review"
+    assert captured["create_kwargs"]["model"] == "google/gemini-3.5-flash"
+    assert captured["create_kwargs"]["max_tokens"] == 3200
+    assert captured["create_kwargs"]["reasoning_effort"] == "low"
+    assert captured["create_kwargs"]["temperature"] == 0.2
+
+
+def test_call_llm_empty_length_response_names_token_budget_root_cause(monkeypatch):
+    class _FakeResponse:
+        choices = [type("_Choice", (), {"message": None, "finish_reason": "length"})()]
+        usage = type(
+            "_Usage",
+            (),
+            {
+                "completion_tokens": 179,
+                "prompt_tokens": 763,
+                "total_tokens": 2359,
+            },
+        )()
+        raw = {
+            "usage": {
+                "completion_tokens": 179,
+                "completion_tokens_details": {"reasoning_tokens": 1417},
+                "prompt_tokens": 763,
+                "total_tokens": 2359,
+            }
+        }
+
+    class _FakeCompletions:
+        def create(self, **kwargs):
+            return _FakeResponse()
+
+    class _FakeClient:
+        def __init__(self):
+            self.chat = type("_Chat", (), {"completions": _FakeCompletions()})()
+
+    monkeypatch.setenv("XAUEX_ANALYST_API_KEY", "google-service-account")
+    monkeypatch.setenv("XAUEX_ANALYST_BASE_URL", "https://aiplatform.googleapis.com/v1/projects/p/locations/global/endpoints/openapi")
+    monkeypatch.setenv("XAUEX_ANALYST_MODEL", "google/gemini-3.5-flash")
+    monkeypatch.setattr(_utils, "OpenAI", None)
+    monkeypatch.setattr(_utils, "create_chat_client", lambda **kwargs: _FakeClient())
+
+    try:
+        _utils.call_llm("weekly prompt")
+    except RuntimeError as exc:
+        message = str(exc)
+    else:
+        raise AssertionError("expected RuntimeError")
+
+    assert "ran out of output tokens" in message
+    assert "finish_reason=length" in message
+    assert "reasoning_tokens=1417" in message

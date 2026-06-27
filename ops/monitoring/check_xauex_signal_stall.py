@@ -18,11 +18,13 @@ from zoneinfo import ZoneInfo
 
 DEFAULT_RECIPIENT = "bolyki@bolyki.eu"
 DEFAULT_ARCHIVE_ROOT = Path(os.getenv("XAUEX_SIGNAL_ARCHIVE_DIR", "/var/lib/xauex/signal_runs"))
+DEFAULT_EVENT_JOURNAL_PATH = Path(os.getenv("XAUEX_EVENT_JOURNAL_PATH", "/var/lib/xauex/events.jsonl"))
 DEFAULT_STATE_PATH = Path("/var/lib/monit/xauex-signal-stall.json")
 DEFAULT_SMTP_HOST = "127.0.0.1"
 DEFAULT_SMTP_PORT = 25
 DEFAULT_LOOKBACK_HOURS = 96
 DEFAULT_MIN_PROBLEM_RUNS = 3
+DEFAULT_NO_TRADE_DAYS = 5
 MAX_SENT_ALERT_KEYS = 1000
 LONDON_TZ = ZoneInfo("Europe/London")
 
@@ -65,6 +67,9 @@ class SignalAlert:
     count_label: str
     runs: list[SignalRun]
     alert_key: str
+    count_value: int | None = None
+    latest_trade_timestamp_utc: datetime | None = None
+    affected_dates: tuple[str, ...] = ()
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -78,6 +83,22 @@ def _load_json(path: Path) -> dict[str, Any]:
 def _save_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=True, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def _read_event_journal(path: Path) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(payload, dict):
+                    events.append(payload)
+    except OSError:
+        return []
+    return events
 
 
 def _default_sender_domain() -> str:
@@ -96,6 +117,12 @@ def _sent_alert_keys(sent_state: dict[str, Any]) -> list[str]:
 
 def _utc_now_text(now: datetime | None = None) -> str:
     value = now or datetime.now(timezone.utc)
+    return value.astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _utc_datetime_text(value: datetime | None) -> str:
+    if value is None:
+        return "none found in event journal"
     return value.astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
@@ -243,11 +270,54 @@ def _alert_key(kind: str, latest_run: SignalRun) -> str:
     return f"{kind}:{london_date}"
 
 
+def _date_alert_key(kind: str, now: datetime) -> str:
+    london_date = now.astimezone(LONDON_TZ).strftime("%Y-%m-%d")
+    return f"{kind}:{london_date}"
+
+
+def _latest_position_opened_at(events: list[dict[str, Any]]) -> datetime | None:
+    latest: datetime | None = None
+    for event in events:
+        if str(event.get("event_type") or "") != "position_opened":
+            continue
+        timestamp = _parse_timestamp(event.get("timestamp_utc"))
+        if timestamp is not None and (latest is None or timestamp > latest):
+            latest = timestamp
+    return latest
+
+
+def _signal_runs_after_trade(
+    *,
+    runs: list[SignalRun],
+    latest_trade_timestamp_utc: datetime | None,
+    now: datetime,
+) -> tuple[list[str], list[SignalRun]]:
+    current_london_date = now.astimezone(LONDON_TZ).date()
+    seen_dates: set[str] = set()
+    affected_dates: list[str] = []
+    affected_runs: list[SignalRun] = []
+    for run in runs:
+        if latest_trade_timestamp_utc is not None and run.timestamp_utc <= latest_trade_timestamp_utc:
+            continue
+        london_date = run.timestamp_utc.astimezone(LONDON_TZ).date()
+        if london_date > current_london_date or london_date.weekday() >= 5:
+            continue
+        affected_runs.append(run)
+        date_text = london_date.isoformat()
+        if date_text not in seen_dates:
+            seen_dates.add(date_text)
+            affected_dates.append(date_text)
+    return affected_dates, affected_runs
+
+
 def _build_alerts(
     *,
     runs: list[SignalRun],
+    event_journal_events: list[dict[str, Any]],
     sent_state: dict[str, Any],
     min_problem_runs: int,
+    no_trade_days: int,
+    now: datetime,
 ) -> list[SignalAlert]:
     if not runs:
         return []
@@ -282,6 +352,28 @@ def _build_alerts(
                     alert_key=key,
                 )
             )
+    if no_trade_days > 0:
+        latest_trade_timestamp = _latest_position_opened_at(event_journal_events)
+        no_trade_dates, no_trade_runs = _signal_runs_after_trade(
+            runs=runs,
+            latest_trade_timestamp_utc=latest_trade_timestamp,
+            now=now,
+        )
+        if len(no_trade_dates) >= no_trade_days:
+            key = _date_alert_key("no_trades", now)
+            if key not in sent_keys:
+                alerts.append(
+                    SignalAlert(
+                        kind="no_trades",
+                        subject_label="no executed trades",
+                        count_label="No-trade signal days",
+                        runs=no_trade_runs,
+                        alert_key=key,
+                        count_value=len(no_trade_dates),
+                        latest_trade_timestamp_utc=latest_trade_timestamp,
+                        affected_dates=tuple(no_trade_dates),
+                    )
+                )
     return alerts
 
 
@@ -296,6 +388,35 @@ def _display_run(run: SignalRun) -> str:
 
 
 def _build_message(alert: SignalAlert, recipient: str, hostname: str, sender_domain: str) -> EmailMessage:
+    if alert.kind == "no_trades":
+        latest = alert.runs[-1] if alert.runs else None
+        latest_timestamp = (
+            latest.timestamp_utc.isoformat(timespec="seconds").replace("+00:00", "Z") if latest is not None else "n/a"
+        )
+        body = "\n".join(
+            [
+                f"XAUEX {alert.subject_label} detected on {hostname}.",
+                "",
+                f"{alert.count_label}: {alert.count_value if alert.count_value is not None else len(alert.runs)}",
+                f"Latest opened trade UTC: {_utc_datetime_text(alert.latest_trade_timestamp_utc)}",
+                f"No-trade London dates: {', '.join(alert.affected_dates) or 'n/a'}",
+                f"Latest signal run: {latest.run_id if latest is not None else 'n/a'}",
+                f"Latest signal timestamp UTC: {latest_timestamp}",
+                f"Latest signal action: {latest.action if latest is not None else 'n/a'}",
+                "",
+                "Recent signal runs after the latest trade:",
+                *[_display_run(run) for run in alert.runs[-8:]],
+                "",
+                "This alert means XAUEX is live enough to produce signals but has not opened trades for the configured threshold.",
+            ]
+        )
+        message = EmailMessage()
+        message["From"] = f"monit@{sender_domain}"
+        message["To"] = recipient
+        message["Subject"] = f"[Monit] XAUEX {alert.subject_label} on {hostname}"
+        message.set_content(body, cte="8bit")
+        return message
+
     latest = alert.runs[-1]
     latest_timestamp = latest.timestamp_utc.isoformat(timespec="seconds").replace("+00:00", "Z")
     body = "\n".join(
@@ -351,6 +472,7 @@ def run_once(
     *,
     recipient: str,
     archive_root: Path,
+    journal_path: Path = DEFAULT_EVENT_JOURNAL_PATH,
     sent_state_path: Path,
     sendmail_bin: Path | None,
     smtp_host: str,
@@ -360,18 +482,25 @@ def run_once(
     now: datetime | None = None,
     lookback_hours: int = DEFAULT_LOOKBACK_HOURS,
     min_problem_runs: int = DEFAULT_MIN_PROBLEM_RUNS,
+    no_trade_days: int = DEFAULT_NO_TRADE_DAYS,
 ) -> int:
     current_time = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     sent_state = _load_json(sent_state_path)
+    no_trade_threshold = max(0, int(no_trade_days or 0))
+    effective_lookback_hours = max(lookback_hours, (no_trade_threshold + 4) * 24) if no_trade_threshold else lookback_hours
     runs = _load_recent_signal_runs(
         archive_root=archive_root,
         now=current_time,
-        lookback_hours=lookback_hours,
+        lookback_hours=effective_lookback_hours,
     )
+    event_journal_events = _read_event_journal(journal_path)
     alerts = _build_alerts(
         runs=runs,
+        event_journal_events=event_journal_events,
         sent_state=sent_state,
         min_problem_runs=max(1, min_problem_runs),
+        no_trade_days=no_trade_threshold,
+        now=current_time,
     )
     if not alerts:
         print(f"xauex-signal-stall status=ok recent_runs={len(runs)}")
@@ -412,24 +541,28 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Email XAUEX alerts for repeated signal stalls or degraded inputs.")
     parser.add_argument("--recipient", default=DEFAULT_RECIPIENT)
     parser.add_argument("--archive-root", type=Path, default=DEFAULT_ARCHIVE_ROOT)
+    parser.add_argument("--journal-path", type=Path, default=DEFAULT_EVENT_JOURNAL_PATH)
     parser.add_argument("--sent-state-path", type=Path, default=DEFAULT_STATE_PATH)
     parser.add_argument("--sendmail-bin", type=Path)
     parser.add_argument("--smtp-host", default=DEFAULT_SMTP_HOST)
     parser.add_argument("--smtp-port", type=int, default=DEFAULT_SMTP_PORT)
     parser.add_argument("--lookback-hours", type=int, default=DEFAULT_LOOKBACK_HOURS)
     parser.add_argument("--min-problem-runs", type=int, default=DEFAULT_MIN_PROBLEM_RUNS)
+    parser.add_argument("--no-trade-days", type=int, default=DEFAULT_NO_TRADE_DAYS)
     args = parser.parse_args(argv)
 
     try:
         return run_once(
             recipient=args.recipient,
             archive_root=args.archive_root,
+            journal_path=args.journal_path,
             sent_state_path=args.sent_state_path,
             sendmail_bin=args.sendmail_bin,
             smtp_host=args.smtp_host,
             smtp_port=args.smtp_port,
             lookback_hours=args.lookback_hours,
             min_problem_runs=args.min_problem_runs,
+            no_trade_days=args.no_trade_days,
         )
     except Exception as exc:
         print(f"xauex-signal-stall status=fail root_cause={exc}", file=sys.stderr)

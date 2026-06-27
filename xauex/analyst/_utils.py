@@ -11,6 +11,7 @@ from typing import Any, Optional
 from dotenv import dotenv_values
 
 from xauex.shared.llm_client import create_chat_client
+from xauex.signal.llm_models import completion_options, request_temperature_kwargs
 
 XAUEX_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = XAUEX_ROOT.parent
@@ -21,6 +22,7 @@ OpenAI = None
 
 STATE_FILE = os.environ.get("XAUEX_STATE_FILE", os.environ.get("STATE_FILE_PATH", "/var/lib/xauex/state.json"))
 LOG_FILE = os.environ.get("XAUEX_ANALYST_LOG", "/var/log/xauex/analyst.log")
+ANALYST_DEFAULT_MAX_TOKENS = 3200
 
 
 def _merged_env() -> dict[str, str]:
@@ -74,6 +76,17 @@ def _resolve_llm_settings(model: Optional[str] = None) -> tuple[str, str, str]:
     )
     resolved_model = (model or "").strip() or default_model()
     return api_key, base_url, resolved_model
+
+
+def _analyst_max_tokens(max_tokens: Optional[int] = None) -> int:
+    if max_tokens is not None:
+        return max(1, int(max_tokens))
+    raw = _first_env("XAUEX_ANALYST_MAX_TOKENS", default=str(ANALYST_DEFAULT_MAX_TOKENS))
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        logger.warning("Invalid XAUEX_ANALYST_MAX_TOKENS=%r; using %d.", raw, ANALYST_DEFAULT_MAX_TOKENS)
+        return ANALYST_DEFAULT_MAX_TOKENS
 
 
 def read_json_file(path: str) -> Optional[dict]:
@@ -135,13 +148,102 @@ def save_cursor(path: str, data: Any) -> None:
     atomic_write_json(path, data)
 
 
-def call_llm(prompt: str, model: Optional[str] = None, timeout: int = 120) -> str:
+def _coerce_content(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts: list[str] = []
+        for item in value:
+            if isinstance(item, dict):
+                text = item.get("text") or item.get("content") or item.get("output_text")
+                if text:
+                    parts.append(str(text))
+            elif item is not None:
+                parts.append(str(item))
+        return "\n".join(parts)
+    return str(value)
+
+
+def _first_choice(response: Any) -> Any:
+    choices = getattr(response, "choices", []) or []
+    if choices:
+        return choices[0]
+    raw = getattr(response, "raw", {}) if isinstance(getattr(response, "raw", {}), dict) else {}
+    raw_choices = raw.get("choices") if isinstance(raw.get("choices"), list) else []
+    return raw_choices[0] if raw_choices else None
+
+
+def _choice_finish_reason(choice: Any) -> str:
+    if isinstance(choice, dict):
+        return str(choice.get("finish_reason") or "")
+    return str(getattr(choice, "finish_reason", "") or "")
+
+
+def _choice_content(choice: Any) -> str:
+    if isinstance(choice, dict):
+        message = choice.get("message") if isinstance(choice.get("message"), dict) else {}
+        return _coerce_content(message.get("content"))
+    message = getattr(choice, "message", None)
+    return _coerce_content(getattr(message, "content", None))
+
+
+def _usage_value(response: Any, key: str) -> Any:
+    usage = getattr(response, "usage", None)
+    value = getattr(usage, key, None)
+    if value is not None:
+        return value
+    raw = getattr(response, "raw", {}) if isinstance(getattr(response, "raw", {}), dict) else {}
+    raw_usage = raw.get("usage") if isinstance(raw.get("usage"), dict) else {}
+    return raw_usage.get(key)
+
+
+def _reasoning_tokens(response: Any) -> Any:
+    raw = getattr(response, "raw", {}) if isinstance(getattr(response, "raw", {}), dict) else {}
+    raw_usage = raw.get("usage") if isinstance(raw.get("usage"), dict) else {}
+    details = raw_usage.get("completion_tokens_details") if isinstance(raw_usage.get("completion_tokens_details"), dict) else {}
+    return details.get("reasoning_tokens")
+
+
+def _empty_content_error(response: Any, model: str) -> RuntimeError:
+    choice = _first_choice(response)
+    finish_reason = _choice_finish_reason(choice)
+    completion_tokens = _usage_value(response, "completion_tokens")
+    reasoning_tokens = _reasoning_tokens(response)
+    if finish_reason == "length":
+        return RuntimeError(
+            f"Analyst API ran out of output tokens before returning visible content for model {model} "
+            f"(finish_reason=length, completion_tokens={completion_tokens}, reasoning_tokens={reasoning_tokens}). "
+            "Increase XAUEX_ANALYST_MAX_TOKENS or use a non-reasoning analyst model."
+        )
+    return RuntimeError(
+        f"Analyst API returned empty content for model {model} "
+        f"(finish_reason={finish_reason or 'unknown'}, completion_tokens={completion_tokens}, "
+        f"reasoning_tokens={reasoning_tokens})"
+    )
+
+
+def call_llm(
+    prompt: str,
+    model: Optional[str] = None,
+    timeout: int = 120,
+    max_tokens: Optional[int] = None,
+) -> str:
     api_key, base_url, resolved_model = _resolve_llm_settings(model)
     if OpenAI is not None:
         client = OpenAI(api_key=api_key, base_url=base_url)
     else:
         client = create_chat_client(api_key=api_key, base_url=base_url, timeout=float(timeout))
     logger.info("[ANALYST] Calling model=%s via %s", resolved_model, base_url)
+    request_options = {
+        **request_temperature_kwargs(resolved_model, 0.2),
+        **completion_options(
+            resolved_model,
+            max_tokens=_analyst_max_tokens(max_tokens),
+            base_url=base_url,
+        ),
+    }
     response = client.chat.completions.create(
         model=resolved_model,
         messages=[
@@ -154,13 +256,12 @@ def call_llm(prompt: str, model: Optional[str] = None, timeout: int = 120) -> st
             },
             {"role": "user", "content": prompt},
         ],
-        temperature=0.2,
-        max_tokens=900,
+        **request_options,
         timeout=timeout,
     )
-    content = (response.choices[0].message.content or "").strip()
+    content = _choice_content(_first_choice(response)).strip()
     if not content:
-        raise RuntimeError(f"Analyst API returned empty content for model {resolved_model}")
+        raise _empty_content_error(response, resolved_model)
     if content.startswith("```"):
         content = content.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
     return content

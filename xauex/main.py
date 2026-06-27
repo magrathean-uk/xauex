@@ -63,6 +63,18 @@ _XAUEX_STRONG_SIGNAL_MICROSTRUCTURE_CONFIDENCE = 0.60
 _XAUEX_MICROSTRUCTURE_SOFT_RISK_MULTIPLIER = 0.5
 _XAUEX_CLOSE_REQUEST_TTL_SECONDS = 180
 _XAUEX_REPEATED_LOG_INTERVAL_SECONDS = 300
+_XAUEX_ENTRY_HARD_BLOCK_SCORE = 3
+_XAUEX_ENTRY_POLICY_FACTOR_WEIGHTS = {
+    "STALE_CONTEXT_LOW_CONFIDENCE": 1,
+    "PRICE_CONFLICT": 1,
+    "FLIP_BLOCKED_LOW_CONFIDENCE": 1,
+    "FLIP_BLOCKED_MACRO_UNCHANGED": 1,
+    "COUNTER_SIGNAL_DAILY_LIMIT": 1,
+    "COUNTER_SIGNAL_AFTER_LOSS": 2,
+    "COUNTER_SIGNAL_STALE_CONTEXT": 1,
+    "SAME_DIRECTION_LOSS_COOLDOWN": 2,
+    "LOWER_THIRD_NO_CHASE": 1,
+}
 
 
 @dataclass(frozen=True)
@@ -99,9 +111,11 @@ def calculate_xauex_assurance_cash_risk(
     session_slot_multiplier: float,
     counter_signal_risk_multiplier: float,
     microstructure_risk_multiplier: float,
+    entry_quality_risk_multiplier: float = 1.0,
     continuation_addon_risk_multiplier: float = 1.0,
     minimum_executable_risk: float = 0.0,
     allow_minimum_executable_risk_lift: bool = True,
+    force_minimum_executable_risk: bool = False,
 ) -> float:
     budget = max(0.0, float(cash_risk_budget))
     reduced_risk = round(
@@ -111,10 +125,15 @@ def calculate_xauex_assurance_cash_risk(
         * float(session_slot_multiplier)
         * float(counter_signal_risk_multiplier)
         * float(microstructure_risk_multiplier)
+        * float(entry_quality_risk_multiplier)
         * float(continuation_addon_risk_multiplier),
         2,
     )
     min_executable = round(max(0.0, float(minimum_executable_risk or 0.0)), 2)
+    if force_minimum_executable_risk:
+        if 0.0 < min_executable <= budget:
+            return min_executable
+        return 0.0
     if allow_minimum_executable_risk_lift and 0.0 < reduced_risk < min_executable <= budget:
         return min_executable
     return reduced_risk
@@ -611,10 +630,6 @@ def build_xauex_min_lot_canary_decision(
         result["reason"] = "CANARY_NO_DIRECTIONAL_SIGNAL"
         return result
 
-    if not bool(getattr(assurance, "allow_trade", False)) or str(getattr(assurance, "bucket", "")).lower() != "low":
-        result["reason"] = "CANARY_NOT_LOW_ASSURANCE"
-        return result
-
     confirm_status = str(signal.get("confirm_status", "") or "").upper()
     if confirm_status != "CONFIRMED":
         result["reason"] = "CANARY_NOT_CONFIRMED"
@@ -627,17 +642,7 @@ def build_xauex_min_lot_canary_decision(
         return result
 
     validator_status = str(signal.get("validator_status", "") or "").strip().lower()
-    if validator_status != "unavailable":
-        result["reason"] = "CANARY_VALIDATOR_NOT_UNAVAILABLE"
-        result["validator_status"] = validator_status
-        return result
-
     consensus = str(signal.get("consensus_state", "") or "").strip().lower()
-    if consensus not in {"unreviewed", ""}:
-        result["reason"] = "CANARY_CONSENSUS_NOT_UNREVIEWED"
-        result["consensus_state"] = consensus
-        return result
-
     packet = signal.get("decision_packet") if isinstance(signal.get("decision_packet"), dict) else {}
     freshness = packet.get("input_freshness") if isinstance(packet.get("input_freshness"), dict) else {}
     if bool(freshness.get("hard_blocker")):
@@ -660,6 +665,57 @@ def build_xauex_min_lot_canary_decision(
         result["reason"] = "CANARY_MIN_RISK_EXCEEDS_BUDGET"
         return result
 
+    assurance_allows = bool(getattr(assurance, "allow_trade", False))
+    assurance_bucket = str(getattr(assurance, "bucket", "") or "").strip().lower()
+    assurance_reason = str(getattr(assurance, "reason", "") or "").strip().upper()
+    stale_context = _xauex_has_stale_or_warning_context(signal)
+    if assurance_allows and assurance_bucket == "medium" and stale_context and "STALE_CONTEXT" in assurance_reason:
+        stale_min_confidence = max(
+            0.0,
+            min(1.0, float(getattr(config, "xauex_stale_context_min_confidence", 0.70) or 0.70)),
+        )
+        result["stale_min_confidence"] = round(stale_min_confidence, 2)
+        if bool(signal.get("counter_signal")):
+            result["reason"] = "CANARY_COUNTER_SIGNAL_STALE_CONTEXT"
+            return result
+        if confidence < stale_min_confidence:
+            result["reason"] = "CANARY_STALE_CONTEXT_CONFIDENCE_TOO_LOW"
+            result["confidence"] = round(confidence, 2)
+            return result
+        if validator_status != "reviewed":
+            result["reason"] = "CANARY_STALE_CONTEXT_VALIDATOR_NOT_REVIEWED"
+            result["validator_status"] = validator_status
+            return result
+        if consensus not in {"aligned", "confirmed"}:
+            result["reason"] = "CANARY_STALE_CONTEXT_CONSENSUS_NOT_ALIGNED"
+            result["consensus_state"] = consensus
+            return result
+
+        result["allowed"] = True
+        result["reason"] = "MIN_LOT_CANARY_STALE_CONTEXT_CONFIRMED"
+        result["allow_minimum_executable_risk_lift"] = True
+        result["confidence"] = round(confidence, 2)
+        result["validator_status"] = validator_status
+        result["consensus_state"] = consensus
+        result["market_snapshot_state"] = snapshot_state
+        result["assurance_bucket"] = assurance_bucket
+        result["assurance_reason"] = assurance_reason
+        return result
+
+    if not assurance_allows or assurance_bucket != "low":
+        result["reason"] = "CANARY_NOT_LOW_ASSURANCE"
+        return result
+
+    if validator_status != "unavailable":
+        result["reason"] = "CANARY_VALIDATOR_NOT_UNAVAILABLE"
+        result["validator_status"] = validator_status
+        return result
+
+    if consensus not in {"unreviewed", ""}:
+        result["reason"] = "CANARY_CONSENSUS_NOT_UNREVIEWED"
+        result["consensus_state"] = consensus
+        return result
+
     result["allowed"] = True
     result["reason"] = "MIN_LOT_CANARY_VALIDATOR_UNAVAILABLE"
     result["allow_minimum_executable_risk_lift"] = True
@@ -667,6 +723,222 @@ def build_xauex_min_lot_canary_decision(
     result["validator_status"] = validator_status
     result["consensus_state"] = consensus
     result["market_snapshot_state"] = snapshot_state
+    return result
+
+
+def _xauex_signal_input_freshness(signal: Dict[str, object]) -> Dict[str, object]:
+    packet = signal.get("decision_packet") if isinstance(signal.get("decision_packet"), dict) else {}
+    freshness = packet.get("input_freshness") if isinstance(packet.get("input_freshness"), dict) else {}
+    return freshness
+
+
+def _xauex_signal_price_features(signal: Dict[str, object]) -> Dict[str, object]:
+    packet = signal.get("decision_packet") if isinstance(signal.get("decision_packet"), dict) else {}
+    price_features = packet.get("price_features") if isinstance(packet.get("price_features"), dict) else {}
+    return price_features
+
+
+def _xauex_has_stale_or_warning_context(signal: Dict[str, object]) -> bool:
+    freshness = _xauex_signal_input_freshness(signal)
+    snapshot_state = str(freshness.get("market_snapshot_state", "") or "").strip().lower()
+    if snapshot_state in {"warning", "stale"}:
+        return True
+    validator_summary = str(signal.get("validator_summary", "") or "").strip().lower()
+    return "stale" in validator_summary or "freshness warning" in validator_summary
+
+
+def _xauex_trade_direction_to_action(direction: object) -> str:
+    text = str(direction or "").strip().upper()
+    if text in {"LONG", "BUY"}:
+        return "BUY"
+    if text in {"SHORT", "SELL"}:
+        return "SELL"
+    return ""
+
+
+def _xauex_event_london_date(value: object, now_utc: Optional[datetime]) -> str:
+    if value:
+        try:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return london_trade_day(parsed.astimezone(timezone.utc))
+        except ValueError:
+            pass
+    if now_utc is None:
+        return ""
+    return london_trade_day(now_utc.astimezone(timezone.utc))
+
+
+def _xauex_is_same_london_day(value: object, now_utc: Optional[datetime]) -> bool:
+    if now_utc is None:
+        return True
+    event_day = _xauex_event_london_date(value, now_utc)
+    if not event_day:
+        return True
+    return event_day == london_trade_day(now_utc.astimezone(timezone.utc))
+
+
+def _xauex_signal_run_matches_today(item: Dict[str, object], now_utc: Optional[datetime]) -> bool:
+    if now_utc is None:
+        return True
+    london_date = london_trade_day(now_utc.astimezone(timezone.utc))
+    item_date = str(item.get("date_london", "") or "")
+    if item_date:
+        return item_date == london_date
+    return _xauex_is_same_london_day(item.get("recorded_at_utc"), now_utc)
+
+
+def _xauex_prior_order_count(
+    *,
+    signal_runs_london: List[Dict[str, object]],
+    action: str,
+    now_utc: Optional[datetime],
+    counter_signal: Optional[bool] = None,
+) -> int:
+    action = str(action or "").upper()
+    count = 0
+    for item in signal_runs_london:
+        if not isinstance(item, dict) or not _xauex_signal_run_matches_today(item, now_utc):
+            continue
+        if str(item.get("reason") or item.get("action") or "").upper() != "ORDER_PLACED":
+            continue
+        if action and str(item.get("signal_action") or "").upper() != action:
+            continue
+        if counter_signal is not None and bool(item.get("counter_signal", False)) is not counter_signal:
+            continue
+        count += 1
+    return count
+
+
+def _xauex_has_same_day_loss(
+    *,
+    closed_trades_today: List[Dict[str, object]],
+    action: str,
+    now_utc: Optional[datetime],
+    same_direction_only: bool,
+) -> bool:
+    action = str(action or "").upper()
+    for trade in closed_trades_today:
+        if not isinstance(trade, dict):
+            continue
+        if _safe_signal_float(trade.get("pnl"), 0.0) >= 0.0:
+            continue
+        if not _xauex_is_same_london_day(trade.get("close_time_utc"), now_utc):
+            continue
+        if same_direction_only and _xauex_trade_direction_to_action(trade.get("direction")) != action:
+            continue
+        return True
+    return False
+
+
+def build_xauex_entry_quality_decision(
+    *,
+    signal: Dict[str, object],
+    assurance: XauexAssuranceProfile,
+    config: Config,
+    now_utc: Optional[datetime],
+    closed_trades_today: List[Dict[str, object]],
+    signal_runs_london: List[Dict[str, object]],
+) -> Dict[str, object]:
+    """Capital-preservation gate for patterns that caused repeated loss weeks."""
+    action = str(signal.get("action", "HOLD") or "HOLD").upper()
+    confidence = _safe_signal_float(signal.get("confidence"), 0.0)
+    result: Dict[str, object] = {
+        "allowed": True,
+        "reason": "ENTRY_QUALITY_OK",
+        "action": action,
+        "confidence": round(confidence, 2),
+        "policy_factors": [],
+        "hard_block_score": 0,
+        "risk_multiplier": 1.0,
+    }
+    if action not in {"BUY", "SELL"}:
+        result["allowed"] = False
+        result["reason"] = "NO_DIRECTIONAL_SIGNAL"
+        return result
+    if not assurance.allow_trade:
+        result["allowed"] = False
+        result["reason"] = assurance.reason
+        return result
+
+    factors: List[str] = []
+    hard_block_score = 0
+
+    def add_factor(name: str) -> None:
+        nonlocal hard_block_score
+        if name not in factors:
+            factors.append(name)
+            hard_block_score += int(_XAUEX_ENTRY_POLICY_FACTOR_WEIGHTS.get(name, 1))
+
+    trade_warnings = signal.get("trade_warnings")
+    if isinstance(trade_warnings, list):
+        for warning in trade_warnings:
+            warning_name = str(warning or "").strip().upper()
+            if warning_name in _XAUEX_ENTRY_POLICY_FACTOR_WEIGHTS:
+                add_factor(warning_name)
+
+    stale_min_confidence = max(
+        0.0,
+        min(1.0, float(getattr(config, "xauex_stale_context_min_confidence", 0.70) or 0.70)),
+    )
+    stale_context = _xauex_has_stale_or_warning_context(signal)
+    if stale_context and confidence < stale_min_confidence:
+        add_factor("STALE_CONTEXT_LOW_CONFIDENCE")
+        result["stale_min_confidence"] = round(stale_min_confidence, 2)
+
+    if bool(signal.get("counter_signal")):
+        counter_limit = max(0, int(getattr(config, "xauex_counter_signal_daily_limit", 1) or 0))
+        used = _xauex_prior_order_count(
+            signal_runs_london=signal_runs_london,
+            action="",
+            now_utc=now_utc,
+            counter_signal=True,
+        )
+        result["counter_signals_used_today"] = used
+        result["counter_signal_daily_limit"] = counter_limit
+        if used >= counter_limit:
+            add_factor("COUNTER_SIGNAL_DAILY_LIMIT")
+        if _xauex_has_same_day_loss(
+            closed_trades_today=closed_trades_today,
+            action=action,
+            now_utc=now_utc,
+            same_direction_only=False,
+        ):
+            add_factor("COUNTER_SIGNAL_AFTER_LOSS")
+        if stale_context:
+            add_factor("COUNTER_SIGNAL_STALE_CONTEXT")
+
+    if bool(getattr(config, "xauex_same_direction_loss_cooldown", True)) and _xauex_has_same_day_loss(
+        closed_trades_today=closed_trades_today,
+        action=action,
+        now_utc=now_utc,
+        same_direction_only=True,
+    ):
+        add_factor("SAME_DIRECTION_LOSS_COOLDOWN")
+
+    price_features = _xauex_signal_price_features(signal)
+    range_position = str(price_features.get("range_position", "") or "").strip().upper()
+    prior_same_direction_orders = _xauex_prior_order_count(
+        signal_runs_london=signal_runs_london,
+        action=action,
+        now_utc=now_utc,
+        counter_signal=None,
+    )
+    if action == "SELL" and range_position == "LOWER_THIRD" and prior_same_direction_orders > 0:
+        add_factor("LOWER_THIRD_NO_CHASE")
+        result["prior_same_direction_orders"] = prior_same_direction_orders
+
+    result["policy_factors"] = list(factors)
+    result["hard_block_score"] = hard_block_score
+    if hard_block_score >= _XAUEX_ENTRY_HARD_BLOCK_SCORE:
+        result["allowed"] = False
+        result["reason"] = "HARD_BLOCKER"
+        return result
+    if hard_block_score > 0:
+        result["reason"] = "ENTRY_QUALITY_WARNINGS"
+        result["risk_multiplier"] = 0.5 if hard_block_score == 1 else 0.25
+
     return result
 
 
@@ -721,12 +993,14 @@ def build_xauex_assurance_profile(signal: Dict[str, object], config: Config) -> 
     consensus = str(signal.get("consensus_state", "") or "").strip().lower()
     validator_status = str(signal.get("validator_status", "") or "").strip().lower()
     validator_summary = str(signal.get("validator_summary", "") or "").strip().lower()
-    packet = signal.get("decision_packet") if isinstance(signal.get("decision_packet"), dict) else {}
-    freshness = packet.get("input_freshness") if isinstance(packet.get("input_freshness"), dict) else {}
+    freshness = _xauex_signal_input_freshness(signal)
 
     if bool(freshness.get("hard_blocker")):
-        return _blocked_assurance("INPUT_HARD_BLOCKER")
+        return _blocked_assurance("HARD_BLOCKER")
+    if bool(signal.get("validator_hard_blocker")):
+        return _blocked_assurance("HARD_BLOCKER")
 
+    stale_context = _xauex_has_stale_or_warning_context(signal)
     weak_validator = _validator_summary_is_weak(validator_summary)
     direct_validator_contradiction = _validator_summary_is_direct_contradiction(validator_summary)
     confirm_status = str(signal.get("confirm_status", "") or "").strip().upper()
@@ -735,13 +1009,13 @@ def build_xauex_assurance_profile(signal: Dict[str, object], config: Config) -> 
         and consensus in {"disagreed", "conflicted", "blocked"}
         and direct_validator_contradiction
     ):
-        return _blocked_assurance("LOW_ASSURANCE_VALIDATOR_DISAGREEMENT")
+        return _blocked_assurance("HARD_BLOCKER")
     if (
         (confidence < 0.30 or confirm_status != "CONFIRMED")
         and confidence < 0.45
         and (consensus in {"disagreed", "conflicted", "blocked"} or weak_validator)
     ):
-        return _blocked_assurance("LOW_ASSURANCE_VALIDATOR_DISAGREEMENT")
+        return _blocked_assurance("HARD_BLOCKER")
 
     score = confidence
     if consensus in {"aligned", "confirmed"}:
@@ -761,8 +1035,7 @@ def build_xauex_assurance_profile(signal: Dict[str, object], config: Config) -> 
     elif "well-supported" in validator_summary or "well supported" in validator_summary:
         score += 0.05
 
-    market_snapshot_state = str(freshness.get("market_snapshot_state", "") or "").lower()
-    if market_snapshot_state in {"warning", "stale"}:
+    if stale_context:
         score -= 0.05
 
     score = round(max(0.0, min(1.0, score)), 3)
@@ -780,7 +1053,7 @@ def build_xauex_assurance_profile(signal: Dict[str, object], config: Config) -> 
     if net_pnl < memory_loss_threshold and trade_count >= 4:
         loss_memory_gate = "_LOSS_MEMORY_TIGHTENED"
 
-    if score >= 0.70:
+    if score >= 0.70 and not stale_context:
         target_rr = 2.5
         if loss_memory_gate:
             target_rr *= 0.5
@@ -796,15 +1069,15 @@ def build_xauex_assurance_profile(signal: Dict[str, object], config: Config) -> 
             protect_lock_r=round(high_lock_r, 2),
         )
     if score >= 0.55:
-        target_rr = 2.0
+        target_rr = 1.5 if stale_context else 2.0
         if loss_memory_gate:
             target_rr *= 0.5
         return XauexAssuranceProfile(
             bucket="medium",
             score=score,
             allow_trade=True,
-            reason="MEDIUM_ASSURANCE" + loss_memory_gate,
-            risk_multiplier=1.0,
+            reason=("MEDIUM_ASSURANCE_STALE_CONTEXT" if stale_context else "MEDIUM_ASSURANCE") + loss_memory_gate,
+            risk_multiplier=0.5 if stale_context else 1.0,
             target_rr=round(target_rr, 2),
             protect_r=round(normal_protect_r, 2),
             trail_r=round(max(normal_trail_r, normal_protect_r + 0.2), 2),
@@ -812,6 +1085,7 @@ def build_xauex_assurance_profile(signal: Dict[str, object], config: Config) -> 
         )
     if (
         confirm_status == "CONFIRMED"
+        and score >= 0.30
         and confidence >= 0.35
         and consensus not in {"blocked"}
         and validator_status not in {"rejected", "blocked"}
@@ -833,7 +1107,7 @@ def build_xauex_assurance_profile(signal: Dict[str, object], config: Config) -> 
             trail_r=round(max(normal_trail_r - 0.15, low_protect_r + 0.2), 2),
             protect_lock_r=round(low_lock_r, 2),
         )
-    return _blocked_assurance("ASSURANCE_TOO_LOW")
+    return _blocked_assurance("HARD_BLOCKER")
 
 
 def _blocked_assurance(reason: str) -> XauexAssuranceProfile:
@@ -2784,6 +3058,7 @@ class BotOrchestrator:
         confirm_timestamp_utc: Optional[str] = None,
         terminal: bool = True,
         minimum_lot_canary: bool = False,
+        counter_signal: bool = False,
     ) -> None:
         self._reset_xauex_trade_count_if_new_london_day(signal_time)
         self.risk_state.xauex_signal_runs_london.append(
@@ -2801,6 +3076,7 @@ class BotOrchestrator:
                 "confirm_timestamp_utc": confirm_timestamp_utc,
                 "terminal": terminal,
                 "minimum_lot_canary": bool(minimum_lot_canary),
+                "counter_signal": bool(counter_signal),
                 "recorded_at_utc": signal_time.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             }
         )
@@ -2813,6 +3089,7 @@ class BotOrchestrator:
                 "signal_action": signal_action,
                 "confidence": signal_confidence,
                 "terminal": terminal,
+                "counter_signal": bool(counter_signal),
             },
             correlation_id=signal_id,
         )
@@ -2832,6 +3109,7 @@ class BotOrchestrator:
         confirm_timestamp_utc: Optional[str] = None,
         terminal: bool = True,
         minimum_lot_canary: bool = False,
+        counter_signal: bool = False,
         blocked_trade: Optional[Dict[str, object]] = None,
     ) -> None:
         self._record_xauex_signal_run(
@@ -2848,6 +3126,7 @@ class BotOrchestrator:
             confirm_timestamp_utc=confirm_timestamp_utc,
             terminal=terminal,
             minimum_lot_canary=minimum_lot_canary,
+            counter_signal=counter_signal,
         )
         if terminal and reason != "ORDER_PLACED" and str(signal_action or "").upper() in {"BUY", "SELL"}:
             payload: Dict[str, object] = {
@@ -2859,6 +3138,7 @@ class BotOrchestrator:
                 "confirm_status": confirm_status,
                 "confirm_reason": confirm_reason,
                 "confirm_timestamp_utc": confirm_timestamp_utc,
+                "counter_signal": bool(counter_signal),
             }
             if blocked_trade:
                 payload["blocked_trade"] = dict(blocked_trade)
@@ -3875,6 +4155,50 @@ class BotOrchestrator:
                     await self.write_state()
                     continue
 
+                entry_quality = build_xauex_entry_quality_decision(
+                    signal=sig,
+                    assurance=assurance,
+                    config=self.config,
+                    now_utc=now_utc,
+                    closed_trades_today=(self.executor.get_closed_trades_today(now_utc) if self.executor else []),
+                    signal_runs_london=list(self.risk_state.xauex_signal_runs_london),
+                )
+                if not bool(entry_quality.get("allowed")):
+                    reason = str(entry_quality.get("reason") or "ENTRY_QUALITY_BLOCKED")
+                    logger.info(
+                        "[XAUEX] Blocked by entry-quality gate: %s action=%s confidence=%.2f",
+                        reason,
+                        action,
+                        confidence,
+                    )
+                    self._mark_slot_used(
+                        slot=slot,
+                        signal_id=signal_id,
+                        reason=reason,
+                        signal_time=now_utc,
+                        signal_action=action,
+                        signal_confidence=confidence,
+                        window_label=window_label,
+                        confirm_status=confirm_status,
+                        confirm_reason=confirm_reason,
+                        confirm_timestamp_utc=confirm_timestamp_utc,
+                        terminal=True,
+                        counter_signal=bool(sig.get("counter_signal")),
+                    )
+                    await self.write_state()
+                    continue
+                sig["entry_quality_policy"] = dict(entry_quality)
+                entry_quality_risk_multiplier = round(
+                    max(0.05, min(1.0, _safe_signal_float(entry_quality.get("risk_multiplier"), 1.0))),
+                    2,
+                )
+                if entry_quality_risk_multiplier < 1.0:
+                    logger.info(
+                        "[XAUEX] Entry-quality warnings %s reduce risk by %.2fx.",
+                        ",".join(str(item) for item in entry_quality.get("policy_factors", [])),
+                        entry_quality_risk_multiplier,
+                    )
+
                 continuation_addon_decision: Dict[str, object] = {
                     "allowed": False,
                     "reason": "NO_XAUEX_POSITION_OPEN",
@@ -4170,8 +4494,14 @@ class BotOrchestrator:
                     canaries_used_today=self._xauex_min_lot_canaries_today(now_utc),
                     config=self.config,
                 )
+                counter_signal_canary_only = bool(sig.get("counter_signal")) and bool(
+                    getattr(self.config, "xauex_counter_signal_canary_only", True)
+                )
+                stale_or_warning_context = _xauex_has_stale_or_warning_context(sig)
                 allow_minimum_executable_risk_lift = (
                     assurance.risk_multiplier >= 1.0
+                    and not counter_signal_canary_only
+                    and not stale_or_warning_context
                     or bool(canary_decision.get("allow_minimum_executable_risk_lift"))
                 )
                 assurance_cash_risk = calculate_xauex_assurance_cash_risk(
@@ -4181,13 +4511,14 @@ class BotOrchestrator:
                     session_slot_multiplier=session_slot_multiplier,
                     counter_signal_risk_multiplier=counter_signal_risk_multiplier,
                     microstructure_risk_multiplier=microstructure_risk_multiplier,
+                    entry_quality_risk_multiplier=entry_quality_risk_multiplier,
                     continuation_addon_risk_multiplier=continuation_addon_risk_multiplier,
                     minimum_executable_risk=minimum_executable_risk,
                     allow_minimum_executable_risk_lift=allow_minimum_executable_risk_lift,
+                    force_minimum_executable_risk=counter_signal_canary_only,
                 )
                 minimum_lot_canary = (
-                    bool(canary_decision.get("allowed"))
-                    and assurance.risk_multiplier < 1.0
+                    (bool(canary_decision.get("allowed")) or counter_signal_canary_only)
                     and minimum_executable_risk > 0
                     and assurance_cash_risk == minimum_executable_risk
                 )
@@ -4321,8 +4652,12 @@ class BotOrchestrator:
                         "session_slot_multiplier": session_slot_multiplier,
                         "counter_signal": bool(sig.get("counter_signal")),
                         "counter_signal_risk_multiplier": counter_signal_risk_multiplier,
+                        "counter_signal_canary_only": counter_signal_canary_only,
                         "counter_source_action": str(sig.get("counter_source_action") or ""),
                         "counter_source_confirm_reason": str(sig.get("counter_source_confirm_reason") or ""),
+                        "stale_or_warning_context": stale_or_warning_context,
+                        "entry_quality_policy": entry_quality,
+                        "entry_quality_risk_multiplier": entry_quality_risk_multiplier,
                         "continuation_addon": bool(sig.get("continuation_addon")),
                         "continuation_parent_position_id": str(sig.get("continuation_parent_position_id") or ""),
                         "continuation_addon_risk_multiplier": continuation_addon_risk_multiplier,
@@ -4458,6 +4793,7 @@ class BotOrchestrator:
                     confirm_timestamp_utc=confirm_timestamp_utc,
                     terminal=True,
                     minimum_lot_canary=minimum_lot_canary and pos_id is not None,
+                    counter_signal=bool(sig.get("counter_signal")) and pos_id is not None,
                 )
                 await self.write_state()
             except Exception:

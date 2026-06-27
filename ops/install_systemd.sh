@@ -115,6 +115,7 @@ install_if_changed "$REPO_ROOT/ops/check_host_layout.sh" /usr/local/bin/xauex-ch
 install_if_changed "$REPO_ROOT/ops/monitoring/check_xauex_runtime.sh" /usr/local/lib/monitoring/check_xauex_runtime.sh 755
 install_if_changed "$REPO_ROOT/ops/monitoring/check_xauex_morning_summary.py" /usr/local/lib/monitoring/check_xauex_morning_summary.py 755
 install_if_changed "$REPO_ROOT/ops/monitoring/check_xauex_trade_alerts.py" /usr/local/lib/monitoring/check_xauex_trade_alerts.py 755
+install_if_changed "$REPO_ROOT/ops/monitoring/check_xauex_daily_trade_summary.py" /usr/local/lib/monitoring/check_xauex_daily_trade_summary.py 755
 install_if_changed "$REPO_ROOT/ops/monitoring/check_xauex_signal_stall.py" /usr/local/lib/monitoring/check_xauex_signal_stall.py 755
 install_if_changed "$REPO_ROOT/ops/monitoring/45-xauex-notify.monit" /etc/monit/conf-enabled/45-xauex-notify.monit 644
 

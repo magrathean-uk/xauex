@@ -347,6 +347,7 @@ def test_dry_run_does_not_overwrite_live_brief_or_evidence(monkeypatch, tmp_path
     monkeypatch.setenv("SIGNAL_OUTPUT_PATH", str(tmp_path / "cmd.json"))
     monkeypatch.setenv("XAUEX_SIGNAL_BRIEF_OUTPUT_PATH", str(tmp_path / "latest_signal_brief.md"))
     monkeypatch.setenv("XAUEX_SIGNAL_EVIDENCE_OUTPUT_PATH", str(tmp_path / "latest_signal_evidence.json"))
+    monkeypatch.setenv("XAUEX_SIGNAL_DIRECTIONAL_STATE_PATH", str(tmp_path / "directional_state.json"))
     monkeypatch.setattr(signal_run, "load_dotenv", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         signal_run,
@@ -393,7 +394,10 @@ def test_dry_run_does_not_overwrite_live_brief_or_evidence(monkeypatch, tmp_path
             },
         }
 
+    captured = {}
+
     def fake_parse_signal(*, asset, actions, report_markdown, config, prediction_payload=None, window_label=None):
+        captured["directional_state_path"] = config.directional_state_path
         return {
             "schema_version": 2,
             "symbol": asset.symbol,
@@ -427,6 +431,7 @@ def test_dry_run_does_not_overwrite_live_brief_or_evidence(monkeypatch, tmp_path
     signal_run.main()
 
     assert calls == {"brief": 0, "evidence": 0, "signal": 0}
+    assert captured["directional_state_path"] == ""
     assert brief_path.read_text(encoding="utf-8") == "brief-before"
     assert evidence_path.read_text(encoding="utf-8") == "{\"before\": true}"
     assert signal_path.read_text(encoding="utf-8") == "{\"before\": true}"

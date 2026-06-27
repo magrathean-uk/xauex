@@ -250,7 +250,7 @@ def test_assurance_profile_blocks_low_confidence_validator_disagreement():
 
     assert profile.allow_trade is False
     assert profile.risk_multiplier == 0.0
-    assert profile.reason == "LOW_ASSURANCE_VALIDATOR_DISAGREEMENT"
+    assert profile.reason == "HARD_BLOCKER"
 
 
 def test_assurance_profile_blocks_confirmed_low_confidence_direct_contradiction():
@@ -286,10 +286,10 @@ def test_assurance_profile_blocks_confirmed_low_confidence_direct_contradiction(
 
     assert profile.allow_trade is False
     assert profile.risk_multiplier == 0.0
-    assert profile.reason == "LOW_ASSURANCE_VALIDATOR_DISAGREEMENT"
+    assert profile.reason == "HARD_BLOCKER"
 
 
-def test_assurance_profile_allows_confirmed_low_confidence_signal_at_reduced_risk():
+def test_assurance_profile_blocks_confirmed_low_confidence_warning_context():
     cfg = SimpleNamespace(
         xauex_low_confidence_lot_multiplier=0.25,
         xauex_session_low_confidence_protect_r=0.7,
@@ -317,13 +317,10 @@ def test_assurance_profile_allows_confirmed_low_confidence_signal_at_reduced_ris
 
     profile = build_xauex_assurance_profile(signal, cfg)
 
-    assert profile.allow_trade is True
-    assert profile.bucket == "low"
-    assert profile.reason == "LOW_ASSURANCE_REDUCED_RISK"
-    assert profile.risk_multiplier == 0.25
-    assert profile.target_rr == 1.5
-    assert profile.protect_r == 0.7
-    assert profile.protect_lock_r == 0.35
+    assert profile.allow_trade is False
+    assert profile.bucket == "blocked"
+    assert profile.reason == "HARD_BLOCKER"
+    assert profile.risk_multiplier == 0.0
 
 
 def test_assurance_profile_still_blocks_very_low_confirmed_validator_disagreement():
@@ -355,7 +352,7 @@ def test_assurance_profile_still_blocks_very_low_confirmed_validator_disagreemen
     profile = build_xauex_assurance_profile(signal, cfg)
 
     assert profile.allow_trade is False
-    assert profile.reason == "LOW_ASSURANCE_VALIDATOR_DISAGREEMENT"
+    assert profile.reason == "HARD_BLOCKER"
 
 
 def test_assurance_profile_allows_aligned_high_confidence_with_larger_target():
@@ -391,6 +388,7 @@ def _min_lot_canary_config(**overrides) -> SimpleNamespace:
         xauex_min_lot_canary_enabled=True,
         xauex_min_lot_canary_min_confidence=0.58,
         xauex_min_lot_canary_max_per_day=1,
+        xauex_stale_context_min_confidence=0.70,
     )
     for key, value in overrides.items():
         setattr(config, key, value)
@@ -403,6 +401,15 @@ def _low_assurance_profile() -> SimpleNamespace:
         allow_trade=True,
         reason="LOW_ASSURANCE_REDUCED_RISK",
         risk_multiplier=0.25,
+    )
+
+
+def _stale_medium_assurance_profile() -> SimpleNamespace:
+    return SimpleNamespace(
+        bucket="medium",
+        allow_trade=True,
+        reason="MEDIUM_ASSURANCE_STALE_CONTEXT",
+        risk_multiplier=0.5,
     )
 
 
@@ -437,6 +444,27 @@ def test_min_lot_canary_allows_confirmed_validator_unavailable_low_assurance():
     assert decision["allowed"] is True
     assert decision["reason"] == "MIN_LOT_CANARY_VALIDATOR_UNAVAILABLE"
     assert decision["allow_minimum_executable_risk_lift"] is True
+
+
+def test_min_lot_canary_allows_reviewed_confirmed_stale_context_at_minimum_lot():
+    decision = build_xauex_min_lot_canary_decision(
+        signal=_canary_signal(
+            confidence=0.70,
+            validator_status="reviewed",
+            consensus_state="aligned",
+            validator_summary="Freshness warning, but reviewed trade geometry remains aligned.",
+        ),
+        assurance=_stale_medium_assurance_profile(),
+        cash_risk_budget=29.35,
+        minimum_executable_risk=25.0,
+        canaries_used_today=0,
+        config=_min_lot_canary_config(),
+    )
+
+    assert decision["allowed"] is True
+    assert decision["reason"] == "MIN_LOT_CANARY_STALE_CONTEXT_CONFIRMED"
+    assert decision["allow_minimum_executable_risk_lift"] is True
+    assert decision["confidence"] == 0.70
 
 
 def test_min_lot_canary_blocks_reviewed_disagreement_and_daily_reuse():

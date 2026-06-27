@@ -63,6 +63,21 @@ def filter_to_week(entries: List[Dict], ts_key: str, start: datetime, end: datet
     return result
 
 
+def filter_journal_to_week(entries: List[Dict], start: datetime, end: datetime) -> List[Dict]:
+    """Filter journal entries by trade close time, falling back to journal time."""
+    result = []
+    for entry in entries:
+        trade = entry.get("entry") if isinstance(entry.get("entry"), dict) else {}
+        ts_str = trade.get("close_time_utc") or entry.get("journalled_at_utc", "")
+        try:
+            ts = datetime.fromisoformat(str(ts_str).replace("Z", "+00:00"))
+            if start <= ts <= end:
+                result.append(entry)
+        except (ValueError, AttributeError, TypeError):
+            continue
+    return result
+
+
 _DIRECTION_SKEW_ALERT_THRESHOLD = 0.70
 _PATTERN_HIT_RATE_ALERT_THRESHOLD = 0.25
 
@@ -330,7 +345,7 @@ def run(
     journal_all = read_json_file(journal_path) or []
     scores_all = read_json_file(scores_path) or []
 
-    journal = filter_to_week(journal_all, "journalled_at_utc", week_start, week_end)
+    journal = filter_journal_to_week(journal_all, week_start, week_end)
     scores = filter_to_week(scores_all, "scored_at_utc", week_start, week_end)
 
     logger.info(

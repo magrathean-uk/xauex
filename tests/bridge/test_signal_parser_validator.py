@@ -112,7 +112,7 @@ def test_validator_disagreement_downgrades_confidence_without_forcing_hold():
     assert merged["validator_status"] == "reviewed"
 
 
-def test_validator_hard_blocker_forces_hold():
+def test_validator_hard_blocker_marks_signal_for_single_hard_blocker():
     asset = resolve_asset("XAUUSD")
     signal = {
         "schema_version": 2,
@@ -138,10 +138,11 @@ def test_validator_hard_blocker_forces_hold():
         },
     )
 
-    assert merged["action"] == "HOLD"
-    assert merged["confidence"] == 0.0
-    assert merged["stop_loss_distance"] == 0.0
-    assert merged["take_profit_distance"] == 0.0
+    assert merged["action"] == "BUY"
+    assert merged["confidence"] == 0.74
+    assert merged["stop_loss_distance"] == 12.0
+    assert merged["take_profit_distance"] == 24.0
+    assert merged["validator_hard_blocker"] is True
     assert merged["consensus_state"] == "blocked"
 
 
@@ -413,13 +414,14 @@ def test_parse_signal_blocks_low_confidence_directional_flip_via_persistence(mon
         decision_mode="baseline",
     )
 
-    # The persistence layer must downgrade SELL 0.48 → HOLD because the BUY
-    # lock is in place and the new confidence is below the flip threshold.
-    assert signal["action"] == "HOLD"
-    assert signal["confidence"] == 0.0
-    assert signal["consensus_state"] == "blocked"
+    # Persistence is advisory only. It records the flip warning, but the single
+    # hard-block evaluator decides whether the combined setup is untradeable.
+    assert signal["action"] == "SELL"
+    assert signal["confidence"] == 0.48
+    assert signal["consensus_state"] == "aligned"
     persistence = signal["decision_packet"]["directional_persistence"]
     assert persistence["policy"] == "FLIP_BLOCKED_LOW_CONFIDENCE"
+    assert "FLIP_BLOCKED_LOW_CONFIDENCE" in signal["trade_warnings"]
 
 
 def test_parse_signal_does_not_hard_hold_when_snapshot_is_fresh_enough(monkeypatch):
@@ -1089,16 +1091,17 @@ def test_parse_signal_blocks_low_confidence_price_bias_conflict(monkeypatch):
         decision_mode="baseline",
     )
 
-    assert signal["action"] == "HOLD"
-    assert signal["confidence"] == 0.0
-    assert signal["stop_loss_distance"] == 0.0
-    assert signal["take_profit_distance"] == 0.0
-    assert signal["consensus_state"] == "blocked"
+    assert signal["action"] == "SELL"
+    assert signal["confidence"] == 0.62
+    assert signal["stop_loss_distance"] == 12.0
+    assert signal["take_profit_distance"] == 24.0
+    assert signal["consensus_state"] == "aligned"
     assert signal["price_conflict_guard"]["policy"] == "PRICE_BIAS_CONFLICT_LOW_CONFIDENCE"
     assert signal["price_conflict_guard"]["original_action"] == "SELL"
     assert signal["price_conflict_guard"]["original_confidence"] == 0.62
     assert signal["price_conflict_guard"]["price_bias"] == "BUY"
     assert signal["price_conflict_guard"]["market_snapshot_overall_bias"] == "SELL"
+    assert "PRICE_CONFLICT" in signal["trade_warnings"]
     assert signal["decision_packet"]["price_features"]["price_bias"] == "BUY"
     assert signal["decision_packet"]["price_conflict_guard"]["policy"] == "PRICE_BIAS_CONFLICT_LOW_CONFIDENCE"
 
@@ -1335,8 +1338,10 @@ def test_parse_signal_validator_can_block_candidate_output(monkeypatch):
         decision_mode="tradingagents_candidate",
     )
 
-    assert signal["action"] == "HOLD"
-    assert signal["confidence"] == 0.0
+    assert signal["action"] == "BUY"
+    assert signal["confidence"] == 0.63
+    assert signal["validator_hard_blocker"] is True
+    assert "VALIDATOR_HARD_BLOCKER" in signal["trade_warnings"]
     assert signal["consensus_state"] == "blocked"
     assert signal["candidate_graph"]["final_decision"]["action"] == "BUY"
 

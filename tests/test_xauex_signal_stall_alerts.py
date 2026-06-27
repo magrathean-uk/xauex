@@ -232,6 +232,97 @@ printf '\\n---MESSAGE---\\n' >> "{mail_capture}"
     assert "Federal Reserve H.15 fallback" in mail_text
 
 
+def test_signal_stall_alerts_when_five_signal_days_have_no_position_opened(tmp_path: Path) -> None:
+    archive_root = tmp_path / "signal_runs"
+    journal_path = tmp_path / "events.jsonl"
+    sent_state_path = tmp_path / "sent.json"
+    sendmail_path = tmp_path / "sendmail"
+    mail_capture = tmp_path / "mail.txt"
+    freshness = {
+        "market_snapshot_state": "fresh",
+        "hard_blocker": False,
+        "missing_series_count": 0,
+        "stale_block_series_count": 0,
+        "cache_fallback_series_count": 0,
+        "fed_h15_fallback_series_count": 0,
+        "summary": "Structured market snapshot is fresh.",
+    }
+    journal_path.write_text(
+        json.dumps(
+            {
+                "event_type": "position_opened",
+                "timestamp_utc": "2026-06-19T08:00:00Z",
+                "payload": {"position_id": "641300607"},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    for timestamp, window_label in (
+        ("2026-06-19T14:00:00Z", "us_open"),
+        ("2026-06-22T07:00:00Z", "morning"),
+        ("2026-06-23T07:00:00Z", "morning"),
+        ("2026-06-24T07:00:00Z", "morning"),
+        ("2026-06-25T07:00:00Z", "morning"),
+    ):
+        run_id = timestamp.replace("-", "").replace(":", "").replace("+00:00", "").replace("Z", "Z")
+        _write_signal_run(
+            archive_root,
+            run_id=f"{run_id}_xauusd_baseline",
+            timestamp_utc=timestamp,
+            action="SELL",
+            window_label=window_label,
+            reasoning="Directional setup exists.",
+            freshness=freshness,
+        )
+    _write_executable(
+        sendmail_path,
+        f"""#!/usr/bin/env bash
+cat >> "{mail_capture}"
+printf '\\n---MESSAGE---\\n' >> "{mail_capture}"
+""",
+    )
+
+    rc = MODULE.run_once(
+        recipient="bolyki@bolyki.eu",
+        archive_root=archive_root,
+        journal_path=journal_path,
+        sent_state_path=sent_state_path,
+        sendmail_bin=sendmail_path,
+        smtp_host="127.0.0.1",
+        smtp_port=25,
+        hostname="bolykihu",
+        sender_domain="bolyki.eu",
+        now=datetime(2026, 6, 25, 20, 0, tzinfo=timezone.utc),
+        no_trade_days=5,
+    )
+
+    assert rc == 0
+    mail_text = mail_capture.read_text(encoding="utf-8")
+    assert "Subject: [Monit] XAUEX no executed trades on bolykihu" in mail_text
+    assert "No-trade signal days: 5" in mail_text
+    assert "Latest opened trade UTC: 2026-06-19T08:00:00Z" in mail_text
+    saved_state = json.loads(sent_state_path.read_text(encoding="utf-8"))
+    assert "no_trades:2026-06-25" in saved_state["sent_alert_keys"]
+
+    rc_again = MODULE.run_once(
+        recipient="bolyki@bolyki.eu",
+        archive_root=archive_root,
+        journal_path=journal_path,
+        sent_state_path=sent_state_path,
+        sendmail_bin=sendmail_path,
+        smtp_host="127.0.0.1",
+        smtp_port=25,
+        hostname="bolykihu",
+        sender_domain="bolyki.eu",
+        now=datetime(2026, 6, 25, 20, 5, tzinfo=timezone.utc),
+        no_trade_days=5,
+    )
+
+    assert rc_again == 0
+    assert mail_capture.read_text(encoding="utf-8") == mail_text
+
+
 def test_signal_stall_alert_is_wired_into_monit_install() -> None:
     monit_config = Path("ops/monitoring/45-xauex-notify.monit").read_text(encoding="utf-8")
     installer = Path("ops/install_systemd.sh").read_text(encoding="utf-8")

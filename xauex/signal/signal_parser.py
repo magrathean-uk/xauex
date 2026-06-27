@@ -370,19 +370,11 @@ def _apply_price_conflict_guard(
         'min_confidence': round(min_confidence, 2),
     }
 
-    blocked = dict(signal)
-    blocked['action'] = 'HOLD'
-    blocked['confidence'] = 0.0
-    blocked['stop_loss_distance'] = 0.0
-    blocked['take_profit_distance'] = 0.0
-    if asset.distance_unit == 'usd':
-        blocked['stop_loss_usd'] = 0.0
-        blocked['take_profit_usd'] = 0.0
-    blocked['consensus_state'] = 'blocked'
-    existing_reasoning = str(blocked.get('reasoning') or '').strip()
-    blocked['reasoning'] = (f'{existing_reasoning} {guard["reason"]}'.strip())[:500]
-    blocked['price_conflict_guard'] = guard
-    return blocked
+    annotated = dict(signal)
+    existing_reasoning = str(annotated.get('reasoning') or '').strip()
+    annotated['reasoning'] = (f'{existing_reasoning} {guard["reason"]}'.strip())[:500]
+    annotated['price_conflict_guard'] = guard
+    return _add_trade_warning(annotated, 'PRICE_CONFLICT')
 
 
 def _direction_label(value: Any) -> str:
@@ -394,6 +386,16 @@ def _direction_label(value: Any) -> str:
     if text == 'HOLD':
         return 'HOLD'
     return text
+
+
+def _add_trade_warning(signal: dict[str, Any], warning: str) -> dict[str, Any]:
+    annotated = dict(signal)
+    existing = annotated.get('trade_warnings')
+    warnings = list(existing) if isinstance(existing, list) else []
+    if warning not in warnings:
+        warnings.append(warning)
+    annotated['trade_warnings'] = warnings
+    return annotated
 
 
 def _apply_directional_persistence(
@@ -449,18 +451,13 @@ def _apply_directional_persistence(
         'next_state': decision.next_state,
     }
     if decision.action != str(signal.get('action', 'HOLD')).upper() or decision.confidence != float(signal.get('confidence', 0.0) or 0.0):
-        annotated['action'] = decision.action
-        annotated['confidence'] = round(decision.confidence, 2)
-        if decision.action == 'HOLD':
-            annotated['stop_loss_distance'] = 0.0
-            annotated['take_profit_distance'] = 0.0
-            if asset.distance_unit == 'usd':
-                annotated['stop_loss_usd'] = 0.0
-                annotated['take_profit_usd'] = 0.0
+        if decision.action == 'HOLD' and str(signal.get('action', 'HOLD')).upper() in {'BUY', 'SELL'}:
             existing_reasoning = str(annotated.get('reasoning') or '').strip()
-            persistence_note = decision.reason
-            annotated['reasoning'] = (f'{existing_reasoning} {persistence_note}'.strip())[:500]
-            annotated['consensus_state'] = 'blocked'
+            annotated['reasoning'] = (f'{existing_reasoning} {decision.reason}'.strip())[:500]
+            annotated = _add_trade_warning(annotated, decision.policy)
+        else:
+            annotated['action'] = decision.action
+            annotated['confidence'] = round(decision.confidence, 2)
 
     if decision.next_state is not None:
         try:
@@ -1110,11 +1107,11 @@ def _apply_validator_result(
     hard_blocker = bool(validator_result.get('hard_blocker'))
 
     if hard_blocker or decision == 'BLOCK':
-        blocked = _hold_signal(asset, reasoning or 'Validator blocked the trade.')
-        blocked['validator_status'] = 'reviewed'
-        blocked['validator_summary'] = reasoning or 'Validator blocked the trade.'
-        blocked['consensus_state'] = 'blocked'
-        return blocked
+        merged['validator_status'] = 'reviewed'
+        merged['validator_summary'] = reasoning or 'Validator blocked the trade.'
+        merged['validator_hard_blocker'] = True
+        merged['consensus_state'] = 'blocked'
+        return _add_trade_warning(merged, 'VALIDATOR_HARD_BLOCKER')
 
     if decision == 'DISAGREE':
         merged['confidence'] = round(max(0.0, min(1.0, float(merged.get('confidence', 0.0)) + adjustment)), 2)

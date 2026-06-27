@@ -7,6 +7,7 @@ import argparse
 import json
 import logging
 import sys
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from dotenv import load_dotenv
@@ -70,6 +71,8 @@ def main() -> None:
         return
 
     config = SignalConfig.from_env()
+    if args.dry_run:
+        config = replace(config, directional_state_path="")
     logger.info(
         'Signal config: sim_model=%s parser_model=%s llm_base_url=%s qdrant=%s',
         config.llm_model,

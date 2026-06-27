@@ -15,6 +15,10 @@ from xauex.shared.llm_client import create_chat_client
 
 logger = logging.getLogger(__name__)
 
+BRIEF_MAX_TOKENS = 260
+GEMINI_35_BRIEF_MAX_TOKENS = 1600
+GEMINI_35_BRIEF_RETRY_MAX_TOKENS = 2400
+
 
 def write_brief(
     *,
@@ -69,30 +73,19 @@ def write_brief(
         "- Use the per-row interpretation strings in the report (e.g. 'USD weakened — gold-supportive') verbatim where useful instead of inventing your own narrative."
     )
 
-    response = client.chat.completions.create(
+    parsed, responses = _request_brief_json(
+        client=client,
         model=config.brief_llm_model,
+        base_url=config.brief_llm_base_url,
         messages=[
             {'role': 'system', 'content': system},
             {'role': 'user', 'content': prompt},
         ],
-        **request_temperature_kwargs(config.brief_llm_model, 0.1),
-        **completion_options(
-            config.brief_llm_model,
-            max_tokens=260,
-            base_url=config.brief_llm_base_url,
-            json_object=True,
-        ),
     )
-    raw = (response.choices[0].message.content or '').strip()
-    if raw.startswith('```'):
-        raw = raw.split('\n', 1)[-1].rsplit('```', 1)[0].strip()
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError:
-        logger.error('[BRIEF] Invalid JSON from model: %s', raw[:400])
+    if parsed is None:
         parsed = _fallback_brief(signal)
 
-    usage = _extract_usage(response, model_hint=config.brief_llm_model)
+    usage = _extract_usage(responses, model_hint=config.brief_llm_model)
     doc = _render_markdown(
         title=str(parsed.get('title') or f'{asset.symbol} {signal.get("action", "HOLD")} Brief'),
         summary_markdown=str(parsed.get('summary_markdown') or _fallback_brief(signal)['summary_markdown']),
@@ -142,6 +135,112 @@ def _fallback_brief(signal: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _request_brief_json(
+    *,
+    client: Any,
+    model: str,
+    base_url: str,
+    messages: list[dict[str, str]],
+) -> tuple[dict[str, Any] | None, list[Any]]:
+    budgets = [_brief_max_tokens(model)]
+    retry_budget = _brief_retry_max_tokens(model, budgets[0])
+    if retry_budget > budgets[0]:
+        budgets.append(retry_budget)
+
+    responses: list[Any] = []
+    for index, max_tokens in enumerate(budgets, start=1):
+        response = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            **request_temperature_kwargs(model, 0.1),
+            **completion_options(
+                model,
+                max_tokens=max_tokens,
+                base_url=base_url,
+                json_object=True,
+            ),
+        )
+        responses.append(response)
+        raw = _completion_content(response)
+        parsed = _parse_json_object(raw)
+        if parsed is not None:
+            if index > 1:
+                logger.info("[BRIEF] JSON parsed after retry %d.", index)
+            return parsed, responses
+
+        finish_reason = _finish_reason(response)
+        if index < len(budgets):
+            logger.warning(
+                "[BRIEF] Invalid JSON from model on attempt %d/%d "
+                "(finish_reason=%s, content_len=%d); retrying with max_tokens=%d.",
+                index,
+                len(budgets),
+                finish_reason or "-",
+                len(raw),
+                budgets[index],
+            )
+        else:
+            logger.error(
+                "[BRIEF] Invalid JSON from model after %d attempt(s) "
+                "(finish_reason=%s): %s",
+                len(budgets),
+                finish_reason or "-",
+                raw[:400],
+            )
+    return None, responses
+
+
+def _brief_max_tokens(model: str) -> int:
+    if _is_gemini_35_flash(model):
+        return GEMINI_35_BRIEF_MAX_TOKENS
+    return BRIEF_MAX_TOKENS
+
+
+def _brief_retry_max_tokens(model: str, first_budget: int) -> int:
+    if _is_gemini_35_flash(model):
+        return max(first_budget, GEMINI_35_BRIEF_RETRY_MAX_TOKENS)
+    return first_budget
+
+
+def _is_gemini_35_flash(model: str) -> bool:
+    return str(model or "") in {"gemini-3.5-flash", "google/gemini-3.5-flash"}
+
+
+def _completion_content(response: Any) -> str:
+    choices = getattr(response, "choices", None) or []
+    if not choices:
+        return ""
+    message = getattr(choices[0], "message", None)
+    content = getattr(message, "content", None)
+    if content is None:
+        return ""
+    raw = content if isinstance(content, str) else str(content)
+    raw = raw.strip()
+    if raw.startswith("```"):
+        raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+    return raw
+
+
+def _parse_json_object(raw: str) -> dict[str, Any] | None:
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _finish_reason(response: Any) -> str:
+    raw = getattr(response, "raw", None)
+    if not isinstance(raw, dict):
+        return ""
+    choices = raw.get("choices") or []
+    if not choices or not isinstance(choices[0], dict):
+        return ""
+    return str(choices[0].get("finish_reason") or "")
+
+
 def _render_markdown(
     *,
     title: str,
@@ -173,19 +272,41 @@ def _render_markdown(
     )
 
 
-def _extract_usage(response: Any, *, model_hint: str = '') -> dict[str, Any]:
-    usage = getattr(response, 'usage', None)
-    if usage is None:
+def _extract_usage(responses: Any, *, model_hint: str = '') -> dict[str, Any]:
+    if not isinstance(responses, list):
+        responses = [responses]
+    responses = [response for response in responses if response is not None]
+    if not responses:
         return {}
-    model = getattr(response, 'model', '') or model_hint
-    prompt_tokens = int(getattr(usage, 'prompt_tokens', 0) or 0)
-    completion_tokens = int(getattr(usage, 'completion_tokens', 0) or 0)
+    models: list[str] = []
+    prompt_tokens = 0
+    completion_tokens = 0
+    total_tokens = 0
+    estimated_cost = 0.0
+    cost_available = False
+    for response in responses:
+        usage = getattr(response, 'usage', None)
+        if usage is None:
+            continue
+        model = getattr(response, 'model', '') or model_hint
+        if model and model not in models:
+            models.append(model)
+        prompt = int(getattr(usage, 'prompt_tokens', 0) or 0)
+        completion = int(getattr(usage, 'completion_tokens', 0) or 0)
+        prompt_tokens += prompt
+        completion_tokens += completion
+        total_tokens += int(getattr(usage, 'total_tokens', 0) or 0)
+        attempt_cost = _estimate_cost_usd(model, prompt, completion)
+        if attempt_cost is not None:
+            estimated_cost += attempt_cost
+            cost_available = True
+    model = '+'.join(models) if models else model_hint
     return {
         'model': model,
         'prompt_tokens': prompt_tokens,
         'completion_tokens': completion_tokens,
-        'total_tokens': int(getattr(usage, 'total_tokens', 0) or 0),
-        'estimated_cost_usd': _estimate_cost_usd(model, prompt_tokens, completion_tokens),
+        'total_tokens': total_tokens,
+        'estimated_cost_usd': round(estimated_cost, 8) if cost_available else None,
     }
 
 

@@ -109,12 +109,17 @@ class Config:
     xauex_counter_signal_enabled: bool
     xauex_counter_signal_confidence: float
     xauex_counter_signal_risk_multiplier: float
+    xauex_counter_signal_daily_limit: int
+    xauex_counter_signal_canary_only: bool
     xauex_continuation_addon_enabled: bool
     xauex_continuation_addon_min_confidence: float
     xauex_continuation_addon_risk_multiplier: float
     xauex_min_lot_canary_enabled: bool
     xauex_min_lot_canary_min_confidence: float
     xauex_min_lot_canary_max_per_day: int
+    xauex_same_direction_loss_cooldown: bool
+    xauex_stale_context_min_confidence: float
+    xauex_exceptional_reentry_min_confidence: float
     xauex_manual_command_path: str
     xauex_manual_command_secret: str
     xauex_manual_command_ledger_path: str
@@ -534,6 +539,19 @@ def load_config(env_file: str = ".env") -> Config:
         1.0,
         0.5,
     )
+    xauex_counter_signal_daily_limit = collect(
+        _int_range,
+        "XAUEX_COUNTER_SIGNAL_DAILY_LIMIT",
+        0,
+        3,
+        1,
+    )
+    xauex_counter_signal_canary_only = os.getenv("XAUEX_COUNTER_SIGNAL_CANARY_ONLY", "true").lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
     xauex_continuation_addon_enabled = os.getenv("XAUEX_CONTINUATION_ADDON_ENABLED", "true").lower() in (
         "1",
         "true",
@@ -572,6 +590,26 @@ def load_config(env_file: str = ".env") -> Config:
         0,
         3,
         int(os.getenv("XAUEX_MIN_LOT_CANARY_MAX_PER_DAY", "1")),
+    )
+    xauex_same_direction_loss_cooldown = os.getenv("XAUEX_SAME_DIRECTION_LOSS_COOLDOWN", "true").lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    xauex_stale_context_min_confidence = collect(
+        _float_range,
+        "XAUEX_STALE_CONTEXT_MIN_CONFIDENCE",
+        0.0,
+        1.0,
+        0.70,
+    )
+    xauex_exceptional_reentry_min_confidence = collect(
+        _float_range,
+        "XAUEX_EXCEPTIONAL_REENTRY_MIN_CONFIDENCE",
+        0.0,
+        1.0,
+        0.85,
     )
     xauex_manual_command_path = os.getenv(
         "XAUEX_MANUAL_COMMAND_PATH",
@@ -806,12 +844,17 @@ def load_config(env_file: str = ".env") -> Config:
         xauex_counter_signal_enabled=xauex_counter_signal_enabled,
         xauex_counter_signal_confidence=xauex_counter_signal_confidence,
         xauex_counter_signal_risk_multiplier=xauex_counter_signal_risk_multiplier,
+        xauex_counter_signal_daily_limit=xauex_counter_signal_daily_limit,
+        xauex_counter_signal_canary_only=xauex_counter_signal_canary_only,
         xauex_continuation_addon_enabled=xauex_continuation_addon_enabled,
         xauex_continuation_addon_min_confidence=xauex_continuation_addon_min_confidence,
         xauex_continuation_addon_risk_multiplier=xauex_continuation_addon_risk_multiplier,
         xauex_min_lot_canary_enabled=xauex_min_lot_canary_enabled,
         xauex_min_lot_canary_min_confidence=xauex_min_lot_canary_min_confidence,
         xauex_min_lot_canary_max_per_day=xauex_min_lot_canary_max_per_day,
+        xauex_same_direction_loss_cooldown=xauex_same_direction_loss_cooldown,
+        xauex_stale_context_min_confidence=xauex_stale_context_min_confidence,
+        xauex_exceptional_reentry_min_confidence=xauex_exceptional_reentry_min_confidence,
         xauex_manual_command_path=xauex_manual_command_path,
         xauex_manual_command_secret=xauex_manual_command_secret,
         xauex_manual_command_ledger_path=xauex_manual_command_ledger_path,

@@ -11,6 +11,7 @@ so the analyst LLM can act on real evidence instead of generic narrative.
 from __future__ import annotations
 
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -18,7 +19,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 
-from xauex.analyst.weekly_review import compute_trade_metrics, format_trade_metrics
+from xauex.analyst.weekly_review import compute_trade_metrics, filter_journal_to_week, format_trade_metrics
 
 
 def _trade(direction: str, pnl: float, pattern: str = "NONE", confidence: float = 0.5) -> dict:
@@ -130,3 +131,24 @@ def test_compute_trade_metrics_handles_missing_or_unknown_direction_gracefully()
     assert metrics["long_count"] == 1
     assert metrics["short_count"] == 0
     assert metrics["unknown_direction_count"] == 1
+
+
+def test_filter_journal_to_week_uses_trade_close_time_before_journal_time():
+    week_start = datetime(2026, 6, 15, tzinfo=timezone.utc)
+    week_end = datetime(2026, 6, 21, 23, 59, 59, tzinfo=timezone.utc)
+    entries = [
+        {
+            "trade_id": "old-backfill",
+            "journalled_at_utc": "2026-06-21T16:25:21Z",
+            "entry": {"close_time_utc": "2026-05-29T14:00:06Z", "direction": "LONG", "pnl": 12.14},
+        },
+        {
+            "trade_id": "loss-week",
+            "journalled_at_utc": "2026-06-21T16:25:37Z",
+            "entry": {"close_time_utc": "2026-06-19T12:59:42Z", "direction": "SHORT", "pnl": -19.41},
+        },
+    ]
+
+    filtered = filter_journal_to_week(entries, week_start, week_end)
+
+    assert [entry["trade_id"] for entry in filtered] == ["loss-week"]

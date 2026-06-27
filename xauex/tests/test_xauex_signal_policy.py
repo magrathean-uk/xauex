@@ -24,7 +24,45 @@ from xauex.signal.assets import resolve_asset
 from xauex.signal.signal_parser import _fallback_direction, _normalize_signal
 
 BotOrchestrator = _MODULE.BotOrchestrator
+XauexAssuranceProfile = _MODULE.XauexAssuranceProfile
 calculate_xauex_assurance_cash_risk = _MODULE.calculate_xauex_assurance_cash_risk
+build_xauex_assurance_profile = _MODULE.build_xauex_assurance_profile
+
+
+def _assurance_config(**overrides):
+    base = {
+        "xauex_session_protect_r": 0.85,
+        "xauex_session_high_confidence_protect_r": 1.0,
+        "xauex_session_trail_r": 1.35,
+        "xauex_session_protect_lock_r": 0.30,
+        "xauex_session_high_confidence_protect_lock_r": 0.25,
+        "xauex_session_low_confidence_protect_r": 0.95,
+        "xauex_session_low_confidence_protect_lock_r": 0.20,
+        "xauex_low_confidence_lot_multiplier": 0.25,
+        "xauex_stale_context_min_confidence": 0.70,
+        "xauex_same_direction_loss_cooldown": True,
+        "xauex_counter_signal_daily_limit": 1,
+        "xauex_exceptional_reentry_min_confidence": 0.85,
+    }
+    base.update(overrides)
+    return SimpleNamespace(**base)
+
+
+def _signal(**overrides):
+    base = {
+        "action": "SELL",
+        "confidence": 0.80,
+        "consensus_state": "aligned",
+        "validator_status": "reviewed",
+        "validator_summary": "well-supported setup",
+        "confirm_status": "CONFIRMED",
+        "decision_packet": {
+            "input_freshness": {"market_snapshot_state": "fresh"},
+            "price_features": {"range_position": "MIDDLE_THIRD"},
+        },
+    }
+    base.update(overrides)
+    return base
 
 
 def test_parser_fallback_converts_soft_hold_to_directional_trade():
@@ -239,3 +277,216 @@ def test_assurance_cash_risk_does_not_lift_to_minimum_when_budget_cannot_cover_i
     )
 
     assert cash_risk == 8.5
+
+
+def test_assurance_reduces_medium_confidence_with_stale_market_snapshot():
+    signal = _signal(
+        confidence=0.55,
+        decision_packet={
+            "input_freshness": {"market_snapshot_state": "warning"},
+            "price_features": {"range_position": "MIDDLE_THIRD"},
+        },
+    )
+
+    assurance = build_xauex_assurance_profile(signal, _assurance_config())
+
+    assert assurance.allow_trade is True
+    assert assurance.bucket == "medium"
+    assert assurance.reason == "MEDIUM_ASSURANCE_STALE_CONTEXT"
+    assert assurance.risk_multiplier == 0.5
+
+
+def test_assurance_reduces_stale_counter_signal_to_medium_risk():
+    signal = _signal(
+        confidence=0.58,
+        counter_signal=True,
+        decision_packet={
+            "input_freshness": {"market_snapshot_state": "warning"},
+            "price_features": {"range_position": "MIDDLE_THIRD"},
+        },
+    )
+
+    assurance = build_xauex_assurance_profile(signal, _assurance_config())
+
+    assert assurance.allow_trade is True
+    assert assurance.bucket == "medium"
+    assert assurance.reason == "MEDIUM_ASSURANCE_STALE_CONTEXT"
+    assert assurance.risk_multiplier == 0.5
+
+
+def test_assurance_caps_high_confidence_stale_snapshot_to_reduced_medium_risk():
+    signal = _signal(
+        confidence=0.82,
+        decision_packet={
+            "input_freshness": {"market_snapshot_state": "stale"},
+            "price_features": {"range_position": "MIDDLE_THIRD"},
+        },
+    )
+
+    assurance = build_xauex_assurance_profile(signal, _assurance_config())
+
+    assert assurance.allow_trade is True
+    assert assurance.bucket == "medium"
+    assert assurance.reason == "MEDIUM_ASSURANCE_STALE_CONTEXT"
+    assert assurance.risk_multiplier == 0.5
+
+
+def test_counter_signal_canary_can_force_minimum_risk_without_regular_lift():
+    cash_risk = calculate_xauex_assurance_cash_risk(
+        cash_risk_budget=29.41,
+        assurance_risk_multiplier=1.0,
+        cooldown_multiplier=1.0,
+        session_slot_multiplier=0.85,
+        counter_signal_risk_multiplier=0.5,
+        microstructure_risk_multiplier=1.0,
+        minimum_executable_risk=25.0,
+        allow_minimum_executable_risk_lift=False,
+        force_minimum_executable_risk=True,
+    )
+
+    assert cash_risk == 25.0
+
+
+def test_entry_policy_blocks_second_counter_signal_same_london_day():
+    decision = _MODULE.build_xauex_entry_quality_decision(
+        signal=_signal(counter_signal=True),
+        assurance=XauexAssuranceProfile(
+            bucket="medium",
+            score=0.58,
+            allow_trade=True,
+            reason="MEDIUM_ASSURANCE",
+            risk_multiplier=1.0,
+            target_rr=2.0,
+            protect_r=0.85,
+            trail_r=1.35,
+            protect_lock_r=0.30,
+        ),
+        config=_assurance_config(),
+        now_utc=None,
+        closed_trades_today=[],
+        signal_runs_london=[
+            {"reason": "ORDER_PLACED", "signal_action": "SELL", "counter_signal": True},
+        ],
+    )
+
+    assert decision["allowed"] is True
+    assert decision["reason"] == "ENTRY_QUALITY_WARNINGS"
+    assert decision["risk_multiplier"] < 1.0
+    assert "COUNTER_SIGNAL_DAILY_LIMIT" in decision["policy_factors"]
+
+
+def test_entry_policy_reduces_same_direction_after_loss():
+    decision = _MODULE.build_xauex_entry_quality_decision(
+        signal=_signal(action="SELL", confidence=0.84),
+        assurance=XauexAssuranceProfile(
+            bucket="high",
+            score=0.90,
+            allow_trade=True,
+            reason="HIGH_ASSURANCE",
+            risk_multiplier=1.5,
+            target_rr=2.5,
+            protect_r=1.0,
+            trail_r=1.5,
+            protect_lock_r=0.25,
+        ),
+        config=_assurance_config(),
+        now_utc=None,
+        closed_trades_today=[
+            {
+                "position_id": "loss-1",
+                "direction": "SHORT",
+                "pnl": -19.41,
+                "close_time_utc": "2026-06-19T08:23:17Z",
+            }
+        ],
+        signal_runs_london=[],
+    )
+
+    assert decision["allowed"] is True
+    assert decision["reason"] == "ENTRY_QUALITY_WARNINGS"
+    assert decision["risk_multiplier"] < 1.0
+    assert "SAME_DIRECTION_LOSS_COOLDOWN" in decision["policy_factors"]
+
+
+def test_entry_policy_reduces_lower_third_same_direction_chase_after_prior_entry():
+    signal = _signal(
+        action="SELL",
+        confidence=0.86,
+        decision_packet={
+            "input_freshness": {"market_snapshot_state": "fresh"},
+            "price_features": {"range_position": "LOWER_THIRD"},
+        },
+    )
+
+    decision = _MODULE.build_xauex_entry_quality_decision(
+        signal=signal,
+        assurance=XauexAssuranceProfile(
+            bucket="high",
+            score=0.94,
+            allow_trade=True,
+            reason="HIGH_ASSURANCE",
+            risk_multiplier=1.5,
+            target_rr=2.5,
+            protect_r=1.0,
+            trail_r=1.5,
+            protect_lock_r=0.25,
+        ),
+        config=_assurance_config(),
+        now_utc=None,
+        closed_trades_today=[],
+        signal_runs_london=[
+            {"reason": "ORDER_PLACED", "signal_action": "SELL", "counter_signal": False},
+        ],
+    )
+
+    assert decision["allowed"] is True
+    assert decision["reason"] == "ENTRY_QUALITY_WARNINGS"
+    assert decision["risk_multiplier"] < 1.0
+    assert "LOWER_THIRD_NO_CHASE" in decision["policy_factors"]
+
+
+def test_entry_policy_uses_single_hard_blocker_for_combined_soft_risks():
+    signal = _signal(
+        action="SELL",
+        confidence=0.62,
+        decision_packet={
+            "input_freshness": {"market_snapshot_state": "warning"},
+            "price_features": {"range_position": "LOWER_THIRD"},
+        },
+    )
+
+    decision = _MODULE.build_xauex_entry_quality_decision(
+        signal=signal,
+        assurance=XauexAssuranceProfile(
+            bucket="medium",
+            score=0.57,
+            allow_trade=True,
+            reason="MEDIUM_ASSURANCE_STALE_CONTEXT",
+            risk_multiplier=0.5,
+            target_rr=1.5,
+            protect_r=0.85,
+            trail_r=1.35,
+            protect_lock_r=0.30,
+        ),
+        config=_assurance_config(),
+        now_utc=None,
+        closed_trades_today=[
+            {
+                "position_id": "loss-1",
+                "direction": "SHORT",
+                "pnl": -19.41,
+                "close_time_utc": "2026-06-19T08:23:17Z",
+            }
+        ],
+        signal_runs_london=[
+            {"reason": "ORDER_PLACED", "signal_action": "SELL", "counter_signal": False},
+        ],
+    )
+
+    assert decision["allowed"] is False
+    assert decision["reason"] == "HARD_BLOCKER"
+    assert decision["policy_factors"] == [
+        "STALE_CONTEXT_LOW_CONFIDENCE",
+        "SAME_DIRECTION_LOSS_COOLDOWN",
+        "LOWER_THIRD_NO_CHASE",
+    ]
