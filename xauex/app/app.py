@@ -486,6 +486,7 @@ def _build_evidence() -> dict[str, Any]:
         'price_features': payload.get('price_features', {}) or {},
         'market_snapshot': payload.get('market_snapshot', {}) or {},
         'input_freshness': payload.get('input_freshness', {}) or {},
+        'dsa_sidecar': payload.get('dsa_sidecar', {}) or {},
         'validator': payload.get('validator', {}) or {},
         'estimated_total_cost_usd': payload.get('estimated_total_cost_usd'),
     }

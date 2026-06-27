@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+from xauex.signal.dsa_sidecar import DsaSidecarConfig
 from xauex.signal.qdrant_memory import QdrantMemoryConfig, load_qdrant_memory_config
 
 
@@ -47,6 +48,7 @@ class SignalConfig:
     polymarket_max_markets: int
     polymarket_gamma_base_url: str
     polymarket_clob_base_url: str
+    dsa_sidecar: DsaSidecarConfig
     qdrant_memory: QdrantMemoryConfig
 
     @classmethod
@@ -159,6 +161,7 @@ class SignalConfig:
             polymarket_max_markets=max(1, int(os.getenv('XAUEX_SIGNAL_POLYMARKET_MAX_MARKETS', '8') or '8')),
             polymarket_gamma_base_url=os.getenv('XAUEX_SIGNAL_POLYMARKET_GAMMA_BASE_URL', 'https://gamma-api.polymarket.com').rstrip('/'),
             polymarket_clob_base_url=os.getenv('XAUEX_SIGNAL_POLYMARKET_CLOB_BASE_URL', 'https://clob.polymarket.com').rstrip('/'),
+            dsa_sidecar=DsaSidecarConfig.from_env(),
             qdrant_memory=load_qdrant_memory_config(),
         )
 

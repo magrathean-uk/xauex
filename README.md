@@ -97,6 +97,7 @@ Reference Caddy layout: `ops/Caddyfile.root.example` and `ops/xauex-dashboard.ca
 - `docs/CODEX_DISCOVERY.md`: fastest repo map for editing and debugging.
 - `ops/RUNBOOK.md`: live host operating guide.
 - `docs/REBUILD.md`: fresh-host rebuild.
+- `docs/DSA_SIDECAR.md`: optional localhost-only Daily Stock Analysis sidecar for stock-transition research.
 - `docs/GITHUB_EXPORT.md`: publish/export notes for GitHub.
 - `docs/HOST_AUDIT_2026-04-11.md`: historical host audit.
 

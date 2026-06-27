@@ -15,6 +15,7 @@ from xauex.live_windows import detect_window_label, get_live_window
 from xauex.signal.assets import all_symbols, resolve_asset
 from xauex.signal.config import SignalConfig
 from xauex.signal.direct_predictor import build_prediction_payload, build_recent_actions, render_direct_report
+from xauex.signal.dsa_sidecar import build_dsa_research_snapshot
 from xauex.signal.history_cache import load_recent_trade_memory, load_state_snapshot
 from xauex.signal.source_registry import get_sources
 from xauex.signal.qdrant_memory import retrieve_qdrant_memory_snippets
@@ -212,6 +213,7 @@ def main() -> None:
             price_features=payload['price_features'],
             market_snapshot=payload.get('market_snapshot'),
             input_freshness=(signal.get('decision_packet') or {}).get('input_freshness', payload.get('input_freshness')),
+            dsa_sidecar=payload.get('dsa_sidecar'),
             validator={
                 'status': signal.get('validator_status'),
                 'consensus_state': signal.get('consensus_state'),
@@ -289,6 +291,13 @@ def build_direct_prediction_artifacts(
         market_snapshot=market_snapshot,
         context_items=context_items or [],
     )
+    dsa_snapshot = None
+    if config.dsa_sidecar.enabled:
+        dsa_snapshot = build_dsa_research_snapshot(
+            config.dsa_sidecar,
+            current_price=_latest_mid_price(state_snapshot),
+        )
+        payload['dsa_sidecar'] = dsa_snapshot
     results = {
         'asset': asset.symbol,
         'actions': build_recent_actions(payload),
@@ -298,12 +307,40 @@ def build_direct_prediction_artifacts(
         'fallback_reused': False,
         'prediction_mode': 'direct',
     }
+    if dsa_snapshot is not None:
+        results['dsa_sidecar'] = dsa_snapshot
     return {
         'payload': payload,
         'actions': results['actions'],
         'report_markdown': results['report_markdown'],
         'results': results,
     }
+
+
+def _latest_mid_price(state_snapshot: dict[str, object] | None) -> float | None:
+    if not isinstance(state_snapshot, dict):
+        return None
+    runtime = state_snapshot.get('runtime')
+    quote = runtime.get('latest_quote') if isinstance(runtime, dict) else None
+    if not isinstance(quote, dict):
+        return None
+    mid = _coerce_float(quote.get('mid'))
+    if mid is not None:
+        return mid
+    bid = _coerce_float(quote.get('bid'))
+    ask = _coerce_float(quote.get('ask'))
+    if bid is not None and ask is not None:
+        return (bid + ask) / 2.0
+    return bid if bid is not None else ask
+
+
+def _coerce_float(value: object) -> float | None:
+    try:
+        if value in (None, ''):
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _window_label() -> str:

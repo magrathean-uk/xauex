@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from xauex.signal.config import SignalConfig
+from xauex.signal.dsa_sidecar import DsaSidecarConfig
 from xauex.signal.qdrant_memory import QdrantMemoryConfig
 import xauex.signal.run as signal_run
 from xauex.signal.run import build_direct_prediction_artifacts
@@ -84,6 +85,15 @@ def test_signal_config_disables_qdrant_memory_by_default(monkeypatch):
 
     assert cfg.qdrant_memory.enabled is False
     assert cfg.qdrant_memory.collection_name == "xauex_signal_memory"
+
+
+def test_signal_config_exposes_disabled_dsa_sidecar_by_default(monkeypatch):
+    monkeypatch.setenv("XAUEX_SIGNAL_LLM_API_KEY", "test-key")
+    monkeypatch.delenv("XAUEX_DSA_ENABLED", raising=False)
+
+    cfg = SignalConfig.from_env()
+
+    assert cfg.dsa_sidecar == DsaSidecarConfig()
 
 
 def test_signal_config_exposes_validator_and_budget_defaults(monkeypatch):
@@ -340,6 +350,53 @@ def test_build_direct_prediction_artifacts_preserves_policy_context_in_payload(m
 
     assert captured["market_snapshot"]["policy_context"]["status"] == "watch"
     assert artifacts["payload"]["market_snapshot"]["policy_context"]["summary"] == "FOMC watch is active."
+
+
+def test_build_direct_prediction_artifacts_adds_dsa_research_snapshot_without_prompt_action(monkeypatch):
+    monkeypatch.setenv("XAUEX_SIGNAL_LLM_API_KEY", "test-key")
+    cfg = replace(
+        SignalConfig.from_env(),
+        dsa_sidecar=DsaSidecarConfig(enabled=True, symbol="AAPL", base_url="http://dsa.local/api/v1"),
+    )
+
+    def fake_load_recent_trade_memory(path):
+        return []
+
+    def fake_load_state_snapshot(path):
+        return {"runtime": {"latest_quote": {"mid": 198.0}}}
+
+    def fake_build_market_snapshot(*, asset, config, context_items, window_label):
+        return {"series": {}, "event_flags": {}, "input_freshness": {}}
+
+    def fake_build_dsa_research_snapshot(config, **kwargs):
+        assert config.symbol == "AAPL"
+        assert kwargs["current_price"] == 198.0
+        return {
+            "enabled": True,
+            "status": "ok",
+            "symbol": "AAPL",
+            "shadow_signal": {
+                "symbol": "AAPL",
+                "action": "BUY",
+                "confidence": 0.80,
+                "shadow_only": True,
+            },
+        }
+
+    monkeypatch.setattr("xauex.signal.run.load_recent_trade_memory", fake_load_recent_trade_memory)
+    monkeypatch.setattr("xauex.signal.run.load_state_snapshot", fake_load_state_snapshot)
+    monkeypatch.setattr("xauex.signal.market_snapshot.build_market_snapshot", fake_build_market_snapshot)
+    monkeypatch.setattr("xauex.signal.run.build_dsa_research_snapshot", fake_build_dsa_research_snapshot)
+
+    artifacts = build_direct_prediction_artifacts(
+        config=cfg,
+        asset_symbol="XAUUSD",
+        context_markdown="# Context\nFed is dovish.",
+    )
+
+    assert artifacts["payload"]["dsa_sidecar"]["shadow_signal"]["action"] == "BUY"
+    assert artifacts["results"]["dsa_sidecar"]["status"] == "ok"
+    assert not any(action["agent_name"] == "daily_stock_analysis" for action in artifacts["actions"])
 
 
 def test_dry_run_does_not_overwrite_live_brief_or_evidence(monkeypatch, tmp_path: Path):

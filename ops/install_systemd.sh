@@ -85,7 +85,7 @@ render_window_timer_if_changed() {
   done < <(window_timer_specs "$phase")
 }
 
-mkdir -p "$REPO_ROOT/logs" /var/lib/xauex /var/lib/xauex/shadow_trials /var/log/xauex
+mkdir -p "$REPO_ROOT/logs" /var/lib/xauex /var/lib/xauex/shadow_trials /var/lib/xauex/dsa-sidecar /var/log/xauex /etc/xauex
 chown -R "$RUN_USER:$RUN_USER" "$REPO_ROOT/logs" /var/lib/xauex /var/log/xauex
 mkdir -p /usr/local/lib/monitoring /etc/monit/conf-enabled
 
@@ -110,6 +110,7 @@ install_if_changed "$REPO_ROOT/ops/run_trade_journal.sh" /usr/local/bin/xauex-ru
 install_if_changed "$REPO_ROOT/ops/run_weekly_review.sh" /usr/local/bin/xauex-run-weekly-review 755
 install_if_changed "$REPO_ROOT/ops/run_decision_ledger.sh" /usr/local/bin/xauex-run-decision-ledger 755
 install_if_changed "$REPO_ROOT/ops/run_xauex_web.sh" /usr/local/bin/xauex-run-web 755
+install_if_changed "$REPO_ROOT/ops/run_dsa_sidecar.sh" /usr/local/bin/xauex-run-dsa-sidecar 755
 install_if_changed "$REPO_ROOT/ops/enforce_log_budget.sh" /usr/local/bin/xauex-enforce-log-budget 755
 install_if_changed "$REPO_ROOT/ops/check_host_layout.sh" /usr/local/bin/xauex-check-host-layout 755
 install_if_changed "$REPO_ROOT/ops/monitoring/check_xauex_runtime.sh" /usr/local/lib/monitoring/check_xauex_runtime.sh 755
@@ -118,7 +119,7 @@ install_if_changed "$REPO_ROOT/ops/monitoring/check_xauex_trade_alerts.py" /usr/
 install_if_changed "$REPO_ROOT/ops/monitoring/check_xauex_signal_stall.py" /usr/local/lib/monitoring/check_xauex_signal_stall.py 755
 install_if_changed "$REPO_ROOT/ops/monitoring/45-xauex-notify.monit" /etc/monit/conf-enabled/45-xauex-notify.monit 644
 
-for unit in xauex.service xauex-signal.service xauex-signal.timer xauex-window-signal@.service xauex-window-confirm@.service xauex-shadow-compare.service xauex-shadow-compare.timer xauex-shadow-evaluate.service xauex-shadow-evaluate.timer xauex-start.timer xauex-stop.service xauex-stop.timer xauex-trade-journal.service xauex-trade-journal.timer xauex-decision-ledger.service xauex-decision-ledger.timer xauex-weekly-review.service xauex-weekly-review.timer xauex-web.service; do
+for unit in xauex.service xauex-signal.service xauex-signal.timer xauex-window-signal@.service xauex-window-confirm@.service xauex-shadow-compare.service xauex-shadow-compare.timer xauex-shadow-evaluate.service xauex-shadow-evaluate.timer xauex-start.timer xauex-stop.service xauex-stop.timer xauex-trade-journal.service xauex-trade-journal.timer xauex-decision-ledger.service xauex-decision-ledger.timer xauex-weekly-review.service xauex-weekly-review.timer xauex-web.service dsa-sidecar.service; do
   if [[ "$unit" == "xauex.service" ]]; then
     render_unit_if_changed "$unit" 1
   else
@@ -223,3 +224,4 @@ echo "  confirm: systemctl status xauex-window-confirm@morning.timer xauex-windo
 echo "  shadow:  systemctl status xauex-shadow-compare.timer xauex-shadow-evaluate.timer"
 echo "  web:     systemctl status xauex-web.service"
 echo "  xauex timers: systemctl status xauex-start.timer xauex-stop.timer xauex-trade-journal.timer xauex-weekly-review.timer"
+echo "  dsa:     optional sidecar installed disabled; start with systemctl start dsa-sidecar.service after configuring /etc/xauex/dsa-sidecar.env"
