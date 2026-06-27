@@ -10,6 +10,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 RUN_USER="${SUDO_USER:-${USER:-bolyki}}"
 XAUEX_RUNTIME_CHANGED=0
+DSA_DOCKER_GROUP_LINE=""
+if getent group docker >/dev/null 2>&1; then
+  DSA_DOCKER_GROUP_LINE="SupplementaryGroups=docker"
+fi
 
 install_if_changed() {
   local src="$1"
@@ -34,6 +38,7 @@ render_unit_if_changed() {
   sed \
     -e "s|__REPO_ROOT__|$REPO_ROOT|g" \
     -e "s|__RUN_USER__|$RUN_USER|g" \
+    -e "s|__DSA_DOCKER_GROUP__|$DSA_DOCKER_GROUP_LINE|g" \
     "$REPO_ROOT/ops/$unit" > "$tmp"
   if [[ ! -f "$dst" ]] || ! cmp -s "$tmp" "$dst"; then
     install -m 644 "$tmp" "$dst"

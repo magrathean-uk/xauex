@@ -22,7 +22,7 @@ def test_dsa_sidecar_config_is_disabled_by_default(monkeypatch):
     cfg = DsaSidecarConfig.from_env()
 
     assert cfg.enabled is False
-    assert cfg.base_url == "http://127.0.0.1:8090/api/v1"
+    assert cfg.base_url == "http://127.0.0.1:18090/api/v1"
     assert cfg.symbol == "AAPL"
     assert cfg.shadow_only is True
     assert cfg.min_confidence == 0.65
@@ -30,7 +30,7 @@ def test_dsa_sidecar_config_is_disabled_by_default(monkeypatch):
 
 def test_dsa_sidecar_config_reads_env_and_normalizes_base_url(monkeypatch):
     monkeypatch.setenv("XAUEX_DSA_ENABLED", "1")
-    monkeypatch.setenv("XAUEX_DSA_BASE_URL", "http://127.0.0.1:8090/api/v1/")
+    monkeypatch.setenv("XAUEX_DSA_BASE_URL", "http://127.0.0.1:18090/api/v1/")
     monkeypatch.setenv("XAUEX_DSA_SYMBOL", " msft ")
     monkeypatch.setenv("XAUEX_DSA_ADMIN_COOKIE", "session-cookie")
     monkeypatch.setenv("XAUEX_DSA_TIMEOUT_SECONDS", "3.5")
@@ -40,7 +40,7 @@ def test_dsa_sidecar_config_reads_env_and_normalizes_base_url(monkeypatch):
     cfg = DsaSidecarConfig.from_env()
 
     assert cfg.enabled is True
-    assert cfg.base_url == "http://127.0.0.1:8090/api/v1"
+    assert cfg.base_url == "http://127.0.0.1:18090/api/v1"
     assert cfg.symbol == "MSFT"
     assert cfg.admin_cookie == "session-cookie"
     assert cfg.timeout_seconds == 3.5

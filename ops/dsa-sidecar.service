@@ -7,14 +7,18 @@ Wants=network-online.target
 Type=simple
 User=__RUN_USER__
 Group=__RUN_USER__
+__DSA_DOCKER_GROUP__
 WorkingDirectory=__REPO_ROOT__
+Environment=DSA_SIDECAR_RUNTIME=auto
 Environment=DSA_SIDECAR_HOST=127.0.0.1
-Environment=DSA_SIDECAR_PORT=8090
+Environment=DSA_SIDECAR_PORT=18090
 Environment=DSA_SIDECAR_BASE_DIR=/var/lib/xauex/dsa-sidecar
 EnvironmentFile=-/etc/xauex/dsa-sidecar.env
 ExecStart=/usr/local/bin/xauex-run-dsa-sidecar
+ExecStop=/bin/sh -c "command -v docker >/dev/null 2>&1 && docker stop xauex-dsa-sidecar >/dev/null 2>&1 || true"
 Restart=on-failure
 RestartSec=20
+TimeoutStopSec=60
 NoNewPrivileges=true
 PrivateTmp=true
 

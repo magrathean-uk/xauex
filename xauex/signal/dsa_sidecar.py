@@ -15,7 +15,7 @@ from typing import Any
 import httpx
 
 
-_DEFAULT_BASE_URL = "http://127.0.0.1:8090/api/v1"
+_DEFAULT_BASE_URL = "http://127.0.0.1:18090/api/v1"
 _DIRECTIONAL_ACTIONS = {"buy": "BUY", "sell": "SELL"}
 
 
