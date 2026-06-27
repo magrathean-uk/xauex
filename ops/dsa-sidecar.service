@@ -1,0 +1,22 @@
+[Unit]
+Description=Daily Stock Analysis sidecar for XAUEX research
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__RUN_USER__
+Group=__RUN_USER__
+WorkingDirectory=__REPO_ROOT__
+Environment=DSA_SIDECAR_HOST=127.0.0.1
+Environment=DSA_SIDECAR_PORT=8090
+Environment=DSA_SIDECAR_BASE_DIR=/var/lib/xauex/dsa-sidecar
+EnvironmentFile=-/etc/xauex/dsa-sidecar.env
+ExecStart=/usr/local/bin/xauex-run-dsa-sidecar
+Restart=on-failure
+RestartSec=20
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

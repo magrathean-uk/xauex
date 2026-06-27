@@ -16,6 +16,7 @@ def write_evidence_pack(
     price_features: dict[str, Any] | None = None,
     market_snapshot: dict[str, Any] | None = None,
     input_freshness: dict[str, Any] | None = None,
+    dsa_sidecar: dict[str, Any] | None = None,
     validator: dict[str, Any] | None = None,
     estimated_total_cost_usd: float | None = None,
     prediction_mode: str = 'direct',
@@ -29,6 +30,7 @@ def write_evidence_pack(
         'price_features': price_features or {},
         'market_snapshot': market_snapshot or {},
         'input_freshness': input_freshness or {},
+        'dsa_sidecar': dsa_sidecar or {},
         'validator': validator or {},
         'estimated_total_cost_usd': estimated_total_cost_usd,
     }

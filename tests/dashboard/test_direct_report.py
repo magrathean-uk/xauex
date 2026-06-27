@@ -65,6 +65,12 @@ def _load_dashboard_module(monkeypatch, tmp_path: Path):
                 "recent_runs": [{"action": "BUY"}],
                 "price_features": {"price_bias": "bullish", "range_position": "upper"},
                 "market_snapshot": {"series": {"us10y_yield": {"bias": "BUY"}}},
+                "dsa_sidecar": {
+                    "enabled": True,
+                    "status": "ok",
+                    "symbol": "AAPL",
+                    "shadow_signal": {"action": "BUY", "shadow_only": True},
+                },
                 "validator": {"status": "reviewed", "consensus_state": "aligned"},
                 "estimated_total_cost_usd": 0.00123,
             }
@@ -194,4 +200,6 @@ def test_dashboard_payload_exposes_validator_and_cost_metadata(monkeypatch, tmp_
     assert payload["signal"]["consensus_state"] == "aligned"
     assert payload["signal"]["llm_usage"]["estimated_total_cost_usd"] == 0.00123
     assert payload["evidence"]["validator"]["consensus_state"] == "aligned"
+    assert payload["evidence"]["dsa_sidecar"]["symbol"] == "AAPL"
+    assert payload["evidence"]["dsa_sidecar"]["shadow_signal"]["shadow_only"] is True
     assert payload["evidence"]["estimated_total_cost_usd"] == 0.00123
