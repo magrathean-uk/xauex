@@ -670,17 +670,9 @@ def build_xauex_min_lot_canary_decision(
     assurance_reason = str(getattr(assurance, "reason", "") or "").strip().upper()
     stale_context = _xauex_has_stale_or_warning_context(signal)
     if assurance_allows and assurance_bucket == "medium" and stale_context and "STALE_CONTEXT" in assurance_reason:
-        stale_min_confidence = max(
-            0.0,
-            min(1.0, float(getattr(config, "xauex_stale_context_min_confidence", 0.70) or 0.70)),
-        )
-        result["stale_min_confidence"] = round(stale_min_confidence, 2)
+        result["stale_min_confidence"] = round(min_confidence, 2)
         if bool(signal.get("counter_signal")):
             result["reason"] = "CANARY_COUNTER_SIGNAL_STALE_CONTEXT"
-            return result
-        if confidence < stale_min_confidence:
-            result["reason"] = "CANARY_STALE_CONTEXT_CONFIDENCE_TOO_LOW"
-            result["confidence"] = round(confidence, 2)
             return result
         if validator_status != "reviewed":
             result["reason"] = "CANARY_STALE_CONTEXT_VALIDATOR_NOT_REVIEWED"
@@ -4822,138 +4814,154 @@ class BotOrchestrator:
         """Close XAUEX positions on cash TP/SL or at the London force-flat time."""
         while self.running:
             await asyncio.sleep(10)
-            if self.api_client is None or self.executor is None:
-                continue
-
             try:
-                positions = await self.api_client.get_open_positions()
-            except Exception as exc:
-                logger.warning("[XAUEX] Position monitor refresh failed: %s", exc)
-                continue
-
-            open_ids = {position.position_id for position in positions}
-            self._clear_stale_close_requests(open_position_ids=open_ids, now_utc=datetime.now(timezone.utc))
-            self.risk_gates.set_open_position_count(count_tradeable_open_positions(positions))
-
-            if not positions:
-                continue
-
-            now_utc = datetime.now(timezone.utc)
-            force_flat_due = self._xauex_force_flat_due(now_utc)
-
-            for position in positions:
-                if position.position_id in self._xauex_close_requested:
+                if self.api_client is None or self.executor is None:
                     continue
 
-                tracked = self.executor.position_manager.get_position(position.position_id)
-                if tracked is not None:
-                    tracked.unrealised_pnl = position.unrealised_pnl
-                if tracked is None or tracked.owner != "xauex":
+                try:
+                    positions = await self.api_client.get_open_positions()
+                except Exception as exc:
+                    logger.warning("[XAUEX] Position monitor refresh failed: %s", exc)
                     continue
 
-                session = tracked.metadata.setdefault("session", {})
-                session.setdefault("phase", "OBSERVE")
-                session.setdefault("direction", tracked.direction)
-                session.setdefault("entry_price", tracked.entry_price)
-                session.setdefault("initial_risk_distance", abs(tracked.entry_price - tracked.stop_loss))
-                session.setdefault("confidence_bucket", "medium")
-                session.setdefault("protect_r", float(self.config.xauex_session_protect_r))
-                session.setdefault("trail_r", float(self.config.xauex_session_trail_r))
-                session.setdefault("protect_lock_r", float(self.config.xauex_session_protect_lock_r))
+                open_ids = {position.position_id for position in positions}
+                self._clear_stale_close_requests(open_position_ids=open_ids, now_utc=datetime.now(timezone.utc))
+                self.risk_gates.set_open_position_count(count_tradeable_open_positions(positions))
 
-                candidate_session = advance_xauex_session_phase(
-                    session,
-                    current_price=position.current_price,
-                    protect_r=float(session.get("protect_r", self.config.xauex_session_protect_r)),
-                    trail_r=float(session.get("trail_r", self.config.xauex_session_trail_r)),
-                )
-                updated_session = confirm_xauex_session_phase_transition(
-                    session,
-                    candidate_session,
-                    unrealised_pnl=position.unrealised_pnl,
-                    lot_size=float(getattr(tracked, "lot_size", 0.0) or 0.0),
-                    contract_size=float(getattr(self.symbol_spec, "lot_size", 0.0) or 0.0),
-                )
-                tracked.metadata["session"] = updated_session
+                if not positions:
+                    continue
 
-                new_stop_loss: Optional[float] = None
-                previous_phase = str(session.get("phase", "OBSERVE")).upper()
-                current_phase = str(updated_session.get("phase", previous_phase)).upper()
-                correlation_id = str(updated_session.get("signal_id") or position.position_id)
-                if current_phase != previous_phase:
-                    self._journal_event(
-                        "session_phase_transition",
-                        {
-                            "position_id": position.position_id,
-                            "previous_phase": previous_phase,
-                            "current_phase": current_phase,
-                            "progress_r": updated_session.get("progress_r"),
-                        },
-                        correlation_id=correlation_id,
-                    )
-                if current_phase == "PROTECT" and previous_phase == "OBSERVE":
-                    new_stop_loss = self._xauex_protect_stop_price(
-                        direction=tracked.direction,
-                        entry_price=tracked.entry_price,
-                        initial_risk_distance=float(updated_session.get("initial_risk_distance", 0.0) or 0.0),
-                        lock_r=float(updated_session.get("protect_lock_r", self.config.xauex_session_protect_lock_r) or 0.0),
-                    )
-                elif current_phase == "TRAIL":
-                    new_stop_loss = self._xauex_trailing_stop_price(
-                        direction=tracked.direction,
-                        current_price=position.current_price,
-                        confidence_bucket=str(updated_session.get("confidence_bucket", "medium")),
-                    )
+                now_utc = datetime.now(timezone.utc)
+                force_flat_due = self._xauex_force_flat_due(now_utc)
 
-                if (
-                    new_stop_loss is not None
-                    and self.executor.validate_sl_modification(tracked, new_stop_loss)
-                    and self.executor.validate_sl_against_market(tracked, new_stop_loss, self.symbol_spec)
-                ):
-                    amended = await self.api_client.amend_position_sltp(
-                        position_id=position.position_id,
-                        stop_loss=new_stop_loss,
-                        take_profit=tracked.take_profit,
-                    )
-                    if amended:
-                        tracked.stop_loss = new_stop_loss
-                        self._journal_event(
-                            "stop_updated",
-                            {
-                                "position_id": position.position_id,
-                                "stop_loss": new_stop_loss,
-                                "take_profit": tracked.take_profit,
-                                "phase": current_phase,
-                            },
-                            correlation_id=correlation_id,
+                for position in positions:
+                    try:
+                        if position.position_id in self._xauex_close_requested:
+                            continue
+
+                        tracked = self.executor.position_manager.get_position(position.position_id)
+                        if tracked is not None:
+                            tracked.unrealised_pnl = position.unrealised_pnl
+                        if tracked is None:
+                            logger.warning(
+                                "[XAUEX] Broker position %s not found in local tracker; skipping XAUEX management.",
+                                position.position_id,
+                            )
+                            continue
+                        if tracked.owner != "xauex":
+                            continue
+
+                        session = tracked.metadata.setdefault("session", {})
+                        session.setdefault("phase", "OBSERVE")
+                        session.setdefault("direction", tracked.direction)
+                        session.setdefault("entry_price", tracked.entry_price)
+                        session.setdefault("initial_risk_distance", abs(tracked.entry_price - tracked.stop_loss))
+                        session.setdefault("confidence_bucket", "medium")
+                        session.setdefault("protect_r", float(self.config.xauex_session_protect_r))
+                        session.setdefault("trail_r", float(self.config.xauex_session_trail_r))
+                        session.setdefault("protect_lock_r", float(self.config.xauex_session_protect_lock_r))
+
+                        candidate_session = advance_xauex_session_phase(
+                            session,
+                            current_price=position.current_price,
+                            protect_r=float(session.get("protect_r", self.config.xauex_session_protect_r)),
+                            trail_r=float(session.get("trail_r", self.config.xauex_session_trail_r)),
+                        )
+                        updated_session = confirm_xauex_session_phase_transition(
+                            session,
+                            candidate_session,
+                            unrealised_pnl=position.unrealised_pnl,
+                            lot_size=float(getattr(tracked, "lot_size", 0.0) or 0.0),
+                            contract_size=float(getattr(self.symbol_spec, "lot_size", 0.0) or 0.0),
+                        )
+                        tracked.metadata["session"] = updated_session
+
+                        new_stop_loss: Optional[float] = None
+                        previous_phase = str(session.get("phase", "OBSERVE")).upper()
+                        current_phase = str(updated_session.get("phase", previous_phase)).upper()
+                        correlation_id = str(updated_session.get("signal_id") or position.position_id)
+                        if current_phase != previous_phase:
+                            self._journal_event(
+                                "session_phase_transition",
+                                {
+                                    "position_id": position.position_id,
+                                    "previous_phase": previous_phase,
+                                    "current_phase": current_phase,
+                                    "progress_r": updated_session.get("progress_r"),
+                                },
+                                correlation_id=correlation_id,
+                            )
+                        if current_phase == "PROTECT" and previous_phase == "OBSERVE":
+                            new_stop_loss = self._xauex_protect_stop_price(
+                                direction=tracked.direction,
+                                entry_price=tracked.entry_price,
+                                initial_risk_distance=float(updated_session.get("initial_risk_distance", 0.0) or 0.0),
+                                lock_r=float(updated_session.get("protect_lock_r", self.config.xauex_session_protect_lock_r) or 0.0),
+                            )
+                        elif current_phase == "TRAIL":
+                            new_stop_loss = self._xauex_trailing_stop_price(
+                                direction=tracked.direction,
+                                current_price=position.current_price,
+                                confidence_bucket=str(updated_session.get("confidence_bucket", "medium")),
+                            )
+
+                        if (
+                            new_stop_loss is not None
+                            and self.executor.validate_sl_modification(tracked, new_stop_loss)
+                            and self.executor.validate_sl_against_market(tracked, new_stop_loss, self.symbol_spec)
+                        ):
+                            amended = await self.api_client.amend_position_sltp(
+                                position_id=position.position_id,
+                                stop_loss=new_stop_loss,
+                                take_profit=tracked.take_profit,
+                            )
+                            if amended:
+                                tracked.stop_loss = new_stop_loss
+                                self._journal_event(
+                                    "stop_updated",
+                                    {
+                                        "position_id": position.position_id,
+                                        "stop_loss": new_stop_loss,
+                                        "take_profit": tracked.take_profit,
+                                        "phase": current_phase,
+                                    },
+                                    correlation_id=correlation_id,
+                                )
+
+                        close_reason: Optional[str] = None
+                        cash_take_profit_threshold = self._xauex_cash_take_profit_threshold(updated_session)
+                        if force_flat_due:
+                            close_reason = "FORCE_FLAT_LONDON"
+                        elif position.unrealised_pnl >= cash_take_profit_threshold:
+                            close_reason = f"CASH_TP_GBP_{cash_take_profit_threshold:.2f}"
+                        elif position.unrealised_pnl <= -self.config.xauex_cash_stop_loss_gbp:
+                            close_reason = f"CASH_SL_GBP_{self.config.xauex_cash_stop_loss_gbp:.2f}"
+
+                        if close_reason is None:
+                            continue
+
+                        logger.info(
+                            "[XAUEX] Closing position %s reason=%s pnl=%.2f volume=%.2f",
+                            position.position_id,
+                            close_reason,
+                            position.unrealised_pnl,
+                            position.volume,
                         )
 
-                close_reason: Optional[str] = None
-                cash_take_profit_threshold = self._xauex_cash_take_profit_threshold(updated_session)
-                if force_flat_due:
-                    close_reason = "FORCE_FLAT_LONDON"
-                elif position.unrealised_pnl >= cash_take_profit_threshold:
-                    close_reason = f"CASH_TP_GBP_{cash_take_profit_threshold:.2f}"
-                elif position.unrealised_pnl <= -self.config.xauex_cash_stop_loss_gbp:
-                    close_reason = f"CASH_SL_GBP_{self.config.xauex_cash_stop_loss_gbp:.2f}"
-
-                if close_reason is None:
-                    continue
-
-                logger.info(
-                    "[XAUEX] Closing position %s reason=%s pnl=%.2f volume=%.2f",
-                    position.position_id,
-                    close_reason,
-                    position.unrealised_pnl,
-                    position.volume,
-                )
-
-                closed = await self.api_client.close_position(
-                    position_id=position.position_id,
-                    volume_lots=position.volume,
-                )
-                if closed:
-                    self._xauex_close_requested[position.position_id] = now_utc
+                        closed = await self.api_client.close_position(
+                            position_id=position.position_id,
+                            volume_lots=position.volume,
+                        )
+                        if closed:
+                            self._xauex_close_requested[position.position_id] = now_utc
+                    except Exception:
+                        logger.exception(
+                            "[XAUEX] Position monitor failed for position %s; keeping monitor alive.",
+                            getattr(position, "position_id", "unknown"),
+                        )
+                        continue
+            except Exception:
+                logger.exception("[XAUEX] Position monitor iteration crashed; keeping monitor alive.")
 
     async def _poll_manual_trade_commands(self) -> None:
         """Poll the separate manual trade command file and execute manual-only actions."""

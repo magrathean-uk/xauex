@@ -108,7 +108,7 @@ printf '\\n---MESSAGE---\\n' >> "{mail_capture}"
         smtp_port=25,
         hostname="bolykihu",
         sender_domain="bolyki.eu",
-        now=datetime(2026, 4, 21, 15, 25, tzinfo=MODULE.LONDON_TZ),
+        now=datetime(2026, 4, 21, 15, 50, tzinfo=MODULE.LONDON_TZ),
     )
 
     assert rc == 0
@@ -136,7 +136,7 @@ printf '\\n---MESSAGE---\\n' >> "{mail_capture}"
         smtp_port=25,
         hostname="bolykihu",
         sender_domain="bolyki.eu",
-        now=datetime(2026, 4, 21, 15, 30, tzinfo=MODULE.LONDON_TZ),
+        now=datetime(2026, 4, 21, 16, 0, tzinfo=MODULE.LONDON_TZ),
     )
 
     assert rc_again == 0
@@ -169,7 +169,7 @@ cat > "{mail_capture}"
         smtp_port=25,
         hostname="bolykihu",
         sender_domain="bolyki.eu",
-        now=datetime(2026, 4, 22, 15, 25, tzinfo=MODULE.LONDON_TZ),
+        now=datetime(2026, 4, 22, 15, 50, tzinfo=MODULE.LONDON_TZ),
     )
 
     assert rc == 0
@@ -199,7 +199,7 @@ def test_daily_trade_summary_skips_before_cutoff_and_weekends(tmp_path: Path) ->
         smtp_port=25,
         hostname="bolykihu",
         sender_domain="bolyki.eu",
-        now=datetime(2026, 4, 22, 15, 10, tzinfo=MODULE.LONDON_TZ),
+        now=datetime(2026, 4, 22, 15, 40, tzinfo=MODULE.LONDON_TZ),
     )
     weekend = MODULE.run_once(
         recipient="bolyki@bolyki.eu",
@@ -211,7 +211,7 @@ def test_daily_trade_summary_skips_before_cutoff_and_weekends(tmp_path: Path) ->
         smtp_port=25,
         hostname="bolykihu",
         sender_domain="bolyki.eu",
-        now=datetime(2026, 4, 25, 15, 25, tzinfo=MODULE.LONDON_TZ),
+        now=datetime(2026, 4, 25, 15, 50, tzinfo=MODULE.LONDON_TZ),
     )
 
     assert before_cutoff == 0

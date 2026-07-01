@@ -39,7 +39,7 @@ Signal windows:
 
 Post-session and shadow jobs:
 
-- `xauex-trade-journal.timer`: post-session trade journal at `15:07 Europe/London`.
+- `xauex-trade-journal.timer`: post-session trade journal retries at `15:45`, `16:30`, and `19:00 Europe/London`.
 - `xauex-weekly-review.timer`: Friday weekly review at `15:15 Europe/London`.
 - `xauex-shadow-compare.timer`: baseline-vs-debate compare after each window.
 - `xauex-shadow-evaluate.timer`: resolves shadow trials after the evaluation horizon.

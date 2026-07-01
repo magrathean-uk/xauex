@@ -2,7 +2,7 @@
 set -euo pipefail
 
 REPO_URL="${DSA_SIDECAR_REPO_URL:-https://github.com/ZhuLinsen/daily_stock_analysis.git}"
-DSA_COMMIT="${DSA_SIDECAR_COMMIT:-7ff3297050cfebd6f741649d799cb50cad857451}"
+DSA_COMMIT="${DSA_SIDECAR_COMMIT:-a2f19f65dc881e693f018eb08b889132eeeab659}"
 BASE_DIR="${DSA_SIDECAR_BASE_DIR:-/var/lib/xauex/dsa-sidecar}"
 REPO_DIR="${DSA_SIDECAR_REPO_DIR:-$BASE_DIR/daily_stock_analysis}"
 VENV_DIR="${DSA_SIDECAR_VENV_DIR:-$BASE_DIR/.venv}"
@@ -19,7 +19,29 @@ BUILD_CONTEXT="${DSA_SIDECAR_BUILD_CONTEXT:-$BASE_DIR/docker-build-context}"
 DEFAULT_REQUIREMENT_CONSTRAINTS=$'numpy<2.0\npandas<3.0'
 REQUIREMENT_CONSTRAINTS="${DSA_SIDECAR_REQUIREMENT_CONSTRAINTS-$DEFAULT_REQUIREMENT_CONSTRAINTS}"
 
+reject_credentialed_github_url() {
+  local label="$1"
+  local value="$2"
+
+  if [[ "$value" =~ https?://[^[:space:]/]+@github\.com([/:]|$) || "$value" =~ github_pat_ || "$value" =~ gh[pousr]_ ]]; then
+    echo "$label contains a credential-bearing GitHub value; use SSH deploy keys, GIT_ASKPASS, or BuildKit secrets instead" >&2
+    exit 1
+  fi
+}
+
+reject_credentialed_github_urls_in_file() {
+  local label="$1"
+  local file="$2"
+
+  [[ -f "$file" ]] || return 0
+  if grep -Eq 'https?://[^[:space:]/]+@github\.com([/:]|$)|github_pat_|gh[pousr]_' "$file"; then
+    echo "$label contains a credential-bearing GitHub value; refusing to run to avoid leaking it to service logs" >&2
+    exit 1
+  fi
+}
+
 ensure_repo() {
+  reject_credentialed_github_url "DSA_SIDECAR_REPO_URL" "$REPO_URL"
   mkdir -p "$BASE_DIR"
 
   if [[ ! -d "$REPO_DIR/.git" ]]; then
@@ -72,6 +94,7 @@ run_venv_sidecar() {
   source "$VENV_DIR/bin/activate"
   python -m pip install --upgrade pip
   if [[ "$INSTALL_DEPS" == "1" || "$INSTALL_DEPS" == "true" || "$INSTALL_DEPS" == "yes" || "$INSTALL_DEPS" == "auto" ]]; then
+    reject_credentialed_github_urls_in_file "$REPO_DIR/requirements.txt" "$REPO_DIR/requirements.txt"
     python -m pip install -r "$REPO_DIR/requirements.txt"
   fi
 
@@ -116,6 +139,7 @@ prepare_docker_build_context() {
     } >> "$BUILD_CONTEXT/requirements.txt"
   fi
 
+  reject_credentialed_github_urls_in_file "$BUILD_CONTEXT/requirements.txt" "$BUILD_CONTEXT/requirements.txt"
   printf '%s\n' "$BUILD_CONTEXT"
 }
 

@@ -21,7 +21,7 @@ DEFAULT_EVENT_JOURNAL_PATH = Path("/var/lib/xauex/events.jsonl")
 DEFAULT_STATE_PATH = Path("/var/lib/monit/xauex-daily-trade-summary.json")
 DEFAULT_SMTP_HOST = "127.0.0.1"
 DEFAULT_SMTP_PORT = 25
-DEFAULT_NOTIFY_AFTER = dt_time(hour=15, minute=20)
+DEFAULT_NOTIFY_AFTER = dt_time(hour=15, minute=45)
 MAX_SENT_DATES = 750
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 import importlib.util
 import json
 import sys
@@ -352,10 +353,112 @@ def test_live_timers_catch_up_after_restarts_and_run_after_force_flat():
     assert "OnCalendar=Fri *-*-* 15:06:00 Europe/London" in stop_timer
 
     assert "Persistent=true" in journal_timer
-    assert "OnCalendar=Mon-Fri *-*-* 15:07:00 Europe/London" in journal_timer
+    assert "OnCalendar=Mon-Fri *-*-* 15:45:00 Europe/London" in journal_timer
+    assert "OnCalendar=Mon-Fri *-*-* 16:30:00 Europe/London" in journal_timer
+    assert "OnCalendar=Mon-Fri *-*-* 19:00:00 Europe/London" in journal_timer
 
     assert "Persistent=true" in review_timer
     assert "OnCalendar=Fri *-*-* 15:15:00 Europe/London" in review_timer
+
+
+@pytest.mark.asyncio
+async def test_xauex_position_monitor_recovers_after_bad_position_payload(monkeypatch):
+    orch = _build_orchestrator()
+    orch.running = True
+    orch.config.xauex_force_flat_london = "00:00"
+    orch.config.xauex_cash_take_profit_gbp = 50.0
+    orch.config.xauex_session_protect_r = 0.85
+    orch.config.xauex_session_trail_r = 1.35
+    orch.config.xauex_session_protect_lock_r = 0.30
+    orch.symbol_spec = SimpleNamespace(lot_size=100.0, digits=2)
+    orch.risk_gates = SimpleNamespace(set_open_position_count=lambda *_args, **_kwargs: None)
+    orch._journal_event = lambda *_args, **_kwargs: None
+    orch._xauex_force_flat_due = lambda _now: True
+
+    bad_position = SimpleNamespace(
+        position_id="bad-pos",
+        current_price="not-a-price",
+        unrealised_pnl=0.0,
+        volume=0.01,
+        owner="xauex",
+    )
+    good_position = SimpleNamespace(
+        position_id="good-pos",
+        current_price=4050.0,
+        unrealised_pnl=-1.0,
+        volume=0.01,
+        owner="xauex",
+    )
+    tracked_by_id = {
+        "bad-pos": SimpleNamespace(
+            position_id="bad-pos",
+            direction="SHORT",
+            entry_price=4028.0,
+            stop_loss=4053.0,
+            take_profit=3990.0,
+            lot_size=0.01,
+            owner="xauex",
+            metadata={"session": {"phase": "OBSERVE", "direction": "SHORT", "entry_price": 4028.0, "initial_risk_distance": 25.0}},
+        ),
+        "good-pos": SimpleNamespace(
+            position_id="good-pos",
+            direction="SHORT",
+            entry_price=4028.0,
+            stop_loss=4053.0,
+            take_profit=3990.0,
+            lot_size=0.01,
+            owner="xauex",
+            metadata={"session": {"phase": "OBSERVE", "direction": "SHORT", "entry_price": 4028.0, "initial_risk_distance": 25.0}},
+        ),
+    }
+
+    class FakePositionManager:
+        def get_position(self, position_id):
+            return tracked_by_id.get(position_id)
+
+        def get_open_positions(self):
+            return list(tracked_by_id.values())
+
+    class FakeExecutor:
+        position_manager = FakePositionManager()
+
+        @staticmethod
+        def validate_sl_modification(*_args, **_kwargs):
+            return True
+
+        @staticmethod
+        def validate_sl_against_market(*_args, **_kwargs):
+            return True
+
+    class FakeApi:
+        def __init__(self):
+            self.responses = [[bad_position], [good_position], []]
+            self.closed = []
+
+        async def get_open_positions(self):
+            return self.responses.pop(0) if self.responses else []
+
+        async def close_position(self, *, position_id, volume_lots):
+            self.closed.append((position_id, volume_lots))
+            return True
+
+    fake_api = FakeApi()
+    orch.api_client = fake_api
+    orch.executor = FakeExecutor()
+
+    sleep_calls = 0
+
+    async def fast_sleep(_seconds):
+        nonlocal sleep_calls
+        sleep_calls += 1
+        if sleep_calls >= 3:
+            orch.running = False
+
+    monkeypatch.setattr(MODULE.asyncio, "sleep", fast_sleep)
+
+    await orch._monitor_xauex_positions()
+
+    assert fake_api.closed == [("good-pos", 0.01)]
 
 
 def test_window_runner_scripts_are_executable_for_systemd_execstart():

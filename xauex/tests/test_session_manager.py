@@ -467,6 +467,30 @@ def test_min_lot_canary_allows_reviewed_confirmed_stale_context_at_minimum_lot()
     assert decision["confidence"] == 0.70
 
 
+def test_min_lot_canary_allows_reviewed_stale_context_at_canary_threshold():
+    decision = build_xauex_min_lot_canary_decision(
+        signal=_canary_signal(
+            confidence=0.60,
+            validator_status="reviewed",
+            consensus_state="aligned",
+            validator_summary="Freshness warning, but validator reviewed and aligned with the trade.",
+        ),
+        assurance=_stale_medium_assurance_profile(),
+        cash_risk_budget=29.63,
+        minimum_executable_risk=25.0,
+        canaries_used_today=0,
+        config=_min_lot_canary_config(
+            xauex_min_lot_canary_min_confidence=0.58,
+            xauex_stale_context_min_confidence=0.70,
+        ),
+    )
+
+    assert decision["allowed"] is True
+    assert decision["reason"] == "MIN_LOT_CANARY_STALE_CONTEXT_CONFIRMED"
+    assert decision["allow_minimum_executable_risk_lift"] is True
+    assert decision["confidence"] == 0.60
+
+
 def test_min_lot_canary_blocks_reviewed_disagreement_and_daily_reuse():
     reviewed = build_xauex_min_lot_canary_decision(
         signal=_canary_signal(
