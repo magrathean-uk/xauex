@@ -2,7 +2,7 @@
 Description=Run XAUEX weekly trade review after the Friday force-flat boundary
 
 [Timer]
-OnCalendar=Fri *-*-* 15:15:00 Europe/London
+OnCalendar=Fri *-*-* 19:15:00 Europe/London
 Persistent=true
 Unit=xauex-weekly-review.service
 

@@ -125,7 +125,7 @@ install_if_changed "$REPO_ROOT/ops/monitoring/check_xauex_daily_trade_summary.py
 install_if_changed "$REPO_ROOT/ops/monitoring/check_xauex_signal_stall.py" /usr/local/lib/monitoring/check_xauex_signal_stall.py 755
 install_if_changed "$REPO_ROOT/ops/monitoring/45-xauex-notify.monit" /etc/monit/conf-enabled/45-xauex-notify.monit 644
 
-for unit in xauex.service xauex-signal.service xauex-signal.timer xauex-window-signal@.service xauex-window-confirm@.service xauex-shadow-compare.service xauex-shadow-compare.timer xauex-shadow-evaluate.service xauex-shadow-evaluate.timer xauex-start.timer xauex-stop.service xauex-stop.timer xauex-trade-journal.service xauex-trade-journal.timer xauex-decision-ledger.service xauex-decision-ledger.timer xauex-weekly-review.service xauex-weekly-review.timer xauex-web.service dsa-sidecar.service; do
+for unit in xauex.service xauex-signal.service xauex-signal.timer xauex-window-signal@.service xauex-window-confirm@.service xauex-shadow-compare.service xauex-shadow-compare.timer xauex-shadow-evaluate.service xauex-shadow-evaluate.timer xauex-start.service xauex-start.timer xauex-stop.service xauex-stop.timer xauex-trade-journal.service xauex-trade-journal.timer xauex-decision-ledger.service xauex-decision-ledger.timer xauex-weekly-review.service xauex-weekly-review.timer xauex-web.service dsa-sidecar.service; do
   if [[ "$unit" == "xauex.service" ]]; then
     render_unit_if_changed "$unit" 1
   else

@@ -51,12 +51,12 @@ Manual dashboard trades are separate from XAUEX-owned trades and do not count to
 ## Active Services
 
 - `xauex-web.service`: dashboard app on `127.0.0.1:8089`.
-- `xauex.service`: cTrader execution runtime, started by `xauex-start.timer`.
+- `xauex.service`: cTrader execution runtime, started by `xauex-start.service`.
 - `xauex-window-signal@morning.timer`, `@midday.timer`, `@us_open.timer`: scheduled signal generation.
 - `xauex-window-confirm@morning.timer`, `@midday.timer`, `@us_open.timer`: pre-entry confirmation.
 - `xauex-shadow-compare.timer`: baseline-vs-debate shadow comparison.
 - `xauex-shadow-evaluate.timer`: resolves shadow trials after the holding window.
-- `xauex-start.timer`: starts the bot before the morning session.
+- `xauex-start.timer`: triggers `xauex-start.service` before the morning session.
 - `xauex-stop.timer` and `xauex-stop.service`: stop/force-flat boundary on Friday.
 - `xauex-trade-journal.timer`: post-session trade journal.
 - `xauex-weekly-review.timer`: Friday weekly review.

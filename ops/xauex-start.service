@@ -1,0 +1,6 @@
+[Unit]
+Description=Start XAUEX for the London trading session
+
+[Service]
+Type=oneshot
+ExecStart=/bin/systemctl start xauex.service

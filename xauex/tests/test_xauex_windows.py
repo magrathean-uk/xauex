@@ -323,6 +323,7 @@ def test_trade_entries_on_chart_are_capped_to_recent_window():
 
 def test_live_timers_catch_up_after_restarts_and_run_after_force_flat():
     start_timer = _read_ops_file("xauex-start.timer")
+    start_service = _read_ops_file("xauex-start.service")
     signal_template = _read_ops_file("xauex-window-signal@.timer")
     confirm_template = _read_ops_file("xauex-window-confirm@.timer")
     stop_timer = _read_ops_file("xauex-stop.timer")
@@ -332,6 +333,8 @@ def test_live_timers_catch_up_after_restarts_and_run_after_force_flat():
 
     assert "Persistent=true" in start_timer
     assert "OnCalendar=Mon-Fri *-*-* 07:25:00 Europe/London" in start_timer
+    assert "Unit=xauex-start.service" in start_timer
+    assert "ExecStart=/bin/systemctl start xauex.service" in start_service
 
     assert signal_template.count("OnCalendar=") == 1
     assert "OnCalendar=__ON_CALENDAR__" in signal_template
@@ -358,7 +361,7 @@ def test_live_timers_catch_up_after_restarts_and_run_after_force_flat():
     assert "OnCalendar=Mon-Fri *-*-* 19:00:00 Europe/London" in journal_timer
 
     assert "Persistent=true" in review_timer
-    assert "OnCalendar=Fri *-*-* 15:15:00 Europe/London" in review_timer
+    assert "OnCalendar=Fri *-*-* 19:15:00 Europe/London" in review_timer
 
 
 @pytest.mark.asyncio

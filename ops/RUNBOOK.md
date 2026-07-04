@@ -24,7 +24,8 @@ Core runtime:
 
 - `xauex-web.service`: Flask/waitress dashboard and API.
 - `xauex.service`: cTrader bot and execution loop.
-- `xauex-start.timer`: starts `xauex.service` before the weekday session.
+- `xauex-start.timer`: triggers `xauex-start.service` before the weekday session.
+- `xauex-start.service`: starts `xauex.service` without making the timer a direct trigger of the runtime service.
 - `xauex-stop.timer`: triggers the Friday stop/force-flat boundary.
 - `xauex-stop.service`: executes the Friday stop/force-flat boundary.
 
@@ -40,7 +41,7 @@ Signal windows:
 Post-session and shadow jobs:
 
 - `xauex-trade-journal.timer`: post-session trade journal retries at `15:45`, `16:30`, and `19:00 Europe/London`.
-- `xauex-weekly-review.timer`: Friday weekly review at `15:15 Europe/London`.
+- `xauex-weekly-review.timer`: Friday weekly review at `19:15 Europe/London`, after the final post-session journal retry.
 - `xauex-shadow-compare.timer`: baseline-vs-debate compare after each window.
 - `xauex-shadow-evaluate.timer`: resolves shadow trials after the evaluation horizon.
 
