@@ -16,6 +16,7 @@ Environment=DSA_SIDECAR_BASE_DIR=/var/lib/xauex/dsa-sidecar
 EnvironmentFile=-/etc/xauex/dsa-sidecar.env
 ExecStart=/usr/local/bin/xauex-run-dsa-sidecar
 ExecStop=/bin/sh -c "command -v docker >/dev/null 2>&1 && docker stop xauex-dsa-sidecar >/dev/null 2>&1 || true"
+SuccessExitStatus=137 143
 Restart=on-failure
 RestartSec=20
 TimeoutStopSec=60

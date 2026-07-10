@@ -110,6 +110,12 @@ def test_systemd_installer_installs_dsa_sidecar_without_enabling_by_default():
     assert "systemctl enable dsa-sidecar.service" not in installer
 
 
+def test_dsa_sidecar_unit_accepts_expected_docker_stop_exit_codes():
+    unit = (REPO_ROOT / "ops" / "dsa-sidecar.service").read_text(encoding="utf-8")
+
+    assert "SuccessExitStatus=137 143" in unit
+
+
 def test_env_example_documents_disabled_dsa_bridge_defaults():
     env_example = (REPO_ROOT / ".env.example").read_text(encoding="utf-8")
 
