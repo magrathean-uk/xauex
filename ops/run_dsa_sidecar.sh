@@ -164,6 +164,10 @@ run_docker_sidecar() {
 
   exec docker run --rm \
     --name "$CONTAINER_NAME" \
+    --health-cmd "curl --fail --silent --show-error http://127.0.0.1:$PORT/api/health >/dev/null || exit 1" \
+    --health-interval 30s \
+    --health-timeout 10s \
+    --health-retries 3 \
     --env WEBUI_HOST=0.0.0.0 \
     --env API_PORT="$PORT" \
     --env TZ=Asia/Shanghai \

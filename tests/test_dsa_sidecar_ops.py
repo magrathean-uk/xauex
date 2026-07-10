@@ -30,6 +30,17 @@ def test_dsa_sidecar_runner_can_fall_back_to_docker_for_python313_hosts():
     assert "127.0.0.1" in runner
 
 
+def test_dsa_sidecar_docker_healthcheck_targets_the_real_api():
+    runner = (REPO_ROOT / "ops" / "run_dsa_sidecar.sh").read_text(encoding="utf-8")
+
+    assert "--health-cmd" in runner
+    assert "http://127.0.0.1:$PORT/api/health" in runner
+    assert "--health-interval 30s" in runner
+    assert "--health-timeout 10s" in runner
+    assert "--health-retries 3" in runner
+    assert "|| exit 1" in runner
+
+
 def test_dsa_sidecar_runner_refuses_credentialed_github_urls(tmp_path):
     runner = REPO_ROOT / "ops" / "run_dsa_sidecar.sh"
     bin_dir = tmp_path / "bin"

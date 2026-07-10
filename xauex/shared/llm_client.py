@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from types import SimpleNamespace
 from typing import Any
 
@@ -19,6 +20,8 @@ except ImportError:  # pragma: no cover - host dependency/configuration dependen
 
 GOOGLE_SERVICE_ACCOUNT_SENTINEL = "google-service-account"
 GOOGLE_CLOUD_PLATFORM_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
+MAX_REQUEST_ATTEMPTS = 4
+MAX_RETRY_DELAY_SECONDS = 30.0
 
 
 def create_chat_client(*, api_key: str, base_url: str, timeout: float = 120.0) -> Any:
@@ -44,11 +47,27 @@ class _OpenAICompatibleClient:
         self.chat = _ChatNamespace(self)
 
     def _request(self, *, path: str, payload: dict[str, Any], timeout: float | None = None) -> dict[str, Any]:
-        response = self._http.post(
-            f"{self._base_url}{path}",
-            json=payload,
-            timeout=timeout,
-        )
+        response: httpx.Response | Any | None = None
+        for attempt in range(MAX_REQUEST_ATTEMPTS):
+            try:
+                response = self._http.post(
+                    f"{self._base_url}{path}",
+                    json=payload,
+                    timeout=timeout,
+                )
+            except httpx.TransportError as exc:
+                if attempt == MAX_REQUEST_ATTEMPTS - 1:
+                    raise RuntimeError(f"LLM request transport error: {exc}") from exc
+                time.sleep(_retry_delay(attempt=attempt))
+                continue
+
+            if _is_retryable_status(response.status_code) and attempt < MAX_REQUEST_ATTEMPTS - 1:
+                time.sleep(_retry_delay(attempt=attempt, response=response))
+                continue
+            break
+
+        if response is None:  # pragma: no cover - loop always returns or raises
+            raise RuntimeError("LLM request failed without a response")
         try:
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
@@ -122,6 +141,24 @@ def _error_detail(response: httpx.Response) -> str:
     if isinstance(error, dict):
         return str(error.get("message") or response.text).strip()
     return response.text.strip()
+
+
+def _is_retryable_status(status_code: int) -> bool:
+    return status_code == 429 or status_code >= 500
+
+
+def _retry_delay(*, attempt: int, response: httpx.Response | Any | None = None) -> float:
+    if response is not None:
+        retry_after = response.headers.get("Retry-After")
+        if retry_after is not None:
+            try:
+                parsed = float(retry_after)
+            except (TypeError, ValueError):
+                pass
+            else:
+                if parsed >= 0:
+                    return min(parsed, MAX_RETRY_DELAY_SECONDS)
+    return min(float(2**attempt), MAX_RETRY_DELAY_SECONDS)
 
 
 def _authorization_header(api_key: str) -> str:
