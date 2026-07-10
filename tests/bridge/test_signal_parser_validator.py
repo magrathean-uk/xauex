@@ -187,6 +187,7 @@ def test_parse_signal_hard_holds_when_daily_macro_series_is_too_stale(monkeypatc
     assert signal["action"] == "HOLD"
     assert signal["confidence"] == 0.0
     assert signal["consensus_state"] == "blocked"
+    assert signal["block_reason"] == "HARD_STALE_MACRO_SNAPSHOT"
     assert signal["validator_status"] == "skipped"
     assert "stale" in signal["reasoning"].lower()
 
@@ -340,6 +341,7 @@ def test_parse_signal_blocks_daily_inputs_stale_by_business_days(monkeypatch):
     assert signal["action"] == "HOLD"
     assert signal["confidence"] == 0.0
     assert signal["consensus_state"] == "blocked"
+    assert signal["block_reason"] == "HARD_STALE_MACRO_SNAPSHOT"
     assert "business days" in signal["reasoning"]
 
 

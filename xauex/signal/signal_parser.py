@@ -31,6 +31,8 @@ logger = logging.getLogger(__name__)
 # signals against gold during a strong uptrend (the May 2026 incident).
 HARD_STALE_MARKET_SNAPSHOT_SECONDS = 3 * 24 * 3600
 HARD_STALE_MARKET_SNAPSHOT_BUSINESS_DAYS = 2
+HARD_STALE_MACRO_BLOCK_REASON = 'HARD_STALE_MACRO_SNAPSHOT'
+INPUT_FRESHNESS_BLOCK_REASON = 'INPUT_FRESHNESS_HARD_BLOCKER'
 PRICE_CONFLICT_MIN_CONFIDENCE = 0.68
 
 
@@ -68,10 +70,12 @@ def parse_signal(
         signal['validator_status'] = 'skipped'
         signal['validator_summary'] = reason
         signal['consensus_state'] = 'blocked'
+        signal['block_reason'] = INPUT_FRESHNESS_BLOCK_REASON
         signal['llm_usage'] = _combine_usage(provider=config.parser_llm_base_url, stages=[])
         signal['decision_packet'] = {
             'decision_mode': decision_mode,
             'window_label': decision_packet['window_label'],
+            'block_reason': INPUT_FRESHNESS_BLOCK_REASON,
             'input_freshness': decision_packet['input_freshness'],
             'market_snapshot': decision_packet['market_snapshot'],
             'event_flags': decision_packet['event_flags'],
@@ -104,10 +108,12 @@ def parse_signal(
         signal['validator_status'] = 'skipped'
         signal['validator_summary'] = reason
         signal['consensus_state'] = 'blocked'
+        signal['block_reason'] = HARD_STALE_MACRO_BLOCK_REASON
         signal['llm_usage'] = _combine_usage(provider=config.parser_llm_base_url, stages=[])
         signal['decision_packet'] = {
             'decision_mode': decision_mode,
             'window_label': decision_packet['window_label'],
+            'block_reason': HARD_STALE_MACRO_BLOCK_REASON,
             'input_freshness': decision_packet['input_freshness'],
             'market_snapshot': decision_packet['market_snapshot'],
             'event_flags': decision_packet['event_flags'],
@@ -141,10 +147,12 @@ def parse_signal(
         signal['validator_status'] = 'skipped'
         signal['validator_summary'] = reason
         signal['consensus_state'] = 'blocked'
+        signal['block_reason'] = HARD_STALE_MACRO_BLOCK_REASON
         signal['llm_usage'] = _combine_usage(provider=config.parser_llm_base_url, stages=[])
         signal['decision_packet'] = {
             'decision_mode': decision_mode,
             'window_label': decision_packet['window_label'],
+            'block_reason': HARD_STALE_MACRO_BLOCK_REASON,
             'input_freshness': decision_packet['input_freshness'],
             'market_snapshot': decision_packet['market_snapshot'],
             'event_flags': decision_packet['event_flags'],

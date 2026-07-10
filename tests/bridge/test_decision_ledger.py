@@ -144,6 +144,53 @@ def test_ledger_distinguishes_gate_manufactured_holds(tmp_path: Path) -> None:
     assert morning["parser"]["manufactured_hold"]["original_action"] == "BUY"
 
 
+def test_ledger_names_hard_stale_macro_holds_from_archived_reason(tmp_path: Path) -> None:
+    journal = tmp_path / "events.jsonl"
+    _write_journal(
+        journal,
+        [
+            _event(
+                "risk_result",
+                "2026-06-11T07:02:00Z",
+                {"slot": "MORNING", "window_label": "morning", "reason": "HOLD", "action": "HOLD", "terminal": True},
+            ),
+        ],
+    )
+    runs_dir = tmp_path / "signal_runs"
+    _write_archive(
+        runs_dir,
+        timestamp="2026-06-11T06:55:00Z",
+        window_label="morning",
+        signal={
+            "action": "HOLD",
+            "confidence": 0.0,
+            "consensus_state": "blocked",
+            "validator_status": "skipped",
+            "validator_summary": (
+                "Daily-publishing macro series is hard-stale at 3 business days - "
+                "refusing to trade until it refreshes within 2 business days."
+            ),
+            "reasoning": (
+                "Daily-publishing macro series is hard-stale at 3 business days - "
+                "refusing to trade until it refreshes within 2 business days."
+            ),
+        },
+    )
+
+    ledger = build_decision_ledger(
+        journal_path=str(journal),
+        state_path=str(tmp_path / "missing-state.json"),
+        signal_runs_dir=str(runs_dir),
+        days=3,
+        now_utc=_NOW,
+    )
+
+    morning = ledger["days"][0]["windows"]["morning"]
+    assert morning["outcome"] == "GATE_HOLD"
+    assert morning["reason"] == "HARD_STALE_MACRO_SNAPSHOT"
+    assert morning["parser"]["manufactured_hold"]["gate"] == "HARD_STALE_MACRO_SNAPSHOT"
+
+
 def test_ledger_flags_unconsumed_directional_signal(tmp_path: Path) -> None:
     journal = tmp_path / "events.jsonl"
     journal.write_text("", encoding="utf-8")

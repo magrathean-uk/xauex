@@ -34,6 +34,12 @@ SIGNAL_RUNS_DIR = os.getenv("XAUEX_SIGNAL_ARCHIVE_DIR", "/var/lib/xauex/signal_r
 LEDGER_PATH = os.getenv("XAUEX_DECISION_LEDGER_PATH", "/var/lib/xauex/decision_ledger.json")
 
 WINDOW_LABELS = ("morning", "midday", "us_open")
+HARD_STALE_MACRO_BLOCK_REASON = "HARD_STALE_MACRO_SNAPSHOT"
+INPUT_FRESHNESS_BLOCK_REASON = "INPUT_FRESHNESS_HARD_BLOCKER"
+KNOWN_PARSER_BLOCK_REASONS = {
+    HARD_STALE_MACRO_BLOCK_REASON,
+    INPUT_FRESHNESS_BLOCK_REASON,
+}
 
 # Journal event types that describe one window's decision flow.
 _DECISION_EVENT_TYPES = {
@@ -88,9 +94,26 @@ def _gate_manufactured_hold(signal: dict[str, Any]) -> Optional[dict[str, Any]]:
                 "original_action": None,
                 "original_confidence": None,
             }
+    block_reason = str(signal.get("block_reason") or "").strip().upper()
+    if block_reason in KNOWN_PARSER_BLOCK_REASONS:
+        return {"gate": block_reason, "original_action": None, "original_confidence": None}
+    if _is_hard_stale_macro_block(signal):
+        return {
+            "gate": HARD_STALE_MACRO_BLOCK_REASON,
+            "original_action": None,
+            "original_confidence": None,
+        }
     if str(signal.get("consensus_state") or "") == "blocked":
         return {"gate": "PARSER_BLOCKED", "original_action": None, "original_confidence": None}
     return None
+
+
+def _is_hard_stale_macro_block(signal: dict[str, Any]) -> bool:
+    text = " ".join(
+        str(signal.get(key) or "")
+        for key in ("reasoning", "validator_summary")
+    ).lower()
+    return "hard-stale" in text and "macro series" in text
 
 
 def _load_archived_runs(signal_runs_dir: str, *, since_utc: datetime) -> dict[tuple[str, str], dict[str, Any]]:

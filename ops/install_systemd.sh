@@ -169,10 +169,9 @@ fi
 systemctl daemon-reload
 systemctl reset-failed oracle-dashboard.service mirofish-backend.service mirofish-bridge.service mirofish-bridge.timer >/dev/null 2>&1 || true
 systemctl restart systemd-journald
-systemctl disable xauex.service >/dev/null 2>&1 || true
 systemctl disable xauex-signal.timer >/dev/null 2>&1 || true
 systemctl disable oracle-dashboard.service mirofish-backend.service mirofish-bridge.service mirofish-bridge.timer >/dev/null 2>&1 || true
-systemctl enable xauex-window-signal@morning.timer xauex-window-signal@midday.timer xauex-window-signal@us_open.timer xauex-window-confirm@morning.timer xauex-window-confirm@midday.timer xauex-window-confirm@us_open.timer xauex-shadow-compare.timer xauex-shadow-evaluate.timer xauex-start.timer xauex-stop.timer xauex-trade-journal.timer xauex-decision-ledger.timer xauex-weekly-review.timer xauex-web.service
+systemctl enable xauex.service xauex-window-signal@morning.timer xauex-window-signal@midday.timer xauex-window-signal@us_open.timer xauex-window-confirm@morning.timer xauex-window-confirm@midday.timer xauex-window-confirm@us_open.timer xauex-shadow-compare.timer xauex-shadow-evaluate.timer xauex-start.timer xauex-stop.timer xauex-trade-journal.timer xauex-decision-ledger.timer xauex-weekly-review.timer xauex-web.service
 systemctl restart xauex-web.service
 for _ in {1..30}; do
   if ss -ltn | grep -q '127.0.0.1:8089'; then
