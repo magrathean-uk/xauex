@@ -590,9 +590,13 @@ class ApiClient:
 
     async def _get_position_unrealized_pnl_map(self) -> dict[str, float]:
         """Return per-position unrealised PnL in account currency when the broker provides it."""
-        from ctrader_open_api.messages.OpenApiMessages_pb2 import (
-            ProtoOAGetPositionUnrealizedPnLReq,
-        )
+        try:
+            from ctrader_open_api.messages.OpenApiMessages_pb2 import (
+                ProtoOAGetPositionUnrealizedPnLReq,
+            )
+        except ImportError:
+            logger.debug("[API] Unrealized PnL request unsupported by ctrader-open-api")
+            return {}
 
         req = ProtoOAGetPositionUnrealizedPnLReq()
         req.ctidTraderAccountId = int(self.config.ctrader_account_id)

@@ -26,8 +26,6 @@ for candidate in REPO_ROOT_CANDIDATES:
             sys.path.insert(0, candidate_str)
         break
 
-from xauex.live_windows import all_live_windows, get_live_window
-
 LONDON_TZ = ZoneInfo("Europe/London")
 MORNING_NOTIFY_AFTER = dt_time(hour=8, minute=6)
 DEFAULT_RECIPIENT = "bolyki@bolyki.eu"
@@ -86,6 +84,8 @@ def _sent_slots(sent_state: dict[str, Any]) -> dict[str, dict[str, Any]]:
 
 
 def _slot_cutoff_passed(now: datetime, slot: str) -> bool:
+    from xauex.live_windows import get_live_window
+
     window = get_live_window(slot=slot)
     if window is None:
         return False
@@ -99,6 +99,8 @@ def _parse_morning_summary(
     cmd_payload: dict[str, Any],
     sent_state: dict[str, Any],
 ) -> SessionSummary | None:
+    from xauex.live_windows import all_live_windows
+
     now_london = now.astimezone(LONDON_TZ)
     if now_london.timetz().replace(tzinfo=None) < MORNING_NOTIFY_AFTER:
         return None

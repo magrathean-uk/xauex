@@ -1,46 +1,47 @@
-# Repository Guidelines
+# XAUEX Agent Guide
 
-## Project Structure & Module Organization
-- `xauex/main.py` and `xauex/bot/` are the live cTrader execution runtime.
-- `xauex/app/` contains the Flask dashboard and operator API.
-- `xauex/signal/` contains context building, signal generation, evidence writing, and command-file output.
-- `xauex/analyst/` contains the journal, weekly review, and morning brief helpers.
-- `xauex/shared/` contains shared diagnostics helpers.
-- `tests/` and `xauex/tests/` hold pytest suites. `tests/bridge/` is still the signal test area even though the old `bridge/` package is gone.
-- `ops/` contains systemd units, Monit checks, deployment scripts, host ingress snippets, and the live runbook.
-- `docs/` stores rebuild, discovery, and operational documentation.
-- `config.py`, `auth.py`, and `bot/__init__.py` at repo root are compatibility shims for legacy absolute imports. Prefer `xauex.*` imports in new code.
+Read [README.md](./README.md), [ops/RUNBOOK.md](./ops/RUNBOOK.md), [docs/REBUILD.md](./docs/REBUILD.md), and [docs/DSA_SIDECAR.md](./docs/DSA_SIDECAR.md) when the optional sidecar is relevant.
 
-## Build, Test, and Development Commands
-- `python3 -m pytest` from the repo root runs the main suite.
-- `make -C xauex test` runs the XAUEX-specific pytest subset.
-- `make -C xauex build` compiles the Rust `tick_parser` extension; `make -C xauex install` installs the wheel into the active virtualenv.
-- `python3 -m xauex.signal.run --asset XAUUSD --auto-context` runs the signal pipeline manually.
-- `python3 -m xauex.main` starts the bot directly for local debugging, but the supported host path is via systemd in `ops/`.
-- `bash status.sh` prints the live host snapshot if the local services are running.
+## Safety boundary
 
-## Coding Style & Naming Conventions
-- Python code uses 4-space indentation, `snake_case` for functions and modules, and `PascalCase` for classes.
-- Keep functions focused and prefer explicit, typed helpers over hidden side effects.
-- There is no repo-wide formatter config; use the existing XAUEX checks in `xauex/Makefile` (`ruff check`, `mypy`) when editing that area.
+- XAUEX is the XAUUSD cTrader demo runtime. Do not describe it as real-money production trading.
+- `xauex/live_windows.py` is the schedule source of truth.
+- Preserve confirmation, freshness, spread, risk, session, symbol, replay, and `cmd.json` kill-switch gates.
+- DSA is optional, localhost-only, disabled by default, and shadow-only. It cannot write XAUEX commands or enter the execution path.
+- Never commit `.env`, `xauex/.env`, broker credentials/tokens, logs, runtime state, caches, or virtualenvs.
+- Preserve unrelated dirty-worktree changes.
 
-## Testing Guidelines
-- Pytest is the standard runner; async tests use `@pytest.mark.asyncio`.
-- Name tests `test_*.py` and keep fixtures close to the behavior they support.
-- Add targeted tests for new behavior first, then run the narrowest relevant subset before a full suite pass.
-- Prefer the live-surface subsets first:
-  - `tests/dashboard/` for dashboard/API
-  - `tests/bridge/` for `xauex.signal`
-  - `xauex/tests/` for bot/runtime logic
+## Repository map
 
-## Commit & Pull Request Guidelines
-- Recent commits are short, imperative, and prefix-free, for example `Add diagnostics panels to terminal dashboards`.
-- PRs should explain the change, list the verification commands you ran, and link any related issue or design note.
-- Call out any config, state-file, or ops impact explicitly.
-- The scheduled daily report and weekly shadow report are retired. Do not reintroduce `/etc/cron.d/xauex-daily-report` or `xauex-shadow-report.timer`; Monit handles actionable alert emails.
+- `xauex/main.py`, `xauex/bot/`: cTrader demo execution and position management.
+- `xauex/signal/`: XAUUSD context, prediction, confirmation, evidence, source quality, and DSA shadow adapter.
+- `xauex/app/`: loopback dashboard and operator API.
+- `xauex/analyst/`: decision ledger, journal, replay, and weekly review.
+- `xauex/shared/`: diagnostics, safe I/O, event journal, and manual-command contracts.
+- `ops/`: systemd units, wrappers, monitoring, Caddy, DSA service, and host checks.
+- `tests/`, `xauex/tests/`: signal, dashboard, broker, schedule, and runtime coverage.
 
-## Security & Configuration Tips
-- Do not commit `.env`, `xauex/.env`, virtualenvs, logs, or generated frontend builds.
-- Keep runtime state under the paths documented in `README.md` and `docs/REBUILD.md`.
-- Treat broker credentials, API keys, and local state files as machine-specific.
-- For live-behavior debugging, check `/var/lib/xauex/state.json`, `/var/lib/xauex/cmd.json`, and `/var/log/xauex/xauex.log` before assuming the code path is wrong.
+Root `config.py`, `auth.py`, and `bot/__init__.py` are compatibility shims. New imports use `xauex.*`.
+
+## Commands
+
+```bash
+python3 -m pytest
+make -C xauex test
+make -C xauex build
+python3 -m xauex.signal.run --asset XAUUSD --auto-context
+```
+
+Focused runtime lanes:
+
+```bash
+python3 -m pytest xauex/tests/test_xauex_windows.py xauex/tests/test_session_manager.py xauex/tests/test_manual_trade_commands.py -q
+python3 -m pytest tests/bridge/test_signal_writer.py tests/bridge/test_signal_parser_validator.py tests/dashboard/test_manual_controls.py -q
+```
+
+## Done when
+
+- Narrow tests pass before the full suite, or the exact blocker is recorded.
+- Runtime, unit, wrapper, monitoring, and docs names remain aligned.
+- The XAUUSD schedule and gate behavior come from current source, not historical notes.
+- Deployed-host state is checked on the host and never inferred from this checkout.

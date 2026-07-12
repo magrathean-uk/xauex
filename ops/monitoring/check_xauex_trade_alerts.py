@@ -25,8 +25,6 @@ for candidate in REPO_ROOT_CANDIDATES:
             sys.path.insert(0, candidate_str)
         break
 
-from xauex.shared.event_journal import read_events
-
 DEFAULT_RECIPIENT = "bolyki@bolyki.eu"
 DEFAULT_JOURNAL_PATH = Path("/var/lib/xauex/events.jsonl")
 DEFAULT_STATE_PATH = Path("/var/lib/monit/xauex-trade-alerts.json")
@@ -211,6 +209,8 @@ def run_once(
     sender_domain: str | None = None,
     now: datetime | None = None,
 ) -> int:
+    from xauex.shared.event_journal import read_events
+
     sent_state = _load_json(sent_state_path)
     sent_ids = _sent_event_ids(sent_state)
     alerts = _build_trade_alerts(read_events(journal_path), sent_state)

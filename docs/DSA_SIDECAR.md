@@ -1,6 +1,6 @@
 # Daily Stock Analysis Sidecar
 
-XAUEX can read `ZhuLinsen/daily_stock_analysis` as a localhost-only research sidecar for stock-transition work. This integration is disabled by default and shadow-only.
+XAUEX can read `ZhuLinsen/daily_stock_analysis` as a localhost-only equity research sidecar. This integration is disabled by default and shadow-only.
 
 ## Safety Boundary
 
