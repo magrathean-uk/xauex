@@ -118,6 +118,7 @@ install_if_changed "$REPO_ROOT/ops/run_xauex_web.sh" /usr/local/bin/xauex-run-we
 install_if_changed "$REPO_ROOT/ops/run_dsa_sidecar.sh" /usr/local/bin/xauex-run-dsa-sidecar 755
 install_if_changed "$REPO_ROOT/ops/enforce_log_budget.sh" /usr/local/bin/xauex-enforce-log-budget 755
 install_if_changed "$REPO_ROOT/ops/check_host_layout.sh" /usr/local/bin/xauex-check-host-layout 755
+install_if_changed "$REPO_ROOT/ops/reconcile_xauex_risk_state.py" /usr/local/bin/xauex-reconcile-risk-state 755
 install_if_changed "$REPO_ROOT/ops/monitoring/check_xauex_runtime.sh" /usr/local/lib/monitoring/check_xauex_runtime.sh 755
 install_if_changed "$REPO_ROOT/ops/monitoring/check_xauex_morning_summary.py" /usr/local/lib/monitoring/check_xauex_morning_summary.py 755
 install_if_changed "$REPO_ROOT/ops/monitoring/check_xauex_trade_alerts.py" /usr/local/lib/monitoring/check_xauex_trade_alerts.py 755
