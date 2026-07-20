@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import importlib.util
+import os
 from pathlib import Path
 import sys
 
@@ -88,3 +89,29 @@ def test_risk_repair_tool_is_installed_with_other_xauex_operations():
 
     assert "reconcile_xauex_risk_state.py" in installer
     assert "xauex-reconcile-risk-state" in installer
+
+
+def test_apply_repair_preserves_existing_risk_state_owner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    risk_path = tmp_path / "risk_state.json"
+    risk_path.write_text("{}\n", encoding="utf-8")
+    ownership_calls: list[tuple[int, int]] = []
+    original_fchown = MODULE.os.fchown
+
+    def record_fchown(fd: int, uid: int, gid: int) -> None:
+        ownership_calls.append((uid, gid))
+        original_fchown(fd, uid, gid)
+
+    monkeypatch.setattr(MODULE.os, "fchown", record_fchown)
+    plan = {
+        "risk": _broken_risk(),
+    }
+
+    MODULE.apply_repair(
+        risk_path=risk_path,
+        plan=plan,
+        now_utc=datetime(2026, 7, 20, 13, tzinfo=timezone.utc),
+    )
+
+    stat_result = risk_path.stat()
+    assert ownership_calls == [(stat_result.st_uid, stat_result.st_gid)]
+    assert (stat_result.st_uid, stat_result.st_gid) == (os.getuid(), os.getgid())

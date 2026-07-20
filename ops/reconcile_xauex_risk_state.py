@@ -117,16 +117,28 @@ def apply_repair(*, risk_path: Path, plan: Mapping[str, Any], now_utc: datetime)
     """Back up and atomically write a previously validated repair plan."""
     if risk_path.is_symlink():
         raise ValueError(f"refusing to back up symlink risk state: {risk_path}")
+    existing_stat = risk_path.stat()
     risk = _as_dict(plan.get("risk"), label="repair risk payload")
     timestamp = now_utc.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     backup_path = risk_path.with_name(f"{risk_path.name}.bak-{timestamp}")
     shutil.copy2(risk_path, backup_path)
     risk["_saved_at_utc"] = now_utc.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    _atomic_write_json(risk_path, risk)
+    _atomic_write_json(
+        risk_path,
+        risk,
+        owner_uid=existing_stat.st_uid,
+        owner_gid=existing_stat.st_gid,
+    )
     return backup_path
 
 
-def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
+def _atomic_write_json(
+    path: Path,
+    payload: Mapping[str, Any],
+    *,
+    owner_uid: int,
+    owner_gid: int,
+) -> None:
     """Write a private replacement file without relying on repo imports."""
     if path.is_symlink():
         raise ValueError(f"refusing to write symlink risk state: {path}")
@@ -135,6 +147,7 @@ def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
     fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
     try:
         os.fchmod(fd, 0o600)
+        os.fchown(fd, owner_uid, owner_gid)
         with os.fdopen(fd, "wb") as handle:
             handle.write(data)
             handle.flush()
