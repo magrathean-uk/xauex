@@ -323,6 +323,64 @@ printf '\\n---MESSAGE---\\n' >> "{mail_capture}"
     assert mail_capture.read_text(encoding="utf-8") == mail_text
 
 
+def test_signal_stall_alerts_on_two_days_of_pattern_suppression(tmp_path: Path) -> None:
+    archive_root = tmp_path / "signal_runs"
+    journal_path = tmp_path / "events.jsonl"
+    sent_state_path = tmp_path / "sent.json"
+    sendmail_path = tmp_path / "sendmail"
+    mail_capture = tmp_path / "mail.txt"
+    events = []
+    for date_text in ("2026-07-20", "2026-07-21"):
+        for slot, timestamp in (
+            ("MORNING", "07:02:00Z"),
+            ("MIDDAY", "10:32:00Z"),
+            ("US_OPEN", "12:47:00Z"),
+        ):
+            events.append(
+                {
+                    "event_type": "risk_result",
+                    "timestamp_utc": f"{date_text}T{timestamp}",
+                    "correlation_id": f"{date_text}-{slot}",
+                    "payload": {
+                        "slot": slot,
+                        "reason": "HARD_BLOCKER",
+                        "terminal": True,
+                        "signal_action": "SELL",
+                        "policy_factors": ["PATTERN_MISSING", "STALE_CONTEXT_LOW_CONFIDENCE"],
+                    },
+                }
+            )
+    journal_path.write_text(
+        "\n".join(json.dumps(event) for event in events) + "\n",
+        encoding="utf-8",
+    )
+    _write_executable(
+        sendmail_path,
+        f"""#!/usr/bin/env bash
+cat >> "{mail_capture}"
+""",
+    )
+
+    rc = MODULE.run_once(
+        recipient="bolyki@bolyki.eu",
+        archive_root=archive_root,
+        journal_path=journal_path,
+        sent_state_path=sent_state_path,
+        sendmail_bin=sendmail_path,
+        smtp_host="127.0.0.1",
+        smtp_port=25,
+        hostname="bolykihu",
+        sender_domain="bolyki.eu",
+        now=datetime(2026, 7, 21, 14, 0, tzinfo=timezone.utc),
+    )
+
+    assert rc == 0
+    mail_text = mail_capture.read_text(encoding="utf-8").lower()
+    assert "pattern policy suppressed all 3 windows" in mail_text
+    saved_state = json.loads(sent_state_path.read_text(encoding="utf-8"))
+    assert "pattern_suppression:2026-07-21" in saved_state["sent_alert_keys"]
+
+
 def test_signal_stall_alert_is_wired_into_monit_install() -> None:
     monit_config = Path("ops/monitoring/45-xauex-notify.monit").read_text(encoding="utf-8")
     installer = Path("ops/install_systemd.sh").read_text(encoding="utf-8")
