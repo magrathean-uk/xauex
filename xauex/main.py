@@ -1578,9 +1578,12 @@ class BotOrchestrator:
             logger.critical("[STARTUP] Level manager init failed: %s", exc)
             sys.exit(1)
 
-        # Initialize dependent modules
+        # Restore persistent state before constructing its dependent objects.
         self.pattern_detector = PatternDetector(self.config)
         self.news_filter = NewsFilter(self.config)
+        await self._restore_risk_state()
+
+        # Initialize dependent modules.
         self.risk_gates = RiskGates(self.config, self.risk_state)
         self.state_writer = StateWriter(self.config)
         self.executor = Executor(
@@ -1593,8 +1596,11 @@ class BotOrchestrator:
         )
         self.api_client.set_execution_callback(self._on_execution_event)
 
-        # Step 9: Restore risk gate state
-        await self._restore_risk_state()
+        wiring_error = self._risk_state_wiring_error()
+        if wiring_error is not None:
+            raise RuntimeError(wiring_error)
+
+        # Step 9: Initialize risk period baselines.
         self.risk_gates.ensure_period_baselines(self.account.get("balance", 0.0))
         self._reset_xauex_trade_count_if_new_london_day(datetime.now(timezone.utc))
 
@@ -2861,6 +2867,11 @@ class BotOrchestrator:
             return reason
 
         if apply_risk_gates:
+            wiring_error = self._risk_state_wiring_error()
+            if wiring_error is not None:
+                logger.critical("[RISK] %s; automatic entries are disabled.", wiring_error)
+                self.bot_status = f"HALTED_{wiring_error}"
+                return wiring_error
             can_trade, reason = self.risk_gates.can_trade(self.account.get("balance", 0.0))
             if not can_trade:
                 self.bot_status = f"HALTED_{reason}"
@@ -5157,8 +5168,19 @@ class BotOrchestrator:
         restored = await load_risk_state(self.config.state_file_path)
         if restored is not None:
             self.risk_state = restored
-            self.risk_gates = RiskGates(self.config, self.risk_state)
             logger.info("[STARTUP] Risk state restored from risk_state.json.")
+
+    def _risk_state_wiring_error(self) -> Optional[str]:
+        """Return an explicit fault code when risk accounting references diverge."""
+        if self.executor is None or self.risk_gates is None:
+            return "RISK_STATE_WIRING_INVALID"
+        if self.executor.risk_gates is not self.risk_gates:
+            return "RISK_STATE_WIRING_INVALID"
+        if self.risk_gates.state is not self.risk_state:
+            return "RISK_STATE_WIRING_INVALID"
+        if self.executor.risk_gates.state is not self.risk_state:
+            return "RISK_STATE_WIRING_INVALID"
+        return None
 
     async def _on_execution_event(self, event) -> None:
         """Synchronize local state from unsolicited broker execution events."""

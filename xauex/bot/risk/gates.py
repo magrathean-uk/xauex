@@ -2,7 +2,7 @@
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Tuple
 
 from config import Config
@@ -156,40 +156,38 @@ class RiskGates:
         # Persist date for daily reset detection
         self.state.losses_date_utc = _today_utc()
 
-    def record_week_start(self, balance: float) -> None:
+    def record_week_start(self, balance: float, *, week_start_date_utc: str | None = None) -> None:
         """Snapshot week-start balance. Call at Monday 00:00 UTC."""
         self.state.week_start_balance = balance
-        self.state.week_start_date_utc = _today_utc()
+        self.state.week_start_date_utc = week_start_date_utc or _week_start_utc(datetime.now(timezone.utc))
         self.state.weekly_pnl = 0.0
         self.state.weekly_halted = False
         logger.info(f"[RISK] Week started. Balance snapshot: {balance:.2f}")
 
-    def record_day_start(self, balance: float) -> None:
+    def record_day_start(self, balance: float, *, day_start_date_utc: str | None = None) -> None:
         """Snapshot day-start balance. Call at startup and on each new UTC day."""
         self.state.day_start_balance = balance
-        self.state.day_start_date_utc = _today_utc()
+        self.state.day_start_date_utc = day_start_date_utc or _today_utc()
         self.state.daily_pnl = 0.0
         self.state.daily_halted = False
         self.state.consecutive_losses_today = 0
         self.state.losses_date_utc = self.state.day_start_date_utc
         logger.info(f"[RISK] Day started. Balance snapshot: {balance:.2f}")
 
-    def ensure_period_baselines(self, balance: float) -> None:
+    def ensure_period_baselines(self, balance: float, *, now_utc: datetime | None = None) -> None:
         """Initialize or roll day/week baselines from the latest account balance."""
-        today = _today_utc()
-        if not self.state.week_start_date_utc:
-            self.record_week_start(balance)
-        else:
-            self._maybe_reset_weekly()
-            if self.state.week_start_balance <= 0:
-                self.record_week_start(balance)
+        current = now_utc or datetime.now(timezone.utc)
+        today = current.astimezone(timezone.utc).strftime("%Y-%m-%d")
+        week_start = _week_start_utc(current)
+        if self.state.week_start_date_utc != week_start or self.state.week_start_balance <= 0:
+            self.record_week_start(balance, week_start_date_utc=week_start)
 
         if not self.state.day_start_date_utc:
-            self.record_day_start(balance)
+            self.record_day_start(balance, day_start_date_utc=today)
         elif self.state.day_start_date_utc != today:
-            self.record_day_start(balance)
+            self.record_day_start(balance, day_start_date_utc=today)
         elif self.state.day_start_balance <= 0:
-            self.record_day_start(balance)
+            self.record_day_start(balance, day_start_date_utc=today)
 
     def set_open_position_count(self, count: int) -> None:
         """Update from PositionManager. Called before gate check."""
@@ -212,17 +210,21 @@ class RiskGates:
 
     def _maybe_reset_weekly(self) -> None:
         """Reset weekly halt and P&L only when a new UTC Monday has begun."""
-        today = _today_utc()
         if not self.state.week_start_date_utc:
             return
-        start = datetime.strptime(self.state.week_start_date_utc, "%Y-%m-%d").date()
-        now = datetime.strptime(today, "%Y-%m-%d").date()
-        if now > start and now.weekday() == 0:
+        week_start = _week_start_utc(datetime.now(timezone.utc))
+        if self.state.week_start_date_utc != week_start:
             logger.info("[RISK] New Monday detected. Resetting weekly halt (balance snapshot needed).")
             self.state.weekly_halted = False
             self.state.weekly_pnl = 0.0
-            self.state.week_start_date_utc = today
+            self.state.week_start_balance = 0.0
+            self.state.week_start_date_utc = week_start
 
 
 def _today_utc() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+def _week_start_utc(now_utc: datetime) -> str:
+    current = now_utc.astimezone(timezone.utc).date()
+    return (current - timedelta(days=current.weekday())).isoformat()
