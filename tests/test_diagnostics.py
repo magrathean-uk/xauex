@@ -96,17 +96,17 @@ def test_diagnostics_snapshot_marks_stale_signal_critical_during_london_window()
             "action": "BUY",
             "confidence": 0.81,
             "reasoning": "Strong momentum.",
-            "generated_at_utc": "2026-04-07T12:45:00Z",
+            "generated_at_utc": "2026-04-07T12:35:00Z",
         },
         "runtime": {
-            "latest_quote": {"bid": 4653.68, "ask": 4653.78, "mid": 4653.73, "updated_at_utc": "2026-04-07T12:57:05Z"},
+            "latest_quote": {"bid": 4653.68, "ask": 4653.78, "mid": 4653.73, "updated_at_utc": "2026-04-07T12:50:05Z"},
             "manual_trade_status": {"ok": False, "reason": "waiting"},
         },
     }
 
     diagnostics = build_diagnostics_snapshot(
         state,
-        reference_time=datetime(2026, 4, 7, 12, 57, 6, tzinfo=timezone.utc),
+        reference_time=datetime(2026, 4, 7, 12, 50, 6, tzinfo=timezone.utc),
     )
 
     stale_issue = next(item for item in diagnostics["current_issues"] if item["code"] == "SIGNAL_STALE")
@@ -146,6 +146,30 @@ def test_diagnostics_snapshot_downgrades_stale_signal_outside_london_window():
     stale_issue = next(item for item in diagnostics["current_issues"] if item["code"] == "SIGNAL_STALE")
     assert stale_issue["severity"] == "warning"
     assert diagnostics["overall_status"] == "degraded"
+
+
+def test_diagnostics_downgrades_stale_signal_after_last_entry_slot():
+    state = {
+        "meta": {"bot_status": "RUNNING"},
+        "account": {"balance": 100.0, "equity": 100.0, "open_pnl": 0.0, "currency": "GBP"},
+        "risk": {},
+        "open_positions": [],
+        "last_signal": {
+            "action": "SELL",
+            "confidence": 0.70,
+            "reasoning": "Last US open signal.",
+            "generated_at_utc": "2026-07-20T12:44:00Z",
+        },
+        "runtime": {},
+    }
+
+    diagnostics = build_diagnostics_snapshot(
+        state,
+        reference_time=datetime(2026, 7, 20, 14, 20, 0, tzinfo=timezone.utc),
+    )
+
+    stale_issue = next(item for item in diagnostics["current_issues"] if item["code"] == "SIGNAL_STALE")
+    assert stale_issue["severity"] == "warning"
 
 
 def test_diagnostics_snapshot_keeps_manual_only_positions_as_expected_runtime_state():

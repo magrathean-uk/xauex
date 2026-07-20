@@ -4,6 +4,8 @@ from datetime import datetime, timezone
 from typing import Any, Mapping
 from zoneinfo import ZoneInfo
 
+from xauex.live_windows import active_entry_slot
+
 
 LONDON = ZoneInfo("Europe/London")
 
@@ -92,12 +94,7 @@ def _age_seconds(value: Any, reference_time: datetime | None = None) -> int | No
 
 def _is_london_trade_window(reference_time: datetime | None = None) -> bool:
     now = reference_time or datetime.now(timezone.utc)
-    london = now.astimezone(LONDON)
-    if london.weekday() >= 5:
-        return False
-    if london.weekday() == 4:
-        return 8 <= london.hour < 16
-    return 8 <= london.hour < 17
+    return active_entry_slot(now.astimezone(timezone.utc)) is not None
 
 
 def _issue(
