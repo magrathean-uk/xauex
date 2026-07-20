@@ -359,6 +359,20 @@ def _risk_section(risk: Mapping[str, Any], runtime: Mapping[str, Any]) -> tuple[
                 next_action="Review the risk state before forcing another XAUEX entry.",
             )
         )
+    wiring = _safe_dict(runtime.get("risk_state_wiring"))
+    wiring_valid = wiring.get("valid") is not False
+    if not wiring_valid:
+        issues.append(
+            _issue(
+                component="risk",
+                severity="critical",
+                code="RISK_STATE_WIRING_INVALID",
+                summary="XAUEX risk-state wiring is invalid.",
+                details="Risk limits cannot be trusted until the bot is restarted with a coherent state graph.",
+                evidence={"error": str(wiring.get("error") or "RISK_STATE_WIRING_INVALID")},
+                next_action="Restart XAUEX and inspect risk-state restoration logs.",
+            )
+        )
     return (
         {
             "daily_halted": bool(risk.get("daily_halted")),
@@ -366,6 +380,8 @@ def _risk_section(risk: Mapping[str, Any], runtime: Mapping[str, Any]) -> tuple[
             "trades_taken_today": trades_taken,
             "signal_runs_taken_today": signal_runs,
             "trade_cap": run_cap,
+            "risk_state_wiring_valid": wiring_valid,
+            "risk_state_wiring_error": str(wiring.get("error") or ""),
         },
         issues,
         events,

@@ -3165,6 +3165,33 @@ class BotOrchestrator:
             and bool(item.get("terminal", True))
         )
 
+    def _xauex_pattern_policy_summary(self, now_utc: Optional[datetime] = None) -> Dict[str, object]:
+        """Summarize current-day pattern-policy evidence for runtime diagnostics."""
+        self._reset_xauex_trade_count_if_new_london_day(now_utc)
+        london_date = self._today_london(now_utc)
+        factor_counts: Dict[str, int] = {}
+        evaluated_runs = 0
+        terminal_pattern_blocks = 0
+        for item in self.risk_state.xauex_signal_runs_london:
+            if str(item.get("date_london", "")) != london_date:
+                continue
+            evidence = item.get("pattern_evidence")
+            if not isinstance(evidence, dict):
+                continue
+            factor = str(evidence.get("factor") or "").upper()
+            if not factor:
+                continue
+            evaluated_runs += 1
+            factor_counts[factor] = factor_counts.get(factor, 0) + 1
+            if bool(item.get("terminal", True)) and str(item.get("reason") or "") == "HARD_BLOCKER":
+                if factor.startswith("PATTERN_"):
+                    terminal_pattern_blocks += 1
+        return {
+            "evaluated_runs": evaluated_runs,
+            "factor_counts": factor_counts,
+            "terminal_pattern_blocks": terminal_pattern_blocks,
+        }
+
     def _xauex_min_lot_canaries_today(self, now_utc: Optional[datetime] = None) -> int:
         self._reset_xauex_trade_count_if_new_london_day(now_utc)
         return sum(
@@ -3214,8 +3241,13 @@ class BotOrchestrator:
         terminal: bool = True,
         minimum_lot_canary: bool = False,
         counter_signal: bool = False,
+        policy_factors: Optional[List[str]] = None,
+        hard_block_score: Optional[int] = None,
+        pattern_evidence: Optional[Dict[str, object]] = None,
     ) -> None:
         self._reset_xauex_trade_count_if_new_london_day(signal_time)
+        normalized_policy_factors = [str(item) for item in policy_factors or [] if str(item)]
+        normalized_pattern_evidence = dict(pattern_evidence or {})
         self.risk_state.xauex_signal_runs_london.append(
             {
                 "date_london": self._today_london(signal_time),
@@ -3232,6 +3264,9 @@ class BotOrchestrator:
                 "terminal": terminal,
                 "minimum_lot_canary": bool(minimum_lot_canary),
                 "counter_signal": bool(counter_signal),
+                "policy_factors": normalized_policy_factors,
+                "hard_block_score": max(0, int(hard_block_score or 0)),
+                "pattern_evidence": normalized_pattern_evidence,
                 "recorded_at_utc": signal_time.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             }
         )
@@ -3245,6 +3280,9 @@ class BotOrchestrator:
                 "confidence": signal_confidence,
                 "terminal": terminal,
                 "counter_signal": bool(counter_signal),
+                "policy_factors": normalized_policy_factors,
+                "hard_block_score": max(0, int(hard_block_score or 0)),
+                "pattern_evidence": normalized_pattern_evidence,
             },
             correlation_id=signal_id,
         )
@@ -3266,6 +3304,9 @@ class BotOrchestrator:
         minimum_lot_canary: bool = False,
         counter_signal: bool = False,
         blocked_trade: Optional[Dict[str, object]] = None,
+        policy_factors: Optional[List[str]] = None,
+        hard_block_score: Optional[int] = None,
+        pattern_evidence: Optional[Dict[str, object]] = None,
     ) -> None:
         self._record_xauex_signal_run(
             slot=slot,
@@ -3282,6 +3323,9 @@ class BotOrchestrator:
             terminal=terminal,
             minimum_lot_canary=minimum_lot_canary,
             counter_signal=counter_signal,
+            policy_factors=policy_factors,
+            hard_block_score=hard_block_score,
+            pattern_evidence=pattern_evidence,
         )
         if terminal and reason != "ORDER_PLACED" and str(signal_action or "").upper() in {"BUY", "SELL"}:
             payload: Dict[str, object] = {
@@ -3294,6 +3338,9 @@ class BotOrchestrator:
                 "confirm_reason": confirm_reason,
                 "confirm_timestamp_utc": confirm_timestamp_utc,
                 "counter_signal": bool(counter_signal),
+                "policy_factors": [str(item) for item in policy_factors or [] if str(item)],
+                "hard_block_score": max(0, int(hard_block_score or 0)),
+                "pattern_evidence": dict(pattern_evidence or {}),
             }
             if blocked_trade:
                 payload["blocked_trade"] = dict(blocked_trade)
@@ -3753,6 +3800,7 @@ class BotOrchestrator:
         levels = self.level_manager._raw if self.level_manager else None
         open_positions = self.executor.position_manager.get_open_positions() if self.executor else []
         closed_trades = self.executor.get_closed_trades_today() if self.executor else []
+        risk_wiring_error = self._risk_state_wiring_error()
         await self.state_writer.write(
             bot_status=self.bot_status,
             account=self.account,
@@ -3807,7 +3855,12 @@ class BotOrchestrator:
                 "xauex_trades_taken_london": self.risk_state.xauex_trades_taken_london,
                 "xauex_signal_runs_taken_london": len(self.risk_state.xauex_signal_runs_london),
                 "xauex_signal_runs_london": list(self.risk_state.xauex_signal_runs_london),
+                "xauex_pattern_policy": self._xauex_pattern_policy_summary(),
                 "xauex_max_trades_per_day": self.config.xauex_max_trades_per_day,
+                "risk_state_wiring": {
+                    "valid": risk_wiring_error is None,
+                    "error": risk_wiring_error or "",
+                },
                 "candidate_metrics": dict(self._candidate_metrics),
                 "candidate_signal_history": list(self._candidate_signal_history),
                 "strategy_data_status": self._strategy_data_status.get(self.active_strategy_mode),
@@ -4345,6 +4398,9 @@ class BotOrchestrator:
                         confirm_timestamp_utc=confirm_timestamp_utc,
                         terminal=True,
                         counter_signal=bool(sig.get("counter_signal")),
+                        policy_factors=list(entry_quality.get("policy_factors", [])),
+                        hard_block_score=int(entry_quality.get("hard_block_score", 0) or 0),
+                        pattern_evidence=pattern_evidence.to_dict(),
                     )
                     await self.write_state()
                     continue
@@ -4907,6 +4963,9 @@ class BotOrchestrator:
                     terminal=True,
                     minimum_lot_canary=minimum_lot_canary and pos_id is not None,
                     counter_signal=bool(sig.get("counter_signal")) and pos_id is not None,
+                    policy_factors=list(entry_quality.get("policy_factors", [])),
+                    hard_block_score=int(entry_quality.get("hard_block_score", 0) or 0),
+                    pattern_evidence=pattern_evidence.to_dict(),
                 )
                 await self.write_state()
             except Exception:

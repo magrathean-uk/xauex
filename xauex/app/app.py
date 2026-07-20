@@ -273,6 +273,9 @@ def _build_window_statuses(risk: dict[str, Any], signal: dict[str, Any]) -> list
                 "display_reason": display_reason,
                 "confirm_timestamp_utc": _fmt_ts(confirm_timestamp),
                 "terminal": bool(run.get("terminal", False)),
+                "policy_factors": list(run.get("policy_factors") or []),
+                "hard_block_score": _safe_int(run.get("hard_block_score")),
+                "pattern_evidence": dict(run.get("pattern_evidence") or {}),
             }
         )
     return statuses

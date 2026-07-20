@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 from bot.risk.gates import RiskState
+from xauex.app.app import _build_window_statuses
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -239,6 +240,53 @@ def test_terminal_directional_skip_records_blocked_trade_candidate(tmp_path):
     assert blocked[0]["payload"]["reason"] == "ASSURANCE_RISK_BELOW_MIN_LOT"
     assert blocked[0]["payload"]["signal_action"] == "SELL"
     assert blocked[0]["payload"]["blocked_trade"]["entry_price"] == 4501.98
+
+
+def test_hard_block_window_retains_policy_factors_and_pattern_evidence(tmp_path):
+    orch = _build_orchestrator()
+    journal_path = tmp_path / "events.jsonl"
+    orch.config.xauex_event_journal_path = str(journal_path)
+    now = datetime(2026, 4, 7, 8, 2, tzinfo=timezone.utc)
+    pattern_evidence = {
+        "factor": "PATTERN_MISSING",
+        "weight": 2,
+        "timeframe": "M5",
+        "pattern": "NONE",
+    }
+
+    orch._mark_slot_used(
+        slot="MORNING",
+        signal_id="signal-pattern-block",
+        reason="HARD_BLOCKER",
+        signal_time=now,
+        signal_action="SELL",
+        signal_confidence=0.62,
+        terminal=True,
+        policy_factors=["PATTERN_MISSING", "STALE_CONTEXT_LOW_CONFIDENCE"],
+        hard_block_score=3,
+        pattern_evidence=pattern_evidence,
+    )
+
+    run = orch.risk_state.xauex_signal_runs_london[-1]
+    assert run["policy_factors"] == ["PATTERN_MISSING", "STALE_CONTEXT_LOW_CONFIDENCE"]
+    assert run["hard_block_score"] == 3
+    assert run["pattern_evidence"] == pattern_evidence
+
+    morning = next(
+        item
+        for item in _build_window_statuses(
+            orch.risk_state.to_dict(),
+            {"window_label": "current"},
+        )
+        if item["slot"] == "MORNING"
+    )
+    assert morning["policy_factors"] == ["PATTERN_MISSING", "STALE_CONTEXT_LOW_CONFIDENCE"]
+    assert morning["hard_block_score"] == 3
+    assert morning["pattern_evidence"] == pattern_evidence
+
+    events = [json.loads(line) for line in journal_path.read_text(encoding="utf-8").splitlines()]
+    risk_result = next(event for event in events if event["event_type"] == "risk_result")
+    assert risk_result["payload"]["policy_factors"] == ["PATTERN_MISSING", "STALE_CONTEXT_LOW_CONFIDENCE"]
 
 
 def test_stale_previous_day_signal_does_not_consume_morning_slot():

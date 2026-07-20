@@ -183,3 +183,22 @@ def test_diagnostics_snapshot_keeps_manual_only_positions_as_expected_runtime_st
     assert diagnostics["overall_status"] == "healthy"
     assert diagnostics["current_issues"] == []
     assert "Manual positions are open while XAUEX has no managed trade." in diagnostics["summary"]
+
+
+def test_diagnostics_marks_invalid_risk_wiring_critical():
+    diagnostics = build_diagnostics_snapshot(
+        {
+            "meta": {"bot_status": "RUNNING"},
+            "runtime": {
+                "risk_state_wiring": {
+                    "valid": False,
+                    "error": "RISK_STATE_WIRING_INVALID",
+                },
+            },
+        },
+        reference_time=datetime(2026, 4, 7, 12, 57, 6, tzinfo=timezone.utc),
+    )
+
+    issue = next(item for item in diagnostics["current_issues"] if item["code"] == "RISK_STATE_WIRING_INVALID")
+    assert issue["severity"] == "critical"
+    assert diagnostics["overall_status"] == "blocked"
