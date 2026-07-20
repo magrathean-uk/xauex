@@ -74,6 +74,9 @@ _XAUEX_ENTRY_POLICY_FACTOR_WEIGHTS = {
     "COUNTER_SIGNAL_STALE_CONTEXT": 1,
     "SAME_DIRECTION_LOSS_COOLDOWN": 2,
     "LOWER_THIRD_NO_CHASE": 1,
+    "PATTERN_MISSING": 2,
+    "PATTERN_DIRECTION_MISMATCH": 3,
+    "PATTERN_DATA_UNAVAILABLE": 1,
 }
 
 
@@ -177,6 +180,46 @@ XAUEX_CONFIRM_MAX_AGE_SECONDS_DEFAULT = 600
 
 _XAUEX_BULLISH_PATTERN_TYPES: frozenset = frozenset()
 _XAUEX_BEARISH_PATTERN_TYPES: frozenset = frozenset()
+_EXECUTION_TIMEFRAME_MINUTES = {
+    "M1": 1,
+    "M2": 2,
+    "M3": 3,
+    "M4": 4,
+    "M5": 5,
+    "M10": 10,
+    "M15": 15,
+    "M30": 30,
+    "H1": 60,
+    "H4": 240,
+    "H12": 720,
+    "D1": 1440,
+}
+
+
+@dataclass(frozen=True)
+class XauexPatternEvidence:
+    """Closed-bar pattern evidence consumed by the XAUEX entry policy."""
+
+    factor: str
+    weight: int
+    pattern: PatternType = PatternType.NONE
+    level: Optional[float] = None
+    timeframe: str = ""
+    previous_open_time_utc: str = ""
+    signal_open_time_utc: str = ""
+    detail: str = ""
+
+    def to_dict(self) -> Dict[str, object]:
+        return {
+            "factor": self.factor,
+            "weight": self.weight,
+            "pattern": self.pattern.name,
+            "level": self.level,
+            "timeframe": self.timeframe,
+            "previous_open_time_utc": self.previous_open_time_utc,
+            "signal_open_time_utc": self.signal_open_time_utc,
+            "detail": self.detail,
+        }
 
 
 def _populate_xauex_pattern_sets() -> None:
@@ -192,14 +235,12 @@ def _populate_xauex_pattern_sets() -> None:
         _PT.BULLISH_PIN_BAR,
         _PT.BULLISH_CONTINUATION_CLOSE,
         _PT.BULLISH_CONSOLIDATION_BREAK,
-        _PT.INSIDE_BAR,  # directionally ambiguous — accepted either way
     })
     _XAUEX_BEARISH_PATTERN_TYPES = frozenset({
         _PT.BEARISH_ENGULFING,
         _PT.BEARISH_PIN_BAR,
         _PT.BEARISH_CONTINUATION_CLOSE,
         _PT.BEARISH_CONSOLIDATION_BREAK,
-        _PT.INSIDE_BAR,
     })
 
 
@@ -212,12 +253,11 @@ def xauex_pattern_check(
     direction: int,
 ):
     """Run pattern detection against the candidate HTF levels and return
-    whether the strongest match aligns with the proposed direction.
+    whether the strongest match aligns with the proposed direction. Inside
+    bars are retained as neutral evidence; they never confirm either side.
 
     Returns a tuple ``(pattern, level, ok, reason)`` where ``ok`` is True only
-    when a pattern fires that supports ``direction``. The XAUEX poll uses this
-    behind the ``XAUEX_REQUIRE_PATTERN_MATCH`` feature flag to refuse trades
-    that would have been blind LLM directional bets.
+    when a pattern fires that supports ``direction``.
     """
     _populate_xauex_pattern_sets()
     from bot.patterns.detector import PatternType as _PT
@@ -251,11 +291,54 @@ def xauex_pattern_check(
     if best_pattern == _PT.NONE:
         return _PT.NONE, sorted_levels[0] if sorted_levels else None, False, "NO_PATTERN"
 
+    if best_pattern == _PT.INSIDE_BAR:
+        return best_pattern, best_level, False, "NEUTRAL_PATTERN"
+
     if direction > 0 and best_pattern in _XAUEX_BULLISH_PATTERN_TYPES:
         return best_pattern, best_level, True, "MATCH"
     if direction < 0 and best_pattern in _XAUEX_BEARISH_PATTERN_TYPES:
         return best_pattern, best_level, True, "MATCH"
     return best_pattern, best_level, False, "DIRECTION_MISMATCH"
+
+
+def select_closed_execution_pattern_bars(
+    bars: List[Dict[str, object]],
+    *,
+    now_utc: datetime,
+    timeframe: str,
+) -> Optional[tuple[Dict[str, object], Dict[str, object]]]:
+    """Return the latest two fully closed bars for XAUEX pattern evaluation."""
+    minutes = _EXECUTION_TIMEFRAME_MINUTES.get(str(timeframe or "").upper())
+    if minutes is None:
+        return None
+
+    close_after = timedelta(minutes=minutes)
+    now = now_utc.astimezone(timezone.utc)
+    closed: List[tuple[datetime, Dict[str, object]]] = []
+    for bar in bars:
+        if not isinstance(bar, dict):
+            continue
+        raw_open_time = bar.get("open_time")
+        if isinstance(raw_open_time, datetime):
+            open_time = raw_open_time
+        elif isinstance(raw_open_time, str):
+            try:
+                open_time = datetime.fromisoformat(raw_open_time.replace("Z", "+00:00"))
+            except ValueError:
+                continue
+        else:
+            continue
+        if open_time.tzinfo is None:
+            open_time = open_time.replace(tzinfo=timezone.utc)
+        else:
+            open_time = open_time.astimezone(timezone.utc)
+        if open_time + close_after <= now:
+            closed.append((open_time, bar))
+
+    if len(closed) < 2:
+        return None
+    closed.sort(key=lambda item: item[0])
+    return closed[-2][1], closed[-1][1]
 
 
 def is_xauex_confirm_timestamp_fresh(
@@ -832,6 +915,7 @@ def build_xauex_entry_quality_decision(
     now_utc: Optional[datetime],
     closed_trades_today: List[Dict[str, object]],
     signal_runs_london: List[Dict[str, object]],
+    pattern_evidence: XauexPatternEvidence | Dict[str, object] | None = None,
 ) -> Dict[str, object]:
     """Capital-preservation gate for patterns that caused repeated loss weeks."""
     action = str(signal.get("action", "HOLD") or "HOLD").upper()
@@ -862,6 +946,17 @@ def build_xauex_entry_quality_decision(
         if name not in factors:
             factors.append(name)
             hard_block_score += int(_XAUEX_ENTRY_POLICY_FACTOR_WEIGHTS.get(name, 1))
+
+    if isinstance(pattern_evidence, XauexPatternEvidence):
+        result["pattern_evidence"] = pattern_evidence.to_dict()
+        pattern_factor = pattern_evidence.factor
+    elif isinstance(pattern_evidence, dict):
+        result["pattern_evidence"] = dict(pattern_evidence)
+        pattern_factor = str(pattern_evidence.get("factor") or "").upper()
+    else:
+        pattern_factor = ""
+    if pattern_factor in _XAUEX_ENTRY_POLICY_FACTOR_WEIGHTS:
+        add_factor(pattern_factor)
 
     trade_warnings = signal.get("trade_warnings")
     if isinstance(trade_warnings, list):
@@ -2491,40 +2586,60 @@ class BotOrchestrator:
         logger.error("[TREND] Failed to fetch H1 bars: %s", last_exc)
         return None
 
-    async def _xauex_pattern_gate_check(self, *, direction: int):
-        """Run the XAUEX pattern gate against the latest H1 bars.
+    async def _xauex_pattern_evidence(
+        self,
+        *,
+        direction: int,
+        now_utc: datetime,
+    ) -> XauexPatternEvidence:
+        """Evaluate active-timeframe closed bars as weighted entry evidence."""
+        from bot.patterns.detector import Candle
 
-        Returns ``(matched_pattern, matched_level, reason)``. ``matched_pattern``
-        is None when the gate blocks (no level / no pattern / direction
-        mismatch / insufficient data). ``reason`` always carries a short label
-        suitable for slot-record diagnostics.
-        """
-        from bot.patterns.detector import Candle, PatternType as _PT
+        timeframe = str(self.execution_timeframe or "").upper()
+
+        def unavailable(detail: str) -> XauexPatternEvidence:
+            return XauexPatternEvidence(
+                factor="PATTERN_DATA_UNAVAILABLE",
+                weight=_XAUEX_ENTRY_POLICY_FACTOR_WEIGHTS["PATTERN_DATA_UNAVAILABLE"],
+                timeframe=timeframe,
+                detail=detail,
+            )
 
         if self.pattern_detector is None or self.level_manager is None:
-            return None, None, "DETECTOR_UNAVAILABLE"
-        bars = await self._fetch_recent_h1_ohlc_bars(count=4)
-        if not bars or len(bars) < 2:
-            return None, None, "H1_BARS_UNAVAILABLE"
-        prev_bar = bars[-2]
-        signal_bar = bars[-1]
+            return unavailable("DETECTOR_OR_LEVELS_UNAVAILABLE")
+
+        bars = await self._fetch_recent_execution_ohlc_bars(timeframe=timeframe, count=4)
+        if not bars:
+            return unavailable("EXECUTION_BARS_UNAVAILABLE")
+        selected = select_closed_execution_pattern_bars(
+            bars,
+            now_utc=now_utc,
+            timeframe=timeframe,
+        )
+        if selected is None:
+            return unavailable("CLOSED_EXECUTION_BARS_UNAVAILABLE")
+        prev_bar, signal_bar = selected
         try:
+            prev_open_time = self._bar_open_time_utc(prev_bar)
+            signal_open_time = self._bar_open_time_utc(signal_bar)
+            if prev_open_time is None or signal_open_time is None:
+                return unavailable("EXECUTION_BAR_TIME_MALFORMED")
             prev_candle = Candle(
                 open=float(prev_bar["open"]),
                 high=float(prev_bar["high"]),
                 low=float(prev_bar["low"]),
                 close=float(prev_bar["close"]),
-                open_time=prev_bar.get("open_time") or datetime.now(timezone.utc),
+                open_time=prev_open_time,
             )
             signal_candle = Candle(
                 open=float(signal_bar["open"]),
                 high=float(signal_bar["high"]),
                 low=float(signal_bar["low"]),
                 close=float(signal_bar["close"]),
-                open_time=signal_bar.get("open_time") or datetime.now(timezone.utc),
+                open_time=signal_open_time,
             )
         except (KeyError, TypeError, ValueError):
-            return None, None, "H1_BAR_MALFORMED"
+            return unavailable("EXECUTION_BAR_MALFORMED")
 
         range_low = min(prev_candle.low, signal_candle.low)
         range_high = max(prev_candle.high, signal_candle.high)
@@ -2532,34 +2647,71 @@ class BotOrchestrator:
         if not candidates:
             candidates = self.level_manager.all_levels()
         if not candidates:
-            return None, None, "NO_LEVELS"
+            return unavailable("NO_HTF_LEVELS")
 
-        pattern, level, ok, reason = xauex_pattern_check(
+        pattern, level, matched, reason = xauex_pattern_check(
             pattern_detector=self.pattern_detector,
             prev_candle=prev_candle,
             signal_candle=signal_candle,
             candidate_levels=candidates,
             direction=direction,
         )
-        if ok and pattern != _PT.NONE:
-            return pattern, level, "MATCH"
-        return None, level, reason
+        common = {
+            "pattern": pattern,
+            "level": level,
+            "timeframe": timeframe,
+            "previous_open_time_utc": prev_open_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "signal_open_time_utc": signal_open_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "detail": reason,
+        }
+        if matched:
+            return XauexPatternEvidence(factor="PATTERN_MATCH", weight=0, **common)
+        if reason == "DIRECTION_MISMATCH":
+            return XauexPatternEvidence(
+                factor="PATTERN_DIRECTION_MISMATCH",
+                weight=_XAUEX_ENTRY_POLICY_FACTOR_WEIGHTS["PATTERN_DIRECTION_MISMATCH"],
+                **common,
+            )
+        return XauexPatternEvidence(
+            factor="PATTERN_MISSING",
+            weight=_XAUEX_ENTRY_POLICY_FACTOR_WEIGHTS["PATTERN_MISSING"],
+            **common,
+        )
 
-    async def _fetch_recent_h1_ohlc_bars(self, count: int = 4) -> Optional[List[Dict]]:
-        """Fetch the most recent closed H1 OHLC bars for pattern detection in
-        the XAUEX poll path. Returns the raw bar dicts with open/high/low/close
-        keys so :func:`xauex_pattern_check` can build Candle objects."""
+    @staticmethod
+    def _bar_open_time_utc(bar: Dict[str, object]) -> Optional[datetime]:
+        raw_open_time = bar.get("open_time")
+        if isinstance(raw_open_time, datetime):
+            open_time = raw_open_time
+        elif isinstance(raw_open_time, str):
+            try:
+                open_time = datetime.fromisoformat(raw_open_time.replace("Z", "+00:00"))
+            except ValueError:
+                return None
+        else:
+            return None
+        if open_time.tzinfo is None:
+            return open_time.replace(tzinfo=timezone.utc)
+        return open_time.astimezone(timezone.utc)
+
+    async def _fetch_recent_execution_ohlc_bars(
+        self,
+        *,
+        timeframe: str,
+        count: int = 4,
+    ) -> Optional[List[Dict[str, object]]]:
+        """Fetch raw active-timeframe OHLC bars for closed-bar pattern evidence."""
         last_exc = None
         for attempt in range(2):
             try:
-                bars = await self.api_client.get_trendbar("H1", max(2, int(count)))
+                bars = await self.api_client.get_trendbar(timeframe, max(2, int(count)))
                 return list(bars or [])
             except Exception as exc:
                 last_exc = exc
                 if attempt == 0:
                     await asyncio.sleep(0.5)
                     continue
-        logger.error("[XAUEX] Failed to fetch H1 OHLC bars: %s", last_exc)
+        logger.error("[XAUEX] Failed to fetch %s OHLC bars: %s", timeframe, last_exc)
         return None
 
     def _load_macro_regime(self) -> Optional[MacroRegime]:
@@ -4158,6 +4310,11 @@ class BotOrchestrator:
                     await self.write_state()
                     continue
 
+                pattern_evidence = await self._xauex_pattern_evidence(
+                    direction=direction,
+                    now_utc=now_utc,
+                )
+                sig["pattern_evidence"] = pattern_evidence.to_dict()
                 entry_quality = build_xauex_entry_quality_decision(
                     signal=sig,
                     assurance=assurance,
@@ -4165,6 +4322,7 @@ class BotOrchestrator:
                     now_utc=now_utc,
                     closed_trades_today=(self.executor.get_closed_trades_today(now_utc) if self.executor else []),
                     signal_runs_london=list(self.risk_state.xauex_signal_runs_london),
+                    pattern_evidence=pattern_evidence,
                 )
                 if not bool(entry_quality.get("allowed")):
                     reason = str(entry_quality.get("reason") or "ENTRY_QUALITY_BLOCKED")
@@ -4708,60 +4866,12 @@ class BotOrchestrator:
                     reasoning,
                 )
 
-                # Pattern gate (feature-flagged via XAUEX_REQUIRE_PATTERN_MATCH).
-                # Historically every XAUEX trade was placed with pattern=NONE,
-                # which bypassed the candle-confirmation discipline that the
-                # HTF_LEVEL strategy relied on. When the flag is active, refuse
-                # to place an order unless an H1 pattern at a nearby HTF level
-                # supports the proposed direction. The detected pattern is
-                # then recorded on the trade so the journal can attribute
-                # outcomes to real setups instead of NONE.
-                placement_pattern = PatternType.NONE
-                placement_level = current_price
-                if bool(getattr(self.config, "xauex_require_pattern_match", False)):
-                    matched_pattern, matched_level, gate_reason = await self._xauex_pattern_gate_check(
-                        direction=direction,
-                    )
-                    if matched_pattern is None:
-                        logger.warning(
-                            "[XAUEX] Pattern gate blocked trade: %s slot=%s signal=%s direction=%s",
-                            gate_reason,
-                            slot,
-                            signal_id,
-                            dir_label,
-                        )
-                        self._journal_event(
-                            "pattern_gate_block",
-                            {
-                                "slot": slot,
-                                "window_label": window_label,
-                                "direction": dir_label,
-                                "reason": gate_reason,
-                            },
-                            correlation_id=signal_id,
-                        )
-                        self._mark_slot_used(
-                            slot=slot,
-                            signal_id=signal_id,
-                            reason=f"PATTERN_GATE_{gate_reason}",
-                            signal_time=now_utc,
-                            signal_action=action,
-                            signal_confidence=confidence,
-                            window_label=window_label,
-                            confirm_status=confirm_status,
-                            confirm_reason=confirm_reason,
-                            confirm_timestamp_utc=confirm_timestamp_utc,
-                            terminal=True,
-                        )
-                        await self.write_state()
-                        continue
-                    placement_pattern = matched_pattern
-                    placement_level = matched_level if matched_level is not None else current_price
-                    logger.info(
-                        "[XAUEX] Pattern gate cleared: pattern=%s level=%.2f",
-                        placement_pattern.name,
-                        placement_level,
-                    )
+                placement_pattern = (
+                    pattern_evidence.pattern
+                    if pattern_evidence.factor == "PATTERN_MATCH"
+                    else PatternType.NONE
+                )
+                placement_level = pattern_evidence.level if pattern_evidence.level is not None else current_price
 
                 pos_id = await self.executor.place_market_order(
                     direction=direction,

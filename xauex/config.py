@@ -91,7 +91,6 @@ class Config:
     xauex_risk_cap_percent: float
     xauex_confirm_spread_max_dollars: float
     xauex_confirm_max_age_seconds: int
-    xauex_require_pattern_match: bool
     xauex_confidence_full_threshold: float
     xauex_confidence_medium_threshold: float
     xauex_medium_confidence_lot_multiplier: float
@@ -415,12 +414,6 @@ def load_config(env_file: str = ".env") -> Config:
         60,
         3600,
         int(os.getenv("XAUEX_CONFIRM_MAX_AGE_SECONDS", "600")),
-    )
-    xauex_require_pattern_match = os.getenv("XAUEX_REQUIRE_PATTERN_MATCH", "false").lower() in (
-        "1",
-        "true",
-        "yes",
-        "on",
     )
     xauex_confidence_full_threshold = collect(
         _float_range,
@@ -826,7 +819,6 @@ def load_config(env_file: str = ".env") -> Config:
         xauex_confirm_spread_max_dollars=xauex_confirm_spread_max_dollars,
         xauex_confirm_max_age_seconds=xauex_confirm_max_age_seconds,
         xauex_defer_grace_minutes=xauex_defer_grace_minutes,
-        xauex_require_pattern_match=xauex_require_pattern_match,
         xauex_confidence_full_threshold=xauex_confidence_full_threshold,
         xauex_confidence_medium_threshold=xauex_confidence_medium_threshold,
         xauex_medium_confidence_lot_multiplier=xauex_medium_confidence_lot_multiplier,

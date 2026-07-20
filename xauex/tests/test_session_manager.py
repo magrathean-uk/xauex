@@ -1169,6 +1169,25 @@ def test_xauex_pattern_check_returns_no_levels_when_candidates_empty():
     assert reason == "NO_LEVELS"
 
 
+def test_pattern_selector_excludes_current_execution_bar():
+    bars = [
+        {"open_time": datetime(2026, 7, 20, 7, 50, tzinfo=timezone.utc)},
+        {"open_time": datetime(2026, 7, 20, 7, 55, tzinfo=timezone.utc)},
+        {"open_time": datetime(2026, 7, 20, 8, 0, tzinfo=timezone.utc)},
+    ]
+
+    selected = _MODULE.select_closed_execution_pattern_bars(
+        bars,
+        now_utc=datetime(2026, 7, 20, 8, 2, tzinfo=timezone.utc),
+        timeframe="M5",
+    )
+
+    assert selected is not None
+    previous, signal = selected
+    assert previous["open_time"] == datetime(2026, 7, 20, 7, 50, tzinfo=timezone.utc)
+    assert signal["open_time"] == datetime(2026, 7, 20, 7, 55, tzinfo=timezone.utc)
+
+
 @pytest.mark.asyncio
 async def test_xauex_mode_refreshes_active_scalp_trend_context_on_candle_close():
     orchestrator = BotOrchestrator.__new__(BotOrchestrator)

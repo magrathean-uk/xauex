@@ -490,3 +490,88 @@ def test_entry_policy_uses_single_hard_blocker_for_combined_soft_risks():
         "SAME_DIRECTION_LOSS_COOLDOWN",
         "LOWER_THIRD_NO_CHASE",
     ]
+
+
+def test_entry_policy_missing_pattern_reduces_risk_without_blocking_alone():
+    decision = _MODULE.build_xauex_entry_quality_decision(
+        signal=_signal(),
+        assurance=XauexAssuranceProfile(
+            bucket="high",
+            score=0.90,
+            allow_trade=True,
+            reason="HIGH_ASSURANCE",
+            risk_multiplier=1.5,
+            target_rr=2.5,
+            protect_r=1.0,
+            trail_r=1.5,
+            protect_lock_r=0.25,
+        ),
+        config=_assurance_config(),
+        now_utc=None,
+        closed_trades_today=[],
+        signal_runs_london=[],
+        pattern_evidence={"factor": "PATTERN_MISSING", "weight": 2},
+    )
+
+    assert decision["allowed"] is True
+    assert decision["reason"] == "ENTRY_QUALITY_WARNINGS"
+    assert decision["risk_multiplier"] == 0.25
+    assert decision["policy_factors"] == ["PATTERN_MISSING"]
+
+
+def test_entry_policy_combines_missing_pattern_with_stale_context():
+    decision = _MODULE.build_xauex_entry_quality_decision(
+        signal=_signal(
+            confidence=0.62,
+            decision_packet={
+                "input_freshness": {"market_snapshot_state": "warning"},
+                "price_features": {"range_position": "MIDDLE_THIRD"},
+            },
+        ),
+        assurance=XauexAssuranceProfile(
+            bucket="medium",
+            score=0.58,
+            allow_trade=True,
+            reason="MEDIUM_ASSURANCE_STALE_CONTEXT",
+            risk_multiplier=0.5,
+            target_rr=1.5,
+            protect_r=0.85,
+            trail_r=1.35,
+            protect_lock_r=0.30,
+        ),
+        config=_assurance_config(),
+        now_utc=None,
+        closed_trades_today=[],
+        signal_runs_london=[],
+        pattern_evidence={"factor": "PATTERN_MISSING", "weight": 2},
+    )
+
+    assert decision["allowed"] is False
+    assert decision["reason"] == "HARD_BLOCKER"
+    assert decision["policy_factors"] == ["PATTERN_MISSING", "STALE_CONTEXT_LOW_CONFIDENCE"]
+
+
+def test_entry_policy_blocks_directly_opposed_pattern():
+    decision = _MODULE.build_xauex_entry_quality_decision(
+        signal=_signal(),
+        assurance=XauexAssuranceProfile(
+            bucket="high",
+            score=0.90,
+            allow_trade=True,
+            reason="HIGH_ASSURANCE",
+            risk_multiplier=1.5,
+            target_rr=2.5,
+            protect_r=1.0,
+            trail_r=1.5,
+            protect_lock_r=0.25,
+        ),
+        config=_assurance_config(),
+        now_utc=None,
+        closed_trades_today=[],
+        signal_runs_london=[],
+        pattern_evidence={"factor": "PATTERN_DIRECTION_MISMATCH", "weight": 3},
+    )
+
+    assert decision["allowed"] is False
+    assert decision["reason"] == "HARD_BLOCKER"
+    assert decision["policy_factors"] == ["PATTERN_DIRECTION_MISMATCH"]
