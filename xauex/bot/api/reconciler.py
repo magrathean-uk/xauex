@@ -10,8 +10,8 @@ import logging
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from bot.api.client import ApiClient
-    from bot.state.position_manager import PositionManager
+    from xauex.bot.api.client import ApiClient
+    from xauex.bot.state.position_manager import PositionManager
 
 logger = logging.getLogger(__name__)
 

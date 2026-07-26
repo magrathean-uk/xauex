@@ -9,7 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
-from bot.risk.gates import RiskState
+from xauex.bot.risk.gates import RiskState
 from xauex.app.app import _build_window_statuses
 
 
@@ -265,12 +265,18 @@ def test_hard_block_window_retains_policy_factors_and_pattern_evidence(tmp_path)
         policy_factors=["PATTERN_MISSING", "STALE_CONTEXT_LOW_CONFIDENCE"],
         hard_block_score=3,
         pattern_evidence=pattern_evidence,
+        block_factors=["PATTERN_MISSING", "STALE_CONTEXT_LOW_CONFIDENCE"],
+        primary_block_factor="PATTERN_MISSING",
+        assurance_score=0.58,
     )
 
     run = orch.risk_state.xauex_signal_runs_london[-1]
     assert run["policy_factors"] == ["PATTERN_MISSING", "STALE_CONTEXT_LOW_CONFIDENCE"]
     assert run["hard_block_score"] == 3
     assert run["pattern_evidence"] == pattern_evidence
+    assert run["block_factors"] == ["PATTERN_MISSING", "STALE_CONTEXT_LOW_CONFIDENCE"]
+    assert run["primary_block_factor"] == "PATTERN_MISSING"
+    assert run["assurance_score"] == 0.58
 
     morning = next(
         item
@@ -283,10 +289,39 @@ def test_hard_block_window_retains_policy_factors_and_pattern_evidence(tmp_path)
     assert morning["policy_factors"] == ["PATTERN_MISSING", "STALE_CONTEXT_LOW_CONFIDENCE"]
     assert morning["hard_block_score"] == 3
     assert morning["pattern_evidence"] == pattern_evidence
+    assert morning["block_factors"] == ["PATTERN_MISSING", "STALE_CONTEXT_LOW_CONFIDENCE"]
+    assert morning["primary_block_factor"] == "PATTERN_MISSING"
+    assert morning["assurance_score"] == 0.58
 
     events = [json.loads(line) for line in journal_path.read_text(encoding="utf-8").splitlines()]
     risk_result = next(event for event in events if event["event_type"] == "risk_result")
     assert risk_result["payload"]["policy_factors"] == ["PATTERN_MISSING", "STALE_CONTEXT_LOW_CONFIDENCE"]
+    assert risk_result["payload"]["block_factors"] == ["PATTERN_MISSING", "STALE_CONTEXT_LOW_CONFIDENCE"]
+    assert risk_result["payload"]["primary_block_factor"] == "PATTERN_MISSING"
+
+
+def test_unexplained_hard_block_is_marked_as_an_invariant_failure(tmp_path):
+    orch = _build_orchestrator()
+    journal_path = tmp_path / "events.jsonl"
+    orch.config.xauex_event_journal_path = str(journal_path)
+
+    orch._mark_slot_used(
+        slot="MORNING",
+        signal_id="signal-unexplained-block",
+        reason="HARD_BLOCKER",
+        signal_time=datetime(2026, 4, 7, 8, 2, tzinfo=timezone.utc),
+        signal_action="SELL",
+        signal_confidence=0.62,
+        terminal=True,
+    )
+
+    run = orch.risk_state.xauex_signal_runs_london[-1]
+    assert run["block_factors"] == ["UNEXPLAINED_HARD_BLOCKER"]
+    assert run["primary_block_factor"] == "UNEXPLAINED_HARD_BLOCKER"
+    events = [json.loads(line) for line in journal_path.read_text(encoding="utf-8").splitlines()]
+    for event in events:
+        assert event["payload"]["block_factors"] == ["UNEXPLAINED_HARD_BLOCKER"]
+        assert event["payload"]["primary_block_factor"] == "UNEXPLAINED_HARD_BLOCKER"
 
 
 def test_stale_previous_day_signal_does_not_consume_morning_slot():

@@ -19,6 +19,10 @@ from xauex.signal.assets import AssetProfile
 from xauex.signal.cftc_cot import fetch_cot_snapshot
 from xauex.signal.config import SignalConfig
 from xauex.signal.fedwatch import fetch_fedwatch_snapshot
+from xauex.signal.freshness import (
+    DAILY_PUBLISHING_MAX_AGE_SECONDS,
+    DAILY_PUBLISHING_MAX_BUSINESS_AGE_DAYS,
+)
 from xauex.signal.fred_fetch import fetch_fred_rows
 from xauex.signal.policy_context import fetch_policy_context
 from xauex.signal.polymarket import fetch_polymarket_snapshot
@@ -26,7 +30,7 @@ from xauex.signal.polymarket import fetch_polymarket_snapshot
 logger = logging.getLogger(__name__)
 
 _ACTIVE_WINDOWS = {'morning', 'midday', 'us_open'}
-_MARKET_SNAPSHOT_WARNING_AGE_SECONDS = 3 * 24 * 3600
+_MARKET_SNAPSHOT_WARNING_AGE_SECONDS = DAILY_PUBLISHING_MAX_AGE_SECONDS
 _MARKET_SNAPSHOT_BLOCK_AGE_SECONDS = 7 * 24 * 3600
 _MARKET_SNAPSHOT_BLOCK_STALE_SERIES_COUNT = 3
 _MARKET_SNAPSHOT_WARNING_MISSING_COUNT = 1
@@ -632,6 +636,16 @@ def _assess_market_snapshot_freshness(
     state = 'fresh'
     hard_blocker = False
     notes: list[str] = []
+    daily_business_stale = (
+        daily_publishing_max_business_age_days is not None
+        and daily_publishing_max_business_age_days > DAILY_PUBLISHING_MAX_BUSINESS_AGE_DAYS
+    )
+    daily_calendar_stale = (
+        daily_publishing_max_business_age_days is None
+        and daily_publishing_max_age_seconds is not None
+        and daily_publishing_max_age_seconds > DAILY_PUBLISHING_MAX_AGE_SECONDS
+    )
+    daily_series_stale = stale_block_series_count > 0 or daily_business_stale or daily_calendar_stale
 
     if market_snapshot_age_seconds is None:
         state = 'blocked' if active_window else 'warning'
@@ -644,14 +658,25 @@ def _assess_market_snapshot_freshness(
             notes.append(
                 f'Structured market snapshot is stale at {market_snapshot_age_seconds}s old during the {window_label} window.'
             )
-        else:
+        elif daily_series_stale:
             state = 'warning'
             notes.append(
                 f'Structured market snapshot is stale at {market_snapshot_age_seconds}s old, but only {stale_block_series_count} series exceed the hard block threshold.'
             )
+        else:
+            notes.append(
+                'Slow-publishing reference series follow their expected publication cadence; '
+                'daily-publishing series remain within freshness tolerance.'
+            )
     elif market_snapshot_age_seconds >= _MARKET_SNAPSHOT_WARNING_AGE_SECONDS:
-        state = 'warning'
-        notes.append(f'Structured market snapshot is stale at {market_snapshot_age_seconds}s old.')
+        if daily_series_stale:
+            state = 'warning'
+            notes.append(f'Structured market snapshot is stale at {market_snapshot_age_seconds}s old.')
+        else:
+            notes.append(
+                'Slow-publishing reference series follow their expected publication cadence; '
+                'daily-publishing series remain within freshness tolerance.'
+            )
 
     if missing_series_count >= _MARKET_SNAPSHOT_BLOCK_MISSING_COUNT and active_window:
         state = 'blocked'

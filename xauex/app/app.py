@@ -276,6 +276,9 @@ def _build_window_statuses(risk: dict[str, Any], signal: dict[str, Any]) -> list
                 "policy_factors": list(run.get("policy_factors") or []),
                 "hard_block_score": _safe_int(run.get("hard_block_score")),
                 "pattern_evidence": dict(run.get("pattern_evidence") or {}),
+                "block_factors": list(run.get("block_factors") or []),
+                "primary_block_factor": str(run.get("primary_block_factor") or ""),
+                "assurance_score": run.get("assurance_score"),
             }
         )
     return statuses

@@ -16,10 +16,10 @@ import logging
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-from bot.api.reconciler import reconcile_positions
+from xauex.bot.api.reconciler import reconcile_positions
 
 if TYPE_CHECKING:
-    from main import BotOrchestrator
+    from xauex.main import BotOrchestrator
 
 logger = logging.getLogger(__name__)
 

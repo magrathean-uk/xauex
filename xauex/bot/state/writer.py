@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
 from pathlib import Path
 
-from config import Config
+from xauex.config import Config
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:

@@ -547,8 +547,16 @@
           : outcome === "HOLD" ? "hold"
           : (outcome === "NO_SIGNAL" || outcome === "NOT_CONSUMED") ? "gap"
           : "blocked";
-        const reason = rec.reason && rec.reason !== outcome ? `: ${esc(rec.reason)}` : "";
-        const detail = esc((rec.reason_chain || []).join("\n"));
+        const rawReason = String(rec.reason || "");
+        const primary = String(rec.primary_block_factor || "");
+        const visibleReason = rawReason === "HARD_BLOCKER" && primary
+          ? `${rawReason} / ${primary}`
+          : rawReason;
+        const reason = visibleReason && visibleReason !== outcome ? `: ${esc(visibleReason)}` : "";
+        const factors = Array.isArray(rec.block_factors) ? rec.block_factors : [];
+        const detailLines = [...(rec.reason_chain || [])];
+        if (factors.length) detailLines.push(`Block factors: ${factors.join(" + ")}`);
+        const detail = esc(detailLines.join("\n"));
         return `<span class="ledger-chip ${cls}" title="${detail}">${outcome}${reason}</span>`;
       };
       const rows = days.map((d) => `

@@ -19,7 +19,7 @@ assert _SPEC and _SPEC.loader
 _MODULE = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(_MODULE)
 
-from bot.api.models import SymbolSpec
+from xauex.bot.api.models import SymbolSpec
 from xauex.signal.assets import resolve_asset
 from xauex.signal.signal_parser import _fallback_direction, _normalize_signal
 
@@ -329,6 +329,76 @@ def test_assurance_caps_high_confidence_stale_snapshot_to_reduced_medium_risk():
     assert assurance.bucket == "medium"
     assert assurance.reason == "MEDIUM_ASSURANCE_STALE_CONTEXT"
     assert assurance.risk_multiplier == 0.5
+
+
+def test_assurance_trusts_structured_freshness_over_stale_reference_wording():
+    signal = _signal(
+        confidence=0.65,
+        validator_summary=(
+            "well-supported setup; a stale reference series follows its normal weekly publication cadence"
+        ),
+        decision_packet={
+            "input_freshness": {
+                "market_snapshot_state": "fresh",
+                "daily_publishing_max_business_age_days": 2,
+                "missing_series_count": 0,
+                "stale_block_series_count": 0,
+                "cache_fallback_series_count": 0,
+                "fed_h15_fallback_series_count": 0,
+            },
+            "price_features": {"range_position": "MIDDLE_THIRD"},
+        },
+    )
+
+    assurance = build_xauex_assurance_profile(signal, _assurance_config())
+
+    assert assurance.allow_trade is True
+    assert assurance.bucket == "high"
+    assert assurance.reason == "HIGH_ASSURANCE"
+    assert assurance.risk_multiplier == 1.5
+
+
+def test_assurance_hard_block_explains_direct_validator_contradiction():
+    signal = _signal(
+        confidence=0.47,
+        consensus_state="disagreed",
+        validator_summary="The proposed SELL directly contradicts the price regime.",
+    )
+
+    assurance = build_xauex_assurance_profile(signal, _assurance_config())
+
+    assert assurance.allow_trade is False
+    assert assurance.reason == "HARD_BLOCKER"
+    assert assurance.score == 0.21
+    assert assurance.block_factors == (
+        "ASSURANCE_LOW_CONFIDENCE",
+        "ASSURANCE_CONSENSUS_DISAGREEMENT",
+        "ASSURANCE_VALIDATOR_CONTRADICTION",
+    )
+
+
+def test_assurance_hard_block_explains_combined_low_score():
+    signal = _signal(
+        confidence=0.58,
+        consensus_state="disagreed",
+        validator_summary="The proposed SELL directly contradicts the price regime.",
+        decision_packet={
+            "input_freshness": {"market_snapshot_state": "warning"},
+            "price_features": {"range_position": "MIDDLE_THIRD"},
+        },
+    )
+
+    assurance = build_xauex_assurance_profile(signal, _assurance_config())
+
+    assert assurance.allow_trade is False
+    assert assurance.reason == "HARD_BLOCKER"
+    assert assurance.score == 0.27
+    assert assurance.block_factors == (
+        "ASSURANCE_SCORE_BELOW_MINIMUM",
+        "ASSURANCE_CONSENSUS_DISAGREEMENT",
+        "ASSURANCE_VALIDATOR_CONTRADICTION",
+        "ASSURANCE_STALE_CONTEXT",
+    )
 
 
 def test_counter_signal_canary_can_force_minimum_risk_without_regular_lift():

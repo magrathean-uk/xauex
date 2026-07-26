@@ -1,4 +1,4 @@
-from bot.state.coalescing import StateWriteCoalescer
+from xauex.bot.state.coalescing import StateWriteCoalescer
 
 
 def test_state_coalescer_skips_unchanged_payload():

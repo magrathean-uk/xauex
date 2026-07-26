@@ -201,10 +201,49 @@ def _reason_chain(events: list[dict[str, Any]]) -> list[str]:
             descriptor = f"counter {payload.get('source_action')}->{payload.get('counter_action')}"
         else:
             descriptor = str(payload.get("reason") or payload.get("confirm_reason") or event_type)
+            factors = payload.get("block_factors") or payload.get("policy_factors")
+            if descriptor == "HARD_BLOCKER" and isinstance(factors, list) and factors:
+                descriptor = f"{descriptor} [{'+'.join(str(item) for item in factors)}]"
         entry = f"{event_type}@{stamp} {descriptor}"
         if not chain or chain[-1] != entry:
             chain.append(entry)
     return chain[-12:]
+
+
+def _structured_block_evidence(events: list[dict[str, Any]]) -> dict[str, Any]:
+    for event in reversed(events):
+        if str(event.get("event_type") or "") not in {"risk_result", "blocked_trade_candidate"}:
+            continue
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        reason = str(payload.get("reason") or payload.get("action") or "")
+        factors = payload.get("block_factors") or payload.get("policy_factors") or []
+        normalized_factors = [str(item) for item in factors if str(item)] if isinstance(factors, list) else []
+        if reason == "HARD_BLOCKER" and not normalized_factors:
+            normalized_factors = ["UNEXPLAINED_HARD_BLOCKER"]
+        primary = str(payload.get("primary_block_factor") or "").strip()
+        if not primary and normalized_factors:
+            primary = normalized_factors[0]
+        evidence: dict[str, Any] = {
+            "block_factors": normalized_factors,
+            "primary_block_factor": primary,
+            "policy_factors": [
+                str(item) for item in payload.get("policy_factors", []) if str(item)
+            ]
+            if isinstance(payload.get("policy_factors"), list)
+            else [],
+            "hard_block_score": int(payload.get("hard_block_score") or 0),
+            "pattern_evidence": (
+                dict(payload.get("pattern_evidence") or {})
+                if isinstance(payload.get("pattern_evidence"), dict)
+                else {}
+            ),
+        }
+        if payload.get("assurance_score") is not None:
+            evidence["assurance_score"] = payload.get("assurance_score")
+        return evidence
+    return {}
 
 
 def build_decision_ledger(
@@ -265,6 +304,7 @@ def build_decision_ledger(
             record: dict[str, Any] = {"outcome": outcome, "reason": reason}
             if events:
                 record["reason_chain"] = _reason_chain(events)
+                record.update(_structured_block_evidence(events))
                 first_decision = next(
                     (
                         event.get("payload") or {}

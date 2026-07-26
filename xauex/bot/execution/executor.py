@@ -6,10 +6,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Tuple, Dict, List
 
-from config import Config
+from xauex.config import Config
 from xauex.bot.api.broker import BrokerAdapter, CTraderBrokerAdapter, OrderAck, OrderIntent
+from xauex.bot.patterns.detector import PatternType
 from xauex.shared.event_journal import safe_append_event
-from bot.patterns.detector import PatternType
 
 logger = logging.getLogger(__name__)
 
@@ -706,7 +706,7 @@ class Executor:
         4. Send amend_position_sltp() to broker.
         5. Update local TrackedPosition.stop_loss.
         """
-        from bot.risk.trailing_stop import evaluate_trailing_stop
+        from xauex.bot.risk.trailing_stop import evaluate_trailing_stop
 
         positions = self.position_manager.get_open_positions()
         for pos in positions:

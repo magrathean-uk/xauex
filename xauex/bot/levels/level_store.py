@@ -12,7 +12,7 @@ import tempfile
 from datetime import datetime
 from typing import Optional
 
-from bot.levels.htf_levels import HTFLevels
+from xauex.bot.levels.htf_levels import HTFLevels
 
 logger = logging.getLogger(__name__)
 

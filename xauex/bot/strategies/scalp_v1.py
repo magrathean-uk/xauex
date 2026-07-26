@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from typing import Any, Optional, Sequence
 
-from bot.filters.macro_regime import MacroRegime
-from bot.filters.trend import TrendSnapshot, calculate_ema
-from bot.patterns.detector import PatternType
-from bot.strategies.ema_pullback_h1 import StrategyDecision, calculate_atr
-from config import Config
+from xauex.bot.filters.macro_regime import MacroRegime
+from xauex.bot.filters.trend import TrendSnapshot, calculate_ema
+from xauex.bot.patterns.detector import PatternType
+from xauex.bot.strategies.ema_pullback_h1 import StrategyDecision, calculate_atr
+from xauex.config import Config
 
 
 STRATEGY_MODE = "SCALP_V1"

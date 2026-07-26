@@ -6,7 +6,7 @@ import pytest
 
 from datetime import datetime, timedelta, timezone
 
-from bot.filters.news import (
+from xauex.bot.filters.news import (
     DEFAULT_BLOCK_CURRENCIES,
     NewsEvent,
     NewsFilter,
@@ -80,7 +80,7 @@ async def test_optional_next_week_404_does_not_poison_refresh(tmp_path):
     )
     filt._get_session = AsyncMock(return_value=session)
 
-    with patch("bot.filters.news.datetime") as mock_datetime:
+    with patch("xauex.bot.filters.news.datetime") as mock_datetime:
         from datetime import datetime, timezone
 
         mock_datetime.now.return_value = datetime(2026, 4, 5, 7, 0, tzinfo=timezone.utc)

@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from bot.api.client import ApiClient
+from xauex.bot.api.client import ApiClient
 
 
 class _FakeTransport:
@@ -48,7 +48,7 @@ async def test_connect_refreshes_expired_token_before_authentication(monkeypatch
     client = ApiClient(config)
     calls = []
 
-    monkeypatch.setattr("bot.api.client.CTraderTransport", _FakeTransport)
+    monkeypatch.setattr("xauex.bot.api.client.CTraderTransport", _FakeTransport)
 
     async def fake_refresh_token_if_needed(self):
         calls.append("refresh_token_if_needed")
@@ -88,7 +88,7 @@ async def test_connect_validates_access_token_accounts_before_account_auth(monke
     client = ApiClient(_config())
     calls = []
 
-    monkeypatch.setattr("bot.api.client.CTraderTransport", _FakeTransport)
+    monkeypatch.setattr("xauex.bot.api.client.CTraderTransport", _FakeTransport)
 
     async def fake_app_auth(self):
         calls.append("app_auth")
@@ -122,7 +122,7 @@ async def test_connect_passes_tls_server_name_override_to_transport(monkeypatch)
             captured["port"] = port
             captured["tls_server_name"] = tls_server_name
 
-    monkeypatch.setattr("bot.api.client.CTraderTransport", _CapturingTransport)
+    monkeypatch.setattr("xauex.bot.api.client.CTraderTransport", _CapturingTransport)
 
     async def fake_app_auth(self):
         return None

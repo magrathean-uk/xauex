@@ -4,8 +4,8 @@ import logging
 import math
 from typing import Optional
 
-from config import Config
-from bot.api.models import SymbolSpec
+from xauex.config import Config
+from xauex.bot.api.models import SymbolSpec
 
 logger = logging.getLogger(__name__)
 

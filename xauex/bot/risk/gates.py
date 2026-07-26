@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Tuple
 
-from config import Config
+from xauex.config import Config
 
 logger = logging.getLogger(__name__)
 

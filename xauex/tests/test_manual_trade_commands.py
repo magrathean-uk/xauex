@@ -34,9 +34,9 @@ validate_manual_trade_prices = _MODULE.validate_manual_trade_prices
 
 from xauex.shared.manual_commands import create_signed_manual_command
 
-from bot.execution.executor import TrackedPosition, Executor
-from bot.patterns.detector import PatternType
-from bot.risk.gates import RiskGates, RiskState
+from xauex.bot.execution.executor import TrackedPosition, Executor
+from xauex.bot.patterns.detector import PatternType
+from xauex.bot.risk.gates import RiskGates, RiskState
 
 
 def test_manual_trade_command_is_loaded_and_cleared(tmp_path):

@@ -8,14 +8,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Dict
 
-from bot.patterns.detector import PatternDetector, Candle, PatternType
-from bot.filters.session import SessionFilter
-from bot.risk.sizing import calculate_lot_size
-from bot.risk.gates import RiskGates, RiskState
-from bot.levels.htf_levels import HTFLevels
-from bot.api.models import SymbolSpec
-from backtester.loader import OHLCBar, TickLoader
-from backtester.report import BacktestReport
+from xauex.bot.patterns.detector import PatternDetector, Candle, PatternType
+from xauex.bot.filters.session import SessionFilter
+from xauex.bot.risk.sizing import calculate_lot_size
+from xauex.bot.risk.gates import RiskGates, RiskState
+from xauex.bot.levels.htf_levels import HTFLevels
+from xauex.bot.api.models import SymbolSpec
+from xauex.backtester.loader import OHLCBar, TickLoader
+from xauex.backtester.report import BacktestReport
 
 logger = logging.getLogger(__name__)
 

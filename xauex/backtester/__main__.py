@@ -2,9 +2,9 @@
 backtester CLI entrypoint.
 
 Usage:
-    python -m backtester --from 2022-01-01 --to 2026-02-28
-    python -m backtester --from 2022-01-01 --to 2026-02-28 --output report.json
-    python -m backtester --from 2022-01-01 --to 2026-02-28 --data-dir /path/to/csvs
+    python -m xauex.backtester --from 2022-01-01 --to 2026-02-28
+    python -m xauex.backtester --from 2022-01-01 --to 2026-02-28 --output report.json
+    python -m xauex.backtester --from 2022-01-01 --to 2026-02-28 --data-dir /path/to/csvs
 """
 
 import argparse
@@ -12,14 +12,14 @@ import json
 import sys
 from pathlib import Path
 
-from backtester.engine import BacktestEngine
-from backtester.loader import TickLoader
-from backtester.report import BacktestReport
+from xauex.backtester.engine import BacktestEngine
+from xauex.backtester.loader import TickLoader
+from xauex.backtester.report import BacktestReport
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        prog="python -m backtester",
+        prog="python -m xauex.backtester",
         description="XAUEX backtester — replay XAUUSD tick data through the live bot logic.",
     )
     parser.add_argument("--from", dest="date_from", required=True, metavar="YYYY-MM-DD",

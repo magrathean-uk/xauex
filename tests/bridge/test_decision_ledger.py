@@ -211,3 +211,73 @@ def test_ledger_flags_unconsumed_directional_signal(tmp_path: Path) -> None:
     morning = ledger["days"][0]["windows"]["morning"]
     assert morning["outcome"] == "NOT_CONSUMED"
     assert morning["reason"] == "SIGNAL_NEVER_REACHED_BOT"
+
+
+def test_ledger_preserves_structured_hard_block_evidence(tmp_path: Path) -> None:
+    journal = tmp_path / "events.jsonl"
+    pattern_evidence = {
+        "factor": "PATTERN_DIRECTION_MISMATCH",
+        "pattern": "BULLISH_ENGULFING",
+        "detail": "DIRECTION_MISMATCH",
+        "timeframe": "M5",
+    }
+    _write_journal(
+        journal,
+        [
+            _event(
+                "signal_decision",
+                "2026-06-11T07:01:00Z",
+                {
+                    "slot": "MORNING",
+                    "window_label": "morning",
+                    "action": "SELL",
+                    "confidence": 0.66,
+                    "confirm_status": "CONFIRMED",
+                    "confirm_reason": "CONFIRMED",
+                },
+            ),
+            _event(
+                "risk_result",
+                "2026-06-11T07:02:00Z",
+                {
+                    "slot": "MORNING",
+                    "window_label": "morning",
+                    "reason": "HARD_BLOCKER",
+                    "signal_action": "SELL",
+                    "terminal": True,
+                    "policy_factors": ["PATTERN_DIRECTION_MISMATCH"],
+                    "hard_block_score": 3,
+                    "block_factors": ["PATTERN_DIRECTION_MISMATCH"],
+                    "primary_block_factor": "PATTERN_DIRECTION_MISMATCH",
+                    "assurance_score": 0.74,
+                    "pattern_evidence": pattern_evidence,
+                },
+            ),
+        ],
+    )
+
+    ledger = build_decision_ledger(
+        journal_path=str(journal),
+        state_path=str(tmp_path / "missing-state.json"),
+        signal_runs_dir=str(tmp_path / "missing-runs"),
+        days=3,
+        now_utc=_NOW,
+    )
+
+    morning = ledger["days"][0]["windows"]["morning"]
+    assert morning["outcome"] == "BLOCKED"
+    assert morning["reason"] == "HARD_BLOCKER"
+    assert morning["block_factors"] == ["PATTERN_DIRECTION_MISMATCH"]
+    assert morning["primary_block_factor"] == "PATTERN_DIRECTION_MISMATCH"
+    assert morning["hard_block_score"] == 3
+    assert morning["assurance_score"] == 0.74
+    assert morning["pattern_evidence"] == pattern_evidence
+
+
+def test_dashboard_ledger_renders_primary_hard_block_factor() -> None:
+    template = (Path(__file__).resolve().parents[2] / "xauex" / "app" / "templates" / "index.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert "rec.primary_block_factor" in template
+    assert "rec.block_factors" in template

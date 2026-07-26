@@ -19,7 +19,7 @@ from ctrader_open_api.messages.OpenApiCommonMessages_pb2 import (
     ProtoMessage,
     ProtoHeartbeatEvent,
 )
-from bot.api.transport_guards import DEFAULT_MAX_FRAME_BYTES, parse_frame_length
+from xauex.bot.api.transport_guards import DEFAULT_MAX_FRAME_BYTES, parse_frame_length
 
 logger = logging.getLogger(__name__)
 

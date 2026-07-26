@@ -3,7 +3,7 @@ import struct
 
 import pytest
 
-from bot.api.transport_guards import (
+from xauex.bot.api.transport_guards import (
     DropOldestAsyncQueue,
     FrameLimitError,
     PendingFutureRegistry,

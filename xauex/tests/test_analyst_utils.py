@@ -1,4 +1,4 @@
-from analyst import _utils
+from xauex.analyst import _utils
 
 
 def test_default_model_prefers_analyst_override(monkeypatch):
@@ -56,6 +56,30 @@ def test_resolve_llm_settings_defaults_to_groq_base_url(monkeypatch, tmp_path):
     _, base_url, _ = _utils._resolve_llm_settings()
 
     assert base_url == "https://api.groq.com/openai/v1"
+
+
+def test_resolve_llm_settings_carries_service_account_path_from_repo_env(monkeypatch, tmp_path):
+    xauex_root = tmp_path / "xauex"
+    xauex_root.mkdir()
+    (xauex_root / ".env").write_text(
+        "\n".join(
+            (
+                "XAUEX_ANALYST_API_KEY=google-service-account",
+                "XAUEX_GOOGLE_APPLICATION_CREDENTIALS=/secure/unique-rarity.json",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(_utils, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(_utils, "XAUEX_ROOT", xauex_root)
+    monkeypatch.delenv("XAUEX_ANALYST_API_KEY", raising=False)
+    monkeypatch.delenv("XAUEX_GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+
+    api_key, _, _ = _utils._resolve_llm_settings()
+
+    assert api_key == "google-service-account:/secure/unique-rarity.json"
 
 
 def test_call_llm_uses_gemini_analyst_output_budget(monkeypatch):

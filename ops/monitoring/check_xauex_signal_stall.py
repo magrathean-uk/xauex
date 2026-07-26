@@ -317,6 +317,99 @@ def _previous_london_trading_date(value: datetime) -> str:
     return candidate.isoformat()
 
 
+def _event_signal_run(
+    *,
+    event: dict[str, Any],
+    payload: dict[str, Any],
+    timestamp: datetime,
+    reasoning: str,
+    freshness_summary: str,
+) -> SignalRun:
+    slot = str(payload.get("slot") or "").upper()
+    return SignalRun(
+        run_id=str(event.get("correlation_id") or f"{timestamp:%Y%m%dT%H%M%SZ}_{slot.lower()}"),
+        timestamp_utc=timestamp,
+        window_label=slot.lower(),
+        action=str(payload.get("signal_action") or "HOLD").upper(),
+        reasoning=reasoning,
+        validator_summary="",
+        market_snapshot_state="",
+        hard_blocker=True,
+        missing_series_count=0,
+        stale_block_series_count=0,
+        cache_fallback_series_count=0,
+        fed_h15_fallback_series_count=0,
+        freshness_summary=freshness_summary,
+    )
+
+
+def _decision_invariant_alert(
+    *,
+    event_journal_events: list[dict[str, Any]],
+    sent_keys: set[str],
+    now: datetime,
+) -> SignalAlert | None:
+    cutoff = now.astimezone(timezone.utc) - timedelta(hours=DEFAULT_LOOKBACK_HOURS)
+    anomalous_runs: list[SignalRun] = []
+    for event in event_journal_events:
+        if str(event.get("event_type") or "") != "risk_result":
+            continue
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        timestamp = _parse_timestamp(event.get("timestamp_utc"))
+        if timestamp is None or timestamp < cutoff or timestamp > now.astimezone(timezone.utc):
+            continue
+        if str(payload.get("reason") or "").upper() != "HARD_BLOCKER":
+            continue
+        if not _coerce_bool(payload.get("terminal")):
+            continue
+
+        raw_factors = payload.get("block_factors") or payload.get("policy_factors")
+        factors = [str(item).upper() for item in raw_factors] if isinstance(raw_factors, list) else []
+        evidence = payload.get("pattern_evidence")
+        evidence = evidence if isinstance(evidence, dict) else {}
+        evidence_factor = str(evidence.get("factor") or "").upper()
+        pattern = str(evidence.get("pattern") or "").upper()
+        problems: list[str] = []
+        if not factors or "UNEXPLAINED_HARD_BLOCKER" in factors:
+            problems.append("HARD_BLOCKER without block factors")
+        if (
+            "PATTERN_DIRECTION_MISMATCH" in factors + [evidence_factor]
+            and pattern in {"", "NONE"}
+        ):
+            problems.append(f"PATTERN_DIRECTION_MISMATCH with pattern={pattern or 'missing'}")
+        if not problems:
+            continue
+        anomalous_runs.append(
+            _event_signal_run(
+                event=event,
+                payload=payload,
+                timestamp=timestamp,
+                reasoning="; ".join(problems),
+                freshness_summary=", ".join(factors),
+            )
+        )
+
+    if not anomalous_runs:
+        return None
+    latest = anomalous_runs[-1]
+    key = f"decision_invariant:{latest.run_id}"
+    if key in sent_keys:
+        return None
+    return SignalAlert(
+        kind="decision_invariant",
+        subject_label="hard-block evidence invariant",
+        count_label="Invalid hard-block events",
+        runs=anomalous_runs,
+        alert_key=key,
+        count_value=len(anomalous_runs),
+        affected_dates=tuple(
+            dict.fromkeys(run.timestamp_utc.astimezone(LONDON_TZ).date().isoformat() for run in anomalous_runs)
+        ),
+    )
+
+
 def _pattern_suppression_alert(
     *,
     event_journal_events: list[dict[str, Any]],
@@ -350,51 +443,42 @@ def _pattern_suppression_alert(
         evidence_factor = str(evidence.get("factor") or "").upper() if isinstance(evidence, dict) else ""
         if not any(factor.startswith("PATTERN_") for factor in factors + [evidence_factor]):
             continue
-        by_date.setdefault(london_date.isoformat(), {})[slot] = SignalRun(
-            run_id=str(event.get("correlation_id") or f"{timestamp:%Y%m%dT%H%M%SZ}_{slot.lower()}"),
-            timestamp_utc=timestamp,
-            window_label=slot.lower(),
-            action=str(payload.get("signal_action") or "HOLD").upper(),
+        by_date.setdefault(london_date.isoformat(), {})[slot] = _event_signal_run(
+            event=event,
+            payload=payload,
+            timestamp=timestamp,
             reasoning=str(payload.get("reason") or "HARD_BLOCKER"),
-            validator_summary="",
-            market_snapshot_state="",
-            hard_blocker=True,
-            missing_series_count=0,
-            stale_block_series_count=0,
-            cache_fallback_series_count=0,
-            fed_h15_fallback_series_count=0,
             freshness_summary=", ".join(factors),
         )
 
-    complete_dates = sorted(
-        date_text
-        for date_text, slots in by_date.items()
-        if {"MORNING", "MIDDAY", "US_OPEN"}.issubset(slots)
-    )
-    if not complete_dates:
+    qualifying_pair: tuple[str, str, list[SignalRun]] | None = None
+    for latest_date in sorted(by_date):
+        latest_datetime = datetime.fromisoformat(latest_date).replace(tzinfo=LONDON_TZ)
+        previous_date = _previous_london_trading_date(latest_datetime)
+        if previous_date not in by_date:
+            continue
+        pair_runs = [
+            run
+            for date_text in (previous_date, latest_date)
+            for run in by_date[date_text].values()
+        ]
+        if len(pair_runs) >= 4:
+            qualifying_pair = previous_date, latest_date, pair_runs
+    if qualifying_pair is None:
         return None
-    latest_date = complete_dates[-1]
-    latest_datetime = datetime.fromisoformat(latest_date).replace(tzinfo=LONDON_TZ)
-    previous_date = _previous_london_trading_date(latest_datetime)
-    if previous_date not in complete_dates:
-        return None
+    previous_date, latest_date, affected_runs = qualifying_pair
 
     key = f"pattern_suppression:{latest_date}"
     if key in sent_keys:
         return None
     affected_dates = (previous_date, latest_date)
-    affected_runs = [
-        by_date[date_text][slot]
-        for date_text in affected_dates
-        for slot in ("MORNING", "MIDDAY", "US_OPEN")
-    ]
     return SignalAlert(
         kind="pattern_suppression",
         subject_label="pattern suppression",
-        count_label="Pattern-suppressed London days",
+        count_label="Pattern-suppressed windows in two trading days",
         runs=affected_runs,
         alert_key=key,
-        count_value=len(affected_dates),
+        count_value=len(affected_runs),
         affected_dates=affected_dates,
     )
 
@@ -410,6 +494,13 @@ def _build_alerts(
 ) -> list[SignalAlert]:
     sent_keys = set(_sent_alert_keys(sent_state))
     alerts: list[SignalAlert] = []
+    invariant_alert = _decision_invariant_alert(
+        event_journal_events=event_journal_events,
+        sent_keys=sent_keys,
+        now=now,
+    )
+    if invariant_alert is not None:
+        alerts.append(invariant_alert)
     pattern_alert = _pattern_suppression_alert(
         event_journal_events=event_journal_events,
         sent_keys=sent_keys,
@@ -484,15 +575,46 @@ def _display_run(run: SignalRun) -> str:
 
 
 def _build_message(alert: SignalAlert, recipient: str, hostname: str, sender_domain: str) -> EmailMessage:
-    if alert.kind == "pattern_suppression":
+    if alert.kind == "decision_invariant":
+        has_impossible_pattern = any("PATTERN_DIRECTION_MISMATCH" in run.reasoning for run in alert.runs)
         body = "\n".join(
             [
-                f"XAUEX pattern policy suppressed all 3 windows on two consecutive London trading days on {hostname}.",
+                f"XAUEX hard-block evidence invariant failed on {hostname}.",
+                "",
+                (
+                    "Impossible pattern evidence was recorded."
+                    if has_impossible_pattern
+                    else "A terminal HARD_BLOCKER was recorded without its underlying block factors."
+                ),
+                f"{alert.count_label}: {alert.count_value if alert.count_value is not None else len(alert.runs)}",
+                f"Affected London dates: {', '.join(alert.affected_dates)}",
+                "",
+                "Invalid events:",
+                *[
+                    f"- {run.timestamp_utc.isoformat(timespec='seconds')} {run.window_label} {run.reasoning}"
+                    for run in alert.runs
+                ],
+                "",
+                "Treat this as a runtime correctness fault. Review code and event evidence before changing risk policy.",
+            ]
+        )
+        message = EmailMessage()
+        message["From"] = f"monit@{sender_domain}"
+        message["To"] = recipient
+        message["Subject"] = f"[Monit] XAUEX {alert.subject_label} on {hostname}"
+        message.set_content(body, cte="8bit")
+        return message
+
+    if alert.kind == "pattern_suppression":
+        suppressed = alert.count_value if alert.count_value is not None else len(alert.runs)
+        body = "\n".join(
+            [
+                f"XAUEX pattern policy suppressed {suppressed} of 6 windows across two consecutive London trading days on {hostname}.",
                 "",
                 f"Affected London dates: {', '.join(alert.affected_dates)}",
-                f"{alert.count_label}: {alert.count_value if alert.count_value is not None else 0}",
+                f"{alert.count_label}: {suppressed}",
                 "",
-                "Every MORNING, MIDDAY, and US_OPEN terminal HARD_BLOCKER included PATTERN_ policy evidence.",
+                "At least four terminal HARD_BLOCKER events included PATTERN_ policy evidence.",
                 "Review the recorded evidence before changing the weighted policy; this alert does not disable it automatically.",
                 "",
                 "Affected runs:",

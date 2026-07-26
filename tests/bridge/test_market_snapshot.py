@@ -1060,23 +1060,23 @@ def test_build_market_snapshot_warns_when_only_one_series_is_long_stale(monkeypa
     assert snapshot["input_freshness"]["stale_block_series_count"] == 1
 
 
-def test_build_market_snapshot_warns_when_only_lagging_reference_series_are_stale(monkeypatch):
+def test_build_market_snapshot_stays_fresh_when_only_slow_reference_series_lag(monkeypatch):
     monkeypatch.setenv("XAUEX_SIGNAL_LLM_API_KEY", "test-key")
     cfg = SignalConfig.from_env()
 
     stale_age = float(9 * 24 * 3600)
     fresh_age = float(24 * 3600)
     fake_rows = {
-        "DTWEXBGS": {"value": 121.0, "previous_value": 121.3, "change_1d": -0.3, "date_utc": "2026-04-10T00:00:00Z", "age_seconds": stale_age},
-        "DTWEXAFEGS": {"value": 105.5, "previous_value": 105.8, "change_1d": -0.3, "date_utc": "2026-04-10T00:00:00Z", "age_seconds": stale_age},
-        "DGS2": {"value": 3.8, "previous_value": 3.85, "change_1d": -0.05, "date_utc": "2026-04-18T00:00:00Z", "age_seconds": fresh_age},
-        "DGS10": {"value": 4.2, "previous_value": 4.28, "change_1d": -0.08, "date_utc": "2026-04-18T00:00:00Z", "age_seconds": fresh_age},
-        "DFII10": {"value": 1.9, "previous_value": 1.95, "change_1d": -0.05, "date_utc": "2026-04-18T00:00:00Z", "age_seconds": fresh_age},
-        "T5YIE": {"value": 2.4, "previous_value": 2.35, "change_1d": 0.05, "date_utc": "2026-04-18T00:00:00Z", "age_seconds": fresh_age},
-        "T10YIE": {"value": 2.5, "previous_value": 2.46, "change_1d": 0.04, "date_utc": "2026-04-18T00:00:00Z", "age_seconds": fresh_age},
-        "VIXCLS": {"value": 18.2, "previous_value": 17.5, "change_1d": 0.7, "date_utc": "2026-04-18T00:00:00Z", "age_seconds": fresh_age},
-        "DCOILWTICO": {"value": 82.5, "previous_value": 81.0, "change_1d": 1.5, "date_utc": "2026-04-10T00:00:00Z", "age_seconds": stale_age},
-        "CBBTCUSD": {"value": 65000.0, "previous_value": 64200.0, "change_1d": 800.0, "date_utc": "2026-04-18T00:00:00Z", "age_seconds": fresh_age},
+        "DTWEXBGS": {"value": 121.0, "previous_value": 121.3, "change_1d": -0.3, "date_utc": "2026-04-10T00:00:00Z", "age_seconds": stale_age, "business_age_days": 7},
+        "DTWEXAFEGS": {"value": 105.5, "previous_value": 105.8, "change_1d": -0.3, "date_utc": "2026-04-10T00:00:00Z", "age_seconds": stale_age, "business_age_days": 7},
+        "DGS2": {"value": 3.8, "previous_value": 3.85, "change_1d": -0.05, "date_utc": "2026-04-18T00:00:00Z", "age_seconds": fresh_age, "business_age_days": 1},
+        "DGS10": {"value": 4.2, "previous_value": 4.28, "change_1d": -0.08, "date_utc": "2026-04-18T00:00:00Z", "age_seconds": fresh_age, "business_age_days": 1},
+        "DFII10": {"value": 1.9, "previous_value": 1.95, "change_1d": -0.05, "date_utc": "2026-04-18T00:00:00Z", "age_seconds": fresh_age, "business_age_days": 1},
+        "T5YIE": {"value": 2.4, "previous_value": 2.35, "change_1d": 0.05, "date_utc": "2026-04-18T00:00:00Z", "age_seconds": fresh_age, "business_age_days": 1},
+        "T10YIE": {"value": 2.5, "previous_value": 2.46, "change_1d": 0.04, "date_utc": "2026-04-18T00:00:00Z", "age_seconds": fresh_age, "business_age_days": 1},
+        "VIXCLS": {"value": 18.2, "previous_value": 17.5, "change_1d": 0.7, "date_utc": "2026-04-18T00:00:00Z", "age_seconds": fresh_age, "business_age_days": 1},
+        "DCOILWTICO": {"value": 82.5, "previous_value": 81.0, "change_1d": 1.5, "date_utc": "2026-04-10T00:00:00Z", "age_seconds": stale_age, "business_age_days": 7},
+        "CBBTCUSD": {"value": 65000.0, "previous_value": 64200.0, "change_1d": 800.0, "date_utc": "2026-04-18T00:00:00Z", "age_seconds": fresh_age, "business_age_days": 1},
     }
 
     monkeypatch.setattr(
@@ -1114,6 +1114,7 @@ def test_build_market_snapshot_warns_when_only_lagging_reference_series_are_stal
         window_label="morning",
     )
 
-    assert snapshot["input_freshness"]["market_snapshot_state"] == "warning"
+    assert snapshot["input_freshness"]["market_snapshot_state"] == "fresh"
     assert snapshot["input_freshness"]["hard_blocker"] is False
     assert snapshot["input_freshness"]["stale_block_series_count"] == 0
+    assert "expected publication cadence" in snapshot["input_freshness"]["summary"]

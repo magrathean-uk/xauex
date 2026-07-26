@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 
-from config import Config
+from xauex.config import Config
 
 logger = logging.getLogger(__name__)
 

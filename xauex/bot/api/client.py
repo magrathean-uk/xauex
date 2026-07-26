@@ -25,10 +25,10 @@ from typing import Callable, Optional
 
 from dotenv import dotenv_values
 
-from config import Config
-from bot.api.models import Account, Position, SymbolSpec
-from bot.api.proto_transport import CTraderTransport
-from bot.api.transport_guards import DropOldestAsyncQueue
+from xauex.config import Config
+from xauex.bot.api.models import Account, Position, SymbolSpec
+from xauex.bot.api.proto_transport import CTraderTransport
+from xauex.bot.api.transport_guards import DropOldestAsyncQueue
 
 logger = logging.getLogger(__name__)
 

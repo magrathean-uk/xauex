@@ -67,7 +67,7 @@ class BacktestReport:
         print("  PASS CRITERIA:")
         self._check("Profit factor ≥ 1.30", pf >= 1.30)
         self._check("Win rate ≥ 45%", win_rate >= 45.0)
-        from config import load_config
+        from xauex.config import load_config
         try:
             load_config()
             balance = 3000.0

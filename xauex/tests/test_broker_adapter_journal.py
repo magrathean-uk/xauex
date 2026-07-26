@@ -4,8 +4,8 @@ import asyncio
 import json
 from types import SimpleNamespace
 
-from bot.execution.executor import Executor
-from bot.patterns.detector import PatternType
+from xauex.bot.execution.executor import Executor
+from xauex.bot.patterns.detector import PatternType
 from xauex.bot.api.broker import CTraderBrokerAdapter, OrderAck, OrderIntent
 
 

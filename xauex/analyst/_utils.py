@@ -10,7 +10,7 @@ from typing import Any, Optional
 
 from dotenv import dotenv_values
 
-from xauex.shared.llm_client import create_chat_client
+from xauex.shared.llm_client import GOOGLE_SERVICE_ACCOUNT_SENTINEL, create_chat_client
 from xauex.signal.llm_models import completion_options, request_temperature_kwargs
 
 XAUEX_ROOT = Path(__file__).resolve().parents[1]
@@ -66,6 +66,13 @@ def _resolve_llm_settings(model: Optional[str] = None) -> tuple[str, str, str]:
         raise RuntimeError(
             "No analyst API key configured. Set XAUEX_ANALYST_API_KEY or reuse the repo LLM API settings."
         )
+    if api_key == GOOGLE_SERVICE_ACCOUNT_SENTINEL:
+        credential_path = _first_env(
+            "XAUEX_GOOGLE_APPLICATION_CREDENTIALS",
+            "GOOGLE_APPLICATION_CREDENTIALS",
+        )
+        if credential_path:
+            api_key = f"{GOOGLE_SERVICE_ACCOUNT_SENTINEL}:{credential_path}"
 
     base_url = _first_env(
         "XAUEX_ANALYST_BASE_URL",

@@ -13,6 +13,11 @@ from typing import Any
 from xauex.signal.assets import AssetProfile
 from xauex.signal.candidate_graph import run_tradingagents_candidate
 from xauex.signal.config import SignalConfig
+from xauex.signal.freshness import (
+    DAILY_PUBLISHING_MAX_AGE_SECONDS,
+    DAILY_PUBLISHING_MAX_BUSINESS_AGE_DAYS,
+    freshness_requires_risk_reduction,
+)
 from xauex.signal.llm_models import (
     completion_options,
     estimate_cost_usd,
@@ -29,8 +34,8 @@ logger = logging.getLogger(__name__)
 # exceed 7 days; in practice that meant a 7.5-day-old DXY plus 2.5-day-old
 # yields slipped through as "warning" and the parser produced live SELL
 # signals against gold during a strong uptrend (the May 2026 incident).
-HARD_STALE_MARKET_SNAPSHOT_SECONDS = 3 * 24 * 3600
-HARD_STALE_MARKET_SNAPSHOT_BUSINESS_DAYS = 2
+HARD_STALE_MARKET_SNAPSHOT_SECONDS = DAILY_PUBLISHING_MAX_AGE_SECONDS
+HARD_STALE_MARKET_SNAPSHOT_BUSINESS_DAYS = DAILY_PUBLISHING_MAX_BUSINESS_AGE_DAYS
 HARD_STALE_MACRO_BLOCK_REASON = 'HARD_STALE_MACRO_SNAPSHOT'
 INPUT_FRESHNESS_BLOCK_REASON = 'INPUT_FRESHNESS_HARD_BLOCKER'
 PRICE_CONFLICT_MIN_CONFIDENCE = 0.68
@@ -237,10 +242,9 @@ def parse_signal(
     # we reach this point. A 'warning' or 'stale' state is milder but still
     # means our macro context is questionable - so refuse to rescue HOLD with
     # keyword bias in that case. The parser's HOLD stays HOLD.
-    freshness_state = str(
-        (decision_packet.get('input_freshness') or {}).get('market_snapshot_state', '')
-    ).lower()
-    if freshness_state in ('warning', 'stale', 'blocked'):
+    decision_freshness = decision_packet.get('input_freshness') or {}
+    freshness_state = str(decision_freshness.get('market_snapshot_state', '')).lower()
+    if freshness_requires_risk_reduction(decision_freshness):
         fallback = {
             **fallback,
             'action': 'HOLD',

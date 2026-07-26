@@ -82,11 +82,12 @@ install: build
 backtest:
 	@echo "Running backtester: $(DATE_FROM) → $(DATE_TO)"
 ifdef OUTPUT
-	$(PYTHON) -m backtester --from $(DATE_FROM) --to $(DATE_TO) \
-		--data-dir $(DATA_DIR) --config $(ENV_FILE) --output $(OUTPUT)
+	cd .. && $(PYTHON) -m xauex.backtester --from $(DATE_FROM) --to $(DATE_TO) \
+		--data-dir "$(abspath $(DATA_DIR))" --config "$(abspath $(ENV_FILE))" \
+		--output "$(abspath $(OUTPUT))"
 else
-	$(PYTHON) -m backtester --from $(DATE_FROM) --to $(DATE_TO) \
-		--data-dir $(DATA_DIR) --config $(ENV_FILE)
+	cd .. && $(PYTHON) -m xauex.backtester --from $(DATE_FROM) --to $(DATE_TO) \
+		--data-dir "$(abspath $(DATA_DIR))" --config "$(abspath $(ENV_FILE))"
 endif
 
 # ─── Tick data download ───────────────────────────────────────────────────────
@@ -119,6 +120,7 @@ lint:
 		xauex/bot/filters/news.py \
 		xauex/signal/cftc_cot.py \
 		xauex/signal/direct_predictor.py \
+		xauex/signal/freshness.py \
 		xauex/signal/market_snapshot.py \
 		xauex/signal/signal_parser.py \
 		--ignore-missing-imports

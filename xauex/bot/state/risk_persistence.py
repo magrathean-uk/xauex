@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from bot.risk.gates import RiskState
+from xauex.bot.risk.gates import RiskState
 from xauex.shared.safe_io import JsonLoadError, atomic_write_json, safe_load_json
 
 logger = logging.getLogger(__name__)

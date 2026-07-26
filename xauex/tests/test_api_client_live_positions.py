@@ -14,8 +14,8 @@ XAUEX_ROOT = REPO_ROOT / "xauex"
 if str(XAUEX_ROOT) not in sys.path:
     sys.path.insert(0, str(XAUEX_ROOT))
 
-from bot.api.client import ApiClient
-from bot.api.models import SymbolSpec
+from xauex.bot.api.client import ApiClient
+from xauex.bot.api.models import SymbolSpec
 
 
 class _FakeTradeData:

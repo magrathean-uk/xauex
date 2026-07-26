@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
-from bot.risk.gates import RiskGates, RiskState
+from xauex.bot.risk.gates import RiskGates, RiskState
 from xauex.main import BotOrchestrator
 
 

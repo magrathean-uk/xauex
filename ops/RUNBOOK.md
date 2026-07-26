@@ -75,6 +75,25 @@ jq . /var/lib/xauex/cmd.json
 jq . /var/lib/xauex/state.json
 jq . /var/lib/xauex/risk_state.json
 jq . /var/lib/xauex/latest_signal_evidence.json
+jq . /var/lib/xauex/decision_ledger.json
+```
+
+## Decision invariants
+
+- Slow-publishing USD-index and WTI reference rows do not make an otherwise current daily snapshot stale.
+- Daily-publishing macro rows older than two business days remain a hard parser block.
+- Every terminal `HARD_BLOCKER` event carries `block_factors` and a `primary_block_factor`.
+- `PATTERN_DIRECTION_MISMATCH` must name a real opposing pattern; `pattern=NONE` is an invariant fault.
+- Monit emails immediately on unexplained or impossible hard-block evidence, and when pattern evidence suppresses at least four of six windows across two consecutive London trading days.
+
+Inspect the latest terminal decisions:
+
+```bash
+tail -n 200 /var/lib/xauex/events.jsonl \
+  | jq -c 'select(.event_type == "risk_result" and .payload.terminal == true)
+    | {timestamp_utc, slot: .payload.slot, reason: .payload.reason,
+       block_factors: .payload.block_factors, pattern: .payload.pattern_evidence}'
+sudo monit status xauex-signal-stall
 ```
 
 ## Logs

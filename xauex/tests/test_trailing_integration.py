@@ -3,10 +3,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from bot.api.models import SymbolSpec
-from bot.execution.executor import Executor, TrackedPosition
-from bot.patterns.detector import PatternType
-from bot.risk.trailing_stop import TrailingResult
+from xauex.bot.api.models import SymbolSpec
+from xauex.bot.execution.executor import Executor, TrackedPosition
+from xauex.bot.patterns.detector import PatternType
+from xauex.bot.risk.trailing_stop import TrailingResult
 
 
 def make_symbol_spec() -> SymbolSpec:
@@ -84,7 +84,7 @@ async def test_market_guard_rejects_short_stop_inside_live_ask():
     executor.api_client.get_current_quote.return_value = (2698.0, 2698.1)
 
     with patch(
-        "bot.risk.trailing_stop.evaluate_trailing_stop",
+        "xauex.bot.risk.trailing_stop.evaluate_trailing_stop",
         return_value=TrailingResult(new_sl=2698.1, reason="trail"),
     ):
         await executor.update_trailing_stops(
@@ -105,7 +105,7 @@ async def test_market_guard_rejects_long_stop_above_live_bid():
     executor.api_client.get_current_quote.return_value = (2701.2, 2701.4)
 
     with patch(
-        "bot.risk.trailing_stop.evaluate_trailing_stop",
+        "xauex.bot.risk.trailing_stop.evaluate_trailing_stop",
         return_value=TrailingResult(new_sl=2701.2, reason="trail"),
     ):
         await executor.update_trailing_stops(

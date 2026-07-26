@@ -36,7 +36,7 @@ from typing import TYPE_CHECKING, Optional
 from aiohttp import web
 
 if TYPE_CHECKING:
-    from main import BotOrchestrator
+    from xauex.main import BotOrchestrator
 
 logger = logging.getLogger(__name__)
 

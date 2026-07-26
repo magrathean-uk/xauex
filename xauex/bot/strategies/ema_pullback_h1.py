@@ -5,9 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Optional, Sequence
 
-from config import Config
-from bot.filters.trend import TrendFilter, TrendSnapshot, calculate_ema
-from bot.patterns.detector import Candle, PatternDetector, PatternType
+from xauex.config import Config
+from xauex.bot.filters.trend import TrendFilter, TrendSnapshot, calculate_ema
+from xauex.bot.patterns.detector import Candle, PatternDetector, PatternType
 
 
 STRATEGY_MODE = "EMA_PULLBACK_H1"

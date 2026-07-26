@@ -21,10 +21,10 @@ assert _SPEC and _SPEC.loader
 _MODULE = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(_MODULE)
 
-from config import load_config
-from config import ConfigError
-from bot.risk.sizing import calculate_xauex_lot_size_from_cash_risk
-from bot.levels.htf_levels import HTFLevels
+from xauex.config import load_config
+from xauex.config import ConfigError
+from xauex.bot.risk.sizing import calculate_xauex_lot_size_from_cash_risk
+from xauex.bot.levels.htf_levels import HTFLevels
 
 build_xauex_initial_stop_distance = _MODULE.build_xauex_initial_stop_distance
 build_xauex_protect_stop_price = _MODULE.build_xauex_protect_stop_price
@@ -101,6 +101,55 @@ def test_load_config_defaults_health_check_host_to_loopback(monkeypatch):
     cfg = load_config()
 
     assert cfg.health_check_host == "127.0.0.1"
+
+
+def test_runtime_env_path_defaults_to_xauex_env_and_supports_override(monkeypatch):
+    monkeypatch.delenv("XAUEX_ENV_FILE", raising=False)
+    expected = str((REPO_ROOT / "xauex" / ".env").resolve())
+
+    assert _MODULE._xauex_runtime_env_path() == expected
+
+    monkeypatch.setenv("XAUEX_ENV_FILE", "/tmp/xauex-test.env")
+    assert _MODULE._xauex_runtime_env_path() == "/tmp/xauex-test.env"
+
+
+def test_runtime_env_values_merge_root_tokens_with_xauex_identity(monkeypatch, tmp_path):
+    package_dir = tmp_path / "xauex"
+    package_dir.mkdir()
+    (tmp_path / ".env").write_text(
+        "CTRADER_ACCESS_TOKEN=root-token\nSHARED_SETTING=root\n",
+        encoding="utf-8",
+    )
+    (package_dir / ".env").write_text(
+        "CTRADER_ACCOUNT_ID=demo-account\nSHARED_SETTING=xauex\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(_MODULE, "_XAUEX_PACKAGE_DIR", package_dir)
+    monkeypatch.delenv("XAUEX_ENV_FILE", raising=False)
+
+    values = _MODULE._xauex_runtime_env_values()
+
+    assert values["CTRADER_ACCESS_TOKEN"] == "root-token"
+    assert values["CTRADER_ACCOUNT_ID"] == "demo-account"
+    assert values["SHARED_SETTING"] == "xauex"
+
+
+def test_runtime_env_loader_preserves_process_overrides(monkeypatch):
+    fake_environment = {"SHARED_SETTING": "operator"}
+    monkeypatch.setattr(_MODULE.os, "environ", fake_environment)
+    monkeypatch.setattr(
+        _MODULE,
+        "_xauex_runtime_env_values",
+        lambda: {
+            "SHARED_SETTING": "file",
+            "CTRADER_ACCOUNT_ID": "demo-account",
+        },
+    )
+
+    _MODULE._load_xauex_runtime_environment()
+
+    assert fake_environment["SHARED_SETTING"] == "operator"
+    assert fake_environment["CTRADER_ACCOUNT_ID"] == "demo-account"
 
 
 def test_load_config_rejects_force_flat_before_second_window_finishes(monkeypatch):
@@ -1050,7 +1099,7 @@ def test_xauex_pattern_check_matches_long_with_bullish_engulfing():
     skipping all candle confirmation. With the gate active a BUY signal must
     be backed by a bullish pattern aligned to a nearby HTF level."""
     from datetime import datetime, timezone
-    from bot.patterns.detector import Candle, PatternDetector, PatternType
+    from xauex.bot.patterns.detector import Candle, PatternDetector, PatternType
 
     config = SimpleNamespace(
         pin_max_body_ratio=0.30,
@@ -1083,7 +1132,7 @@ def test_xauex_pattern_check_blocks_when_no_pattern_aligns_to_level():
     """When the nearest level has no detectable pattern, the gate must
     reject (ok=False, reason=NO_PATTERN)."""
     from datetime import datetime, timezone
-    from bot.patterns.detector import Candle, PatternDetector
+    from xauex.bot.patterns.detector import Candle, PatternDetector
 
     config = SimpleNamespace(
         pin_max_body_ratio=0.30,
@@ -1107,13 +1156,101 @@ def test_xauex_pattern_check_blocks_when_no_pattern_aligns_to_level():
         direction=+1,
     )
     assert ok is False
-    assert reason in {"NO_PATTERN", "DIRECTION_MISMATCH"}
+    assert reason == "NO_PATTERN"
+
+
+def test_xauex_pattern_check_canonical_none_is_never_direction_mismatch():
+    from xauex.bot.patterns.detector import Candle, PatternDetector, PatternType
+
+    config = SimpleNamespace(
+        pin_max_body_ratio=0.30,
+        pin_min_wick_ratio=0.60,
+        engulf_min_body_ratio=1.0,
+        consolidation_break_buffer=0.10,
+        consolidation_min_bars=3,
+        candle_proximity_dollars=4.0,
+    )
+    detector = PatternDetector(config)
+    prev = Candle(
+        open=4720.0,
+        high=4721.0,
+        low=4719.5,
+        close=4720.8,
+        open_time=datetime(2026, 7, 21, 6, 50, tzinfo=timezone.utc),
+    )
+    signal = Candle(
+        open=4720.8,
+        high=4721.5,
+        low=4720.5,
+        close=4721.2,
+        open_time=datetime(2026, 7, 21, 6, 55, tzinfo=timezone.utc),
+    )
+
+    pattern, _, ok, reason = _MODULE.xauex_pattern_check(
+        pattern_detector=detector,
+        prev_candle=prev,
+        signal_candle=signal,
+        candidate_levels=[4750.0],
+        direction=-1,
+    )
+
+    assert pattern is PatternType.NONE
+    assert ok is False
+    assert reason == "NO_PATTERN"
+
+
+@pytest.mark.asyncio
+async def test_xauex_pattern_evidence_treats_unknown_pattern_type_as_unavailable():
+    class UnsupportedDetector:
+        def detect(self, _prev, _signal, _level):
+            return SimpleNamespace(pattern=SimpleNamespace(name="UNSUPPORTED"))
+
+    async def fetch_bars(*, timeframe, count):
+        assert timeframe == "M5"
+        assert count == 4
+        return [
+            {
+                "open": 4720.0,
+                "high": 4721.0,
+                "low": 4719.5,
+                "close": 4720.8,
+                "open_time": datetime(2026, 7, 21, 6, 50, tzinfo=timezone.utc),
+            },
+            {
+                "open": 4720.8,
+                "high": 4721.5,
+                "low": 4720.5,
+                "close": 4721.2,
+                "open_time": datetime(2026, 7, 21, 6, 55, tzinfo=timezone.utc),
+            },
+        ]
+
+    orchestrator = SimpleNamespace(
+        execution_timeframe="M5",
+        pattern_detector=UnsupportedDetector(),
+        level_manager=SimpleNamespace(
+            levels_near_range=lambda _low, _high: [4720.0],
+            all_levels=lambda: [4720.0],
+        ),
+        _fetch_recent_execution_ohlc_bars=fetch_bars,
+        _bar_open_time_utc=_MODULE.BotOrchestrator._bar_open_time_utc,
+    )
+
+    evidence = await _MODULE.BotOrchestrator._xauex_pattern_evidence(
+        orchestrator,
+        direction=-1,
+        now_utc=datetime(2026, 7, 21, 7, 0, tzinfo=timezone.utc),
+    )
+
+    assert evidence.factor == "PATTERN_DATA_UNAVAILABLE"
+    assert evidence.weight == 1
+    assert evidence.detail == "PATTERN_TYPE_UNSUPPORTED"
 
 
 def test_xauex_pattern_check_blocks_when_pattern_disagrees_with_direction():
     """A bearish pattern at the level cannot back a LONG signal."""
     from datetime import datetime, timezone
-    from bot.patterns.detector import Candle, PatternDetector, PatternType
+    from xauex.bot.patterns.detector import Candle, PatternDetector, PatternType
 
     config = SimpleNamespace(
         pin_max_body_ratio=0.30,
@@ -1143,7 +1280,7 @@ def test_xauex_pattern_check_blocks_when_pattern_disagrees_with_direction():
 
 def test_xauex_pattern_check_returns_no_levels_when_candidates_empty():
     from datetime import datetime, timezone
-    from bot.patterns.detector import Candle, PatternDetector
+    from xauex.bot.patterns.detector import Candle, PatternDetector
 
     config = SimpleNamespace(
         pin_max_body_ratio=0.30,

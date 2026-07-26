@@ -26,6 +26,8 @@ from pathlib import Path
 from typing import Any, Optional, List, Dict, Tuple
 from zoneinfo import ZoneInfo
 
+from dotenv import dotenv_values
+
 from xauex.config import Config, load_config
 from xauex.live_windows import active_entry_slot, all_live_windows, get_live_window, london_trade_day
 from xauex.bot.api.client import ApiClient
@@ -51,9 +53,11 @@ from xauex.shared.manual_commands import (
     consume_manual_command_file,
 )
 from xauex.shared.replay_guard import CommandReplayGuard
+from xauex.signal.freshness import freshness_requires_risk_reduction
 
 logger = logging.getLogger(__name__)
 
+_XAUEX_PACKAGE_DIR = Path(__file__).resolve().parent
 _EXECUTION_BAR_LOOKBACK = 500
 _DAILY_BAR_LOOKBACK = 120
 _SCALP_BAR_LOOKBACK = 2500
@@ -91,6 +95,7 @@ class XauexAssuranceProfile:
     protect_r: float
     trail_r: float
     protect_lock_r: float
+    block_factors: tuple[str, ...] = ()
 
 
 def calculate_xauex_remaining_daily_loss_budget(
@@ -223,24 +228,21 @@ class XauexPatternEvidence:
 
 
 def _populate_xauex_pattern_sets() -> None:
-    """Lazy import to avoid PatternType being unresolved at module import time
-    if the bot package isn't fully initialised yet (tests load main.py via
-    importlib spec)."""
+    """Populate directional pattern sets from the canonical runtime enum."""
     global _XAUEX_BULLISH_PATTERN_TYPES, _XAUEX_BEARISH_PATTERN_TYPES
     if _XAUEX_BULLISH_PATTERN_TYPES:
         return
-    from bot.patterns.detector import PatternType as _PT
     _XAUEX_BULLISH_PATTERN_TYPES = frozenset({
-        _PT.BULLISH_ENGULFING,
-        _PT.BULLISH_PIN_BAR,
-        _PT.BULLISH_CONTINUATION_CLOSE,
-        _PT.BULLISH_CONSOLIDATION_BREAK,
+        PatternType.BULLISH_ENGULFING,
+        PatternType.BULLISH_PIN_BAR,
+        PatternType.BULLISH_CONTINUATION_CLOSE,
+        PatternType.BULLISH_CONSOLIDATION_BREAK,
     })
     _XAUEX_BEARISH_PATTERN_TYPES = frozenset({
-        _PT.BEARISH_ENGULFING,
-        _PT.BEARISH_PIN_BAR,
-        _PT.BEARISH_CONTINUATION_CLOSE,
-        _PT.BEARISH_CONSOLIDATION_BREAK,
+        PatternType.BEARISH_ENGULFING,
+        PatternType.BEARISH_PIN_BAR,
+        PatternType.BEARISH_CONTINUATION_CLOSE,
+        PatternType.BEARISH_CONSOLIDATION_BREAK,
     })
 
 
@@ -260,38 +262,41 @@ def xauex_pattern_check(
     when a pattern fires that supports ``direction``.
     """
     _populate_xauex_pattern_sets()
-    from bot.patterns.detector import PatternType as _PT
-
     if not candidate_levels:
-        return _PT.NONE, None, False, "NO_LEVELS"
+        return PatternType.NONE, None, False, "NO_LEVELS"
 
     sorted_levels = sorted(candidate_levels, key=lambda lvl: abs(signal_candle.close - float(lvl)))
     rank = {
-        _PT.BULLISH_ENGULFING: 4,
-        _PT.BEARISH_ENGULFING: 4,
-        _PT.BULLISH_CONTINUATION_CLOSE: 3,
-        _PT.BEARISH_CONTINUATION_CLOSE: 3,
-        _PT.BULLISH_PIN_BAR: 2,
-        _PT.BEARISH_PIN_BAR: 2,
-        _PT.INSIDE_BAR: 1,
+        PatternType.BULLISH_ENGULFING: 4,
+        PatternType.BEARISH_ENGULFING: 4,
+        PatternType.BULLISH_CONTINUATION_CLOSE: 3,
+        PatternType.BEARISH_CONTINUATION_CLOSE: 3,
+        PatternType.BULLISH_PIN_BAR: 2,
+        PatternType.BEARISH_PIN_BAR: 2,
+        PatternType.INSIDE_BAR: 1,
     }
-    best_pattern = _PT.NONE
+    best_pattern = PatternType.NONE
     best_level: Optional[float] = None
     best_rank = -1
     for lvl in sorted_levels:
         result = pattern_detector.detect(prev_candle, signal_candle, float(lvl))
-        if result.pattern == _PT.NONE:
+        raw_pattern = result.pattern
+        pattern_name = str(getattr(raw_pattern, "name", "") or "").upper()
+        pattern = PatternType.__members__.get(pattern_name)
+        if pattern is None:
+            return PatternType.NONE, float(lvl), False, "PATTERN_TYPE_UNSUPPORTED"
+        if pattern == PatternType.NONE:
             continue
-        current_rank = rank.get(result.pattern, 0)
+        current_rank = rank.get(pattern, 0)
         if current_rank > best_rank:
             best_rank = current_rank
-            best_pattern = result.pattern
+            best_pattern = pattern
             best_level = float(lvl)
 
-    if best_pattern == _PT.NONE:
-        return _PT.NONE, sorted_levels[0] if sorted_levels else None, False, "NO_PATTERN"
+    if best_pattern == PatternType.NONE:
+        return PatternType.NONE, sorted_levels[0] if sorted_levels else None, False, "NO_PATTERN"
 
-    if best_pattern == _PT.INSIDE_BAR:
+    if best_pattern == PatternType.INSIDE_BAR:
         return best_pattern, best_level, False, "NEUTRAL_PATTERN"
 
     if direction > 0 and best_pattern in _XAUEX_BULLISH_PATTERN_TYPES:
@@ -815,9 +820,11 @@ def _xauex_signal_price_features(signal: Dict[str, object]) -> Dict[str, object]
 
 def _xauex_has_stale_or_warning_context(signal: Dict[str, object]) -> bool:
     freshness = _xauex_signal_input_freshness(signal)
-    snapshot_state = str(freshness.get("market_snapshot_state", "") or "").strip().lower()
-    if snapshot_state in {"warning", "stale"}:
+    if freshness_requires_risk_reduction(freshness):
         return True
+    snapshot_state = str(freshness.get("market_snapshot_state", "") or "").strip().lower()
+    if snapshot_state == "fresh":
+        return False
     validator_summary = str(signal.get("validator_summary", "") or "").strip().lower()
     return "stale" in validator_summary or "freshness warning" in validator_summary
 
@@ -1083,26 +1090,22 @@ def build_xauex_assurance_profile(signal: Dict[str, object], config: Config) -> 
     freshness = _xauex_signal_input_freshness(signal)
 
     if bool(freshness.get("hard_blocker")):
-        return _blocked_assurance("HARD_BLOCKER")
+        return _blocked_assurance(
+            "HARD_BLOCKER",
+            score=confidence,
+            block_factors=("ASSURANCE_INPUT_FRESHNESS_HARD_BLOCKER",),
+        )
     if bool(signal.get("validator_hard_blocker")):
-        return _blocked_assurance("HARD_BLOCKER")
+        return _blocked_assurance(
+            "HARD_BLOCKER",
+            score=confidence,
+            block_factors=("ASSURANCE_VALIDATOR_HARD_BLOCKER",),
+        )
 
     stale_context = _xauex_has_stale_or_warning_context(signal)
     weak_validator = _validator_summary_is_weak(validator_summary)
     direct_validator_contradiction = _validator_summary_is_direct_contradiction(validator_summary)
     confirm_status = str(signal.get("confirm_status", "") or "").strip().upper()
-    if (
-        confidence < 0.55
-        and consensus in {"disagreed", "conflicted", "blocked"}
-        and direct_validator_contradiction
-    ):
-        return _blocked_assurance("HARD_BLOCKER")
-    if (
-        (confidence < 0.30 or confirm_status != "CONFIRMED")
-        and confidence < 0.45
-        and (consensus in {"disagreed", "conflicted", "blocked"} or weak_validator)
-    ):
-        return _blocked_assurance("HARD_BLOCKER")
 
     score = confidence
     if consensus in {"aligned", "confirmed"}:
@@ -1126,6 +1129,36 @@ def build_xauex_assurance_profile(signal: Dict[str, object], config: Config) -> 
         score -= 0.05
 
     score = round(max(0.0, min(1.0, score)), 3)
+    if (
+        confidence < 0.55
+        and consensus in {"disagreed", "conflicted", "blocked"}
+        and direct_validator_contradiction
+    ):
+        return _blocked_assurance(
+            "HARD_BLOCKER",
+            score=score,
+            block_factors=(
+                "ASSURANCE_LOW_CONFIDENCE",
+                "ASSURANCE_CONSENSUS_DISAGREEMENT",
+                "ASSURANCE_VALIDATOR_CONTRADICTION",
+            ),
+        )
+    if (
+        (confidence < 0.30 or confirm_status != "CONFIRMED")
+        and confidence < 0.45
+        and (consensus in {"disagreed", "conflicted", "blocked"} or weak_validator)
+    ):
+        factors = ["ASSURANCE_LOW_CONFIDENCE"]
+        if confirm_status != "CONFIRMED":
+            factors.append("ASSURANCE_UNCONFIRMED")
+        if consensus in {"disagreed", "conflicted", "blocked"}:
+            factors.append("ASSURANCE_CONSENSUS_DISAGREEMENT")
+        if direct_validator_contradiction:
+            factors.append("ASSURANCE_VALIDATOR_CONTRADICTION")
+        elif weak_validator:
+            factors.append("ASSURANCE_WEAK_VALIDATOR")
+        return _blocked_assurance("HARD_BLOCKER", score=score, block_factors=tuple(factors))
+
     normal_protect_r = float(getattr(config, "xauex_session_protect_r", 0.85))
     high_protect_r = float(getattr(config, "xauex_session_high_confidence_protect_r", 1.00))
     normal_trail_r = float(getattr(config, "xauex_session_trail_r", 1.35))
@@ -1194,13 +1227,31 @@ def build_xauex_assurance_profile(signal: Dict[str, object], config: Config) -> 
             trail_r=round(max(normal_trail_r - 0.15, low_protect_r + 0.2), 2),
             protect_lock_r=round(low_lock_r, 2),
         )
-    return _blocked_assurance("HARD_BLOCKER")
+    factors = ["ASSURANCE_SCORE_BELOW_MINIMUM"]
+    if consensus in {"disagreed", "conflicted", "blocked"}:
+        factors.append("ASSURANCE_CONSENSUS_DISAGREEMENT")
+    if direct_validator_contradiction:
+        factors.append("ASSURANCE_VALIDATOR_CONTRADICTION")
+    elif weak_validator:
+        factors.append("ASSURANCE_WEAK_VALIDATOR")
+    if stale_context:
+        factors.append("ASSURANCE_STALE_CONTEXT")
+    if confirm_status != "CONFIRMED":
+        factors.append("ASSURANCE_UNCONFIRMED")
+    if validator_status in {"rejected", "blocked"}:
+        factors.append("ASSURANCE_VALIDATOR_REJECTED")
+    return _blocked_assurance("HARD_BLOCKER", score=score, block_factors=tuple(factors))
 
 
-def _blocked_assurance(reason: str) -> XauexAssuranceProfile:
+def _blocked_assurance(
+    reason: str,
+    *,
+    score: float = 0.0,
+    block_factors: tuple[str, ...] = (),
+) -> XauexAssuranceProfile:
     return XauexAssuranceProfile(
         bucket="blocked",
-        score=0.0,
+        score=round(max(0.0, min(1.0, float(score))), 3),
         allow_trade=False,
         reason=reason,
         risk_multiplier=0.0,
@@ -1208,6 +1259,7 @@ def _blocked_assurance(reason: str) -> XauexAssuranceProfile:
         protect_r=0.0,
         trail_r=0.0,
         protect_lock_r=0.0,
+        block_factors=tuple(str(item) for item in block_factors if str(item)),
     )
 
 
@@ -1954,7 +2006,7 @@ class BotOrchestrator:
 
         prev_bar = bars[signal_index - 1]
         signal_bar = bars[signal_index]
-        from bot.patterns.detector import Candle
+        from xauex.bot.patterns.detector import Candle
 
         prev_candle = Candle(
             open=prev_bar["open"], high=prev_bar["high"],
@@ -2593,7 +2645,7 @@ class BotOrchestrator:
         now_utc: datetime,
     ) -> XauexPatternEvidence:
         """Evaluate active-timeframe closed bars as weighted entry evidence."""
-        from bot.patterns.detector import Candle
+        from xauex.bot.patterns.detector import Candle
 
         timeframe = str(self.execution_timeframe or "").upper()
 
@@ -2666,7 +2718,11 @@ class BotOrchestrator:
         }
         if matched:
             return XauexPatternEvidence(factor="PATTERN_MATCH", weight=0, **common)
+        if reason == "PATTERN_TYPE_UNSUPPORTED":
+            return unavailable(reason)
         if reason == "DIRECTION_MISMATCH":
+            if pattern == PatternType.NONE:
+                return unavailable("PATTERN_EVIDENCE_INVARIANT_VIOLATION")
             return XauexPatternEvidence(
                 factor="PATTERN_DIRECTION_MISMATCH",
                 weight=_XAUEX_ENTRY_POLICY_FACTOR_WEIGHTS["PATTERN_DIRECTION_MISMATCH"],
@@ -3244,10 +3300,27 @@ class BotOrchestrator:
         policy_factors: Optional[List[str]] = None,
         hard_block_score: Optional[int] = None,
         pattern_evidence: Optional[Dict[str, object]] = None,
+        block_factors: Optional[List[str]] = None,
+        primary_block_factor: Optional[str] = None,
+        assurance_score: Optional[float] = None,
     ) -> None:
         self._reset_xauex_trade_count_if_new_london_day(signal_time)
         normalized_policy_factors = [str(item) for item in policy_factors or [] if str(item)]
         normalized_pattern_evidence = dict(pattern_evidence or {})
+        normalized_block_factors = [str(item) for item in block_factors or [] if str(item)]
+        terminal_reason = str(signal_reason or action or "")
+        if terminal_reason == "HARD_BLOCKER" and not normalized_block_factors:
+            normalized_block_factors = list(normalized_policy_factors)
+        if terminal_reason == "HARD_BLOCKER" and not normalized_block_factors:
+            normalized_block_factors = ["UNEXPLAINED_HARD_BLOCKER"]
+        normalized_primary_block_factor = str(primary_block_factor or "").strip()
+        if not normalized_primary_block_factor and normalized_block_factors:
+            normalized_primary_block_factor = normalized_block_factors[0]
+        normalized_assurance_score = (
+            round(max(0.0, min(1.0, float(assurance_score))), 3)
+            if assurance_score is not None
+            else None
+        )
         self.risk_state.xauex_signal_runs_london.append(
             {
                 "date_london": self._today_london(signal_time),
@@ -3267,6 +3340,9 @@ class BotOrchestrator:
                 "policy_factors": normalized_policy_factors,
                 "hard_block_score": max(0, int(hard_block_score or 0)),
                 "pattern_evidence": normalized_pattern_evidence,
+                "block_factors": normalized_block_factors,
+                "primary_block_factor": normalized_primary_block_factor,
+                "assurance_score": normalized_assurance_score,
                 "recorded_at_utc": signal_time.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             }
         )
@@ -3283,6 +3359,9 @@ class BotOrchestrator:
                 "policy_factors": normalized_policy_factors,
                 "hard_block_score": max(0, int(hard_block_score or 0)),
                 "pattern_evidence": normalized_pattern_evidence,
+                "block_factors": normalized_block_factors,
+                "primary_block_factor": normalized_primary_block_factor,
+                "assurance_score": normalized_assurance_score,
             },
             correlation_id=signal_id,
         )
@@ -3307,6 +3386,9 @@ class BotOrchestrator:
         policy_factors: Optional[List[str]] = None,
         hard_block_score: Optional[int] = None,
         pattern_evidence: Optional[Dict[str, object]] = None,
+        block_factors: Optional[List[str]] = None,
+        primary_block_factor: Optional[str] = None,
+        assurance_score: Optional[float] = None,
     ) -> None:
         self._record_xauex_signal_run(
             slot=slot,
@@ -3326,6 +3408,9 @@ class BotOrchestrator:
             policy_factors=policy_factors,
             hard_block_score=hard_block_score,
             pattern_evidence=pattern_evidence,
+            block_factors=block_factors,
+            primary_block_factor=primary_block_factor,
+            assurance_score=assurance_score,
         )
         if terminal and reason != "ORDER_PLACED" and str(signal_action or "").upper() in {"BUY", "SELL"}:
             payload: Dict[str, object] = {
@@ -3341,7 +3426,18 @@ class BotOrchestrator:
                 "policy_factors": [str(item) for item in policy_factors or [] if str(item)],
                 "hard_block_score": max(0, int(hard_block_score or 0)),
                 "pattern_evidence": dict(pattern_evidence or {}),
+                "block_factors": [str(item) for item in block_factors or [] if str(item)],
+                "primary_block_factor": str(primary_block_factor or ""),
+                "assurance_score": (
+                    round(max(0.0, min(1.0, float(assurance_score))), 3)
+                    if assurance_score is not None
+                    else None
+                ),
             }
+            if reason == "HARD_BLOCKER" and not payload["block_factors"]:
+                payload["block_factors"] = list(payload["policy_factors"]) or ["UNEXPLAINED_HARD_BLOCKER"]
+            if not payload["primary_block_factor"] and payload["block_factors"]:
+                payload["primary_block_factor"] = payload["block_factors"][0]
             if blocked_trade:
                 payload["blocked_trade"] = dict(blocked_trade)
             self._journal_event("blocked_trade_candidate", payload, correlation_id=signal_id)
@@ -4359,6 +4455,11 @@ class BotOrchestrator:
                         confirm_reason=confirm_reason,
                         confirm_timestamp_utc=confirm_timestamp_utc,
                         terminal=True,
+                        block_factors=list(assurance.block_factors),
+                        primary_block_factor=(
+                            assurance.block_factors[0] if assurance.block_factors else "UNEXPLAINED_HARD_BLOCKER"
+                        ),
+                        assurance_score=assurance.score,
                     )
                     await self.write_state()
                     continue
@@ -4401,6 +4502,13 @@ class BotOrchestrator:
                         policy_factors=list(entry_quality.get("policy_factors", [])),
                         hard_block_score=int(entry_quality.get("hard_block_score", 0) or 0),
                         pattern_evidence=pattern_evidence.to_dict(),
+                        block_factors=list(entry_quality.get("policy_factors", [])),
+                        primary_block_factor=(
+                            str(entry_quality.get("policy_factors", [""])[0])
+                            if entry_quality.get("policy_factors")
+                            else ""
+                        ),
+                        assurance_score=assurance.score,
                     )
                     await self.write_state()
                     continue
@@ -5329,7 +5437,7 @@ class BotOrchestrator:
         now_ts = datetime.now(timezone.utc).timestamp()
         if expiry and (expiry - now_ts) < 300:
             logger.info("[TOKEN] Refreshing OAuth token...")
-            from auth import refresh_token
+            from xauex.auth import refresh_token
             await refresh_token(self.config)
 
     async def _restore_risk_state(self) -> None:
@@ -5454,8 +5562,34 @@ class BotOrchestrator:
 # Entry point
 # ──────────────────────────────────────────────────────────────────
 
+def _xauex_runtime_env_path() -> str:
+    configured = str(os.getenv("XAUEX_ENV_FILE", "") or "").strip()
+    return configured or str((_XAUEX_PACKAGE_DIR / ".env").resolve())
+
+
+def _xauex_runtime_env_values() -> Dict[str, str]:
+    merged: Dict[str, str] = {}
+    for path in (_XAUEX_PACKAGE_DIR.parent / ".env", Path(_xauex_runtime_env_path())):
+        if not path.exists():
+            continue
+        merged.update(
+            {
+                str(key): str(value)
+                for key, value in dotenv_values(path).items()
+                if key and value is not None
+            }
+        )
+    return merged
+
+
+def _load_xauex_runtime_environment() -> None:
+    for key, value in _xauex_runtime_env_values().items():
+        os.environ.setdefault(key, value)
+
+
 async def main() -> None:
-    config = load_config()
+    _load_xauex_runtime_environment()
+    config = load_config(_xauex_runtime_env_path())
 
     # File logging — rotating, 10 MB × 5 backups, written from a background
     # thread via QueueHandler so log calls never block the asyncio event loop.
