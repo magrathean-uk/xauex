@@ -242,8 +242,86 @@ def _structured_block_evidence(events: list[dict[str, Any]]) -> dict[str, Any]:
         }
         if payload.get("assurance_score") is not None:
             evidence["assurance_score"] = payload.get("assurance_score")
+        if isinstance(payload.get("blocked_trade"), dict):
+            evidence["blocked_trade"] = dict(payload["blocked_trade"])
         return evidence
     return {}
+
+
+def _execution_evidence(events: list[dict[str, Any]]) -> dict[str, Any]:
+    """Keep the source decision distinct from the direction actually executed."""
+    source_decision = next(
+        (
+            event.get("payload") or {}
+            for event in reversed(events)
+            if str(event.get("event_type") or "") == "signal_decision"
+        ),
+        {},
+    )
+    counter = next(
+        (
+            event.get("payload") or {}
+            for event in reversed(events)
+            if str(event.get("event_type") or "") == "counter_signal_candidate"
+        ),
+        {},
+    )
+    terminal = next(
+        (
+            event.get("payload") or {}
+            for event in reversed(events)
+            if str(event.get("event_type") or "") == "risk_result"
+            and (
+                bool((event.get("payload") or {}).get("terminal"))
+                or str((event.get("payload") or {}).get("reason") or "") == "ORDER_PLACED"
+            )
+        ),
+        {},
+    )
+
+    source_action = str(counter.get("source_action") or source_decision.get("action") or "").upper()
+    source_confidence = counter.get("source_confidence", source_decision.get("confidence"))
+    executed_action = str(
+        terminal.get("signal_action")
+        or counter.get("counter_action")
+        or source_decision.get("action")
+        or ""
+    ).upper()
+    if executed_action not in {"BUY", "SELL"}:
+        executed_action = source_action
+    executed_confidence = terminal.get("confidence")
+    if executed_confidence is None:
+        executed_confidence = terminal.get("signal_confidence")
+    if executed_confidence is None:
+        executed_confidence = counter.get("counter_confidence", source_confidence)
+    counter_signal = bool(terminal.get("counter_signal")) or bool(counter)
+
+    source_confirm_status = str(source_decision.get("confirm_status") or "")
+    source_confirm_reason = str(
+        counter.get("source_confirm_reason") or source_decision.get("confirm_reason") or ""
+    )
+    execution_confirm_status = source_confirm_status
+    execution_confirm_reason = source_confirm_reason
+    if counter_signal:
+        execution_confirm_status = "CONFIRMED"
+        execution_confirm_reason = "COUNTER_SIGNAL_CONFIRMED"
+
+    return {
+        # Backwards-compatible headline fields now describe the candidate that
+        # reached execution, not a superseded source signal.
+        "signal_action": executed_action,
+        "signal_confidence": executed_confidence,
+        "confirm_status": execution_confirm_status,
+        "confirm_reason": execution_confirm_reason,
+        "source_action": source_action,
+        "source_confidence": source_confidence,
+        "source_confirm_status": source_confirm_status,
+        "source_confirm_reason": source_confirm_reason,
+        "executed_action": executed_action,
+        "executed_confidence": executed_confidence,
+        "counter_signal": counter_signal,
+        "counter_confirm_reason": str(counter.get("counter_confirm_reason") or ""),
+    }
 
 
 def build_decision_ledger(
@@ -305,19 +383,7 @@ def build_decision_ledger(
             if events:
                 record["reason_chain"] = _reason_chain(events)
                 record.update(_structured_block_evidence(events))
-                first_decision = next(
-                    (
-                        event.get("payload") or {}
-                        for event in events
-                        if str(event.get("event_type") or "") == "signal_decision"
-                    ),
-                    {},
-                )
-                if first_decision:
-                    record["signal_action"] = first_decision.get("action")
-                    record["signal_confidence"] = first_decision.get("confidence")
-                    record["confirm_status"] = first_decision.get("confirm_status")
-                    record["confirm_reason"] = first_decision.get("confirm_reason")
+                record.update(_execution_evidence(events))
             if run:
                 record["parser"] = run
                 manufactured = run.get("manufactured_hold")
@@ -332,6 +398,16 @@ def build_decision_ledger(
 
     traded = outcome_totals.get("TRADED", 0)
     total_windows = sum(outcome_totals.values())
+    pattern_counts: Counter[str] = Counter()
+    for day in day_records:
+        for record in (day.get("windows") or {}).values():
+            evidence = record.get("pattern_evidence") if isinstance(record, dict) else None
+            if not isinstance(evidence, dict):
+                continue
+            factor = str(evidence.get("factor") or "").upper()
+            if factor:
+                pattern_counts[factor] += 1
+    pattern_evaluated = sum(pattern_counts.values())
     return {
         "generated_at_utc": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "lookback_days": days,
@@ -341,6 +417,20 @@ def build_decision_ledger(
             "traded": traded,
             "by_outcome": dict(outcome_totals),
             "by_reason": dict(reason_totals.most_common()),
+            "pattern_coverage": {
+                "evaluated": pattern_evaluated,
+                "matches": pattern_counts.get("PATTERN_MATCH", 0),
+                "missing": pattern_counts.get("PATTERN_MISSING", 0),
+                "direction_mismatches": pattern_counts.get("PATTERN_DIRECTION_MISMATCH", 0),
+                "data_unavailable": pattern_counts.get("PATTERN_DATA_UNAVAILABLE", 0),
+                "match_rate": round(
+                    pattern_counts.get("PATTERN_MATCH", 0) / pattern_evaluated,
+                    3,
+                )
+                if pattern_evaluated
+                else 0.0,
+                "by_factor": dict(pattern_counts),
+            },
         },
     }
 

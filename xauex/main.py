@@ -68,6 +68,7 @@ _XAUEX_MICROSTRUCTURE_SOFT_RISK_MULTIPLIER = 0.5
 _XAUEX_CLOSE_REQUEST_TTL_SECONDS = 180
 _XAUEX_REPEATED_LOG_INTERVAL_SECONDS = 300
 _XAUEX_ENTRY_HARD_BLOCK_SCORE = 3
+_XAUEX_CONTINUATION_SHADOW_MIN_PARENT_R = 0.50
 _XAUEX_ENTRY_POLICY_FACTOR_WEIGHTS = {
     "STALE_CONTEXT_LOW_CONFIDENCE": 1,
     "PRICE_CONFLICT": 1,
@@ -111,6 +112,31 @@ def calculate_xauex_remaining_daily_loss_budget(
     return round(max(0.0, daily_limit - realized_loss - reserved_risk), 2)
 
 
+def calculate_xauex_requested_cash_risk(
+    *,
+    cash_risk_budget: float,
+    assurance_risk_multiplier: float,
+    cooldown_multiplier: float,
+    session_slot_multiplier: float,
+    counter_signal_risk_multiplier: float,
+    microstructure_risk_multiplier: float,
+    entry_quality_risk_multiplier: float = 1.0,
+    continuation_addon_risk_multiplier: float = 1.0,
+) -> float:
+    """Return requested cash risk before broker minimum-lot handling."""
+    return round(
+        float(cash_risk_budget)
+        * float(assurance_risk_multiplier)
+        * float(cooldown_multiplier)
+        * float(session_slot_multiplier)
+        * float(counter_signal_risk_multiplier)
+        * float(microstructure_risk_multiplier)
+        * float(entry_quality_risk_multiplier)
+        * float(continuation_addon_risk_multiplier),
+        2,
+    )
+
+
 def calculate_xauex_assurance_cash_risk(
     *,
     cash_risk_budget: float,
@@ -126,16 +152,15 @@ def calculate_xauex_assurance_cash_risk(
     force_minimum_executable_risk: bool = False,
 ) -> float:
     budget = max(0.0, float(cash_risk_budget))
-    reduced_risk = round(
-        float(cash_risk_budget)
-        * float(assurance_risk_multiplier)
-        * float(cooldown_multiplier)
-        * float(session_slot_multiplier)
-        * float(counter_signal_risk_multiplier)
-        * float(microstructure_risk_multiplier)
-        * float(entry_quality_risk_multiplier)
-        * float(continuation_addon_risk_multiplier),
-        2,
+    reduced_risk = calculate_xauex_requested_cash_risk(
+        cash_risk_budget=cash_risk_budget,
+        assurance_risk_multiplier=assurance_risk_multiplier,
+        cooldown_multiplier=cooldown_multiplier,
+        session_slot_multiplier=session_slot_multiplier,
+        counter_signal_risk_multiplier=counter_signal_risk_multiplier,
+        microstructure_risk_multiplier=microstructure_risk_multiplier,
+        entry_quality_risk_multiplier=entry_quality_risk_multiplier,
+        continuation_addon_risk_multiplier=continuation_addon_risk_multiplier,
     )
     min_executable = round(max(0.0, float(minimum_executable_risk or 0.0)), 2)
     if force_minimum_executable_risk:
@@ -614,7 +639,12 @@ def build_xauex_continuation_addon_decision(
         "allowed": False,
         "reason": "XAUEX_POSITION_OPEN",
         "parent_position_id": "",
+        "parent_phase": "",
+        "parent_progress_r": None,
         "risk_multiplier": 1.0,
+        "shadow_policy": "ALLOW_NEAR_PROTECTED_PARENT",
+        "shadow_min_parent_r": _XAUEX_CONTINUATION_SHADOW_MIN_PARENT_R,
+        "shadow_eligible": False,
     }
     xauex_positions = [position for position in open_positions if _position_owner(position) == "xauex"]
     if not xauex_positions:
@@ -663,19 +693,49 @@ def build_xauex_continuation_addon_decision(
         return result
 
     protected_parent: Optional[object] = None
+    best_parent: Optional[object] = None
+    best_progress_r: Optional[float] = None
+    best_phase = ""
     for position in xauex_positions:
         session = _position_session(position)
         phase = str(session.get("phase", "OBSERVE") or "OBSERVE").upper()
+        progress_value = session.get("progress_r")
+        try:
+            progress_r = float(progress_value) if progress_value is not None else None
+        except (TypeError, ValueError):
+            progress_r = None
+        if best_parent is None or (
+            progress_r is not None and (best_progress_r is None or progress_r > best_progress_r)
+        ):
+            best_parent = position
+            best_progress_r = progress_r
+            best_phase = phase
         if phase in {"PROTECT", "TRAIL"}:
             protected_parent = position
             break
     if protected_parent is None:
+        if best_parent is not None:
+            result["parent_position_id"] = _position_id(best_parent)
+            result["parent_phase"] = best_phase or "OBSERVE"
+            result["parent_progress_r"] = (
+                round(best_progress_r, 4) if best_progress_r is not None else None
+            )
+            result["shadow_eligible"] = bool(
+                best_progress_r is not None
+                and best_progress_r >= _XAUEX_CONTINUATION_SHADOW_MIN_PARENT_R
+            )
         result["reason"] = "CONTINUATION_PARENT_NOT_PROTECTED"
         return result
 
     result["allowed"] = True
     result["reason"] = "CONTINUATION_ADDON_ALLOWED"
     result["parent_position_id"] = _position_id(protected_parent)
+    protected_session = _position_session(protected_parent)
+    result["parent_phase"] = str(protected_session.get("phase") or "PROTECT").upper()
+    try:
+        result["parent_progress_r"] = round(float(protected_session.get("progress_r")), 4)
+    except (TypeError, ValueError):
+        result["parent_progress_r"] = None
     result["risk_multiplier"] = round(
         max(0.05, min(1.0, float(getattr(config, "xauex_continuation_addon_risk_multiplier", 0.5) or 0.5))),
         2,
@@ -4540,6 +4600,22 @@ class BotOrchestrator:
                     if not bool(continuation_addon_decision.get("allowed")):
                         reason = str(continuation_addon_decision.get("reason") or "XAUEX_POSITION_OPEN")
                         logger.info("[XAUEX] Existing XAUEX position still open - skipping new slot: %s", reason)
+                        blocked_trade = None
+                        if reason == "CONTINUATION_PARENT_NOT_PROTECTED":
+                            blocked_trade = {
+                                "continuation_shadow": dict(continuation_addon_decision),
+                            }
+                            self._journal_event(
+                                "continuation_addon_shadow",
+                                {
+                                    "slot": slot,
+                                    "window_label": window_label,
+                                    "signal_action": action,
+                                    "signal_confidence": confidence,
+                                    **dict(continuation_addon_decision),
+                                },
+                                correlation_id=signal_id,
+                            )
                         self._mark_slot_used(
                             slot=slot,
                             signal_id=signal_id,
@@ -4552,6 +4628,7 @@ class BotOrchestrator:
                             confirm_reason=confirm_reason,
                             confirm_timestamp_utc=confirm_timestamp_utc,
                             terminal=True,
+                            blocked_trade=blocked_trade,
                         )
                         await self.write_state()
                         continue
@@ -4842,6 +4919,17 @@ class BotOrchestrator:
                     allow_minimum_executable_risk_lift=allow_minimum_executable_risk_lift,
                     force_minimum_executable_risk=counter_signal_canary_only,
                 )
+                requested_cash_risk = calculate_xauex_requested_cash_risk(
+                    cash_risk_budget=cash_risk_budget,
+                    assurance_risk_multiplier=assurance.risk_multiplier,
+                    cooldown_multiplier=cooldown,
+                    session_slot_multiplier=session_slot_multiplier,
+                    counter_signal_risk_multiplier=counter_signal_risk_multiplier,
+                    microstructure_risk_multiplier=microstructure_risk_multiplier,
+                    entry_quality_risk_multiplier=entry_quality_risk_multiplier,
+                    continuation_addon_risk_multiplier=continuation_addon_risk_multiplier,
+                )
+                minimum_risk_floor_applied = assurance_cash_risk > requested_cash_risk + 0.01
                 minimum_lot_canary = (
                     (bool(canary_decision.get("allowed")) or counter_signal_canary_only)
                     and minimum_executable_risk > 0
@@ -4983,6 +5071,16 @@ class BotOrchestrator:
                         "stale_or_warning_context": stale_or_warning_context,
                         "entry_quality_policy": entry_quality,
                         "entry_quality_risk_multiplier": entry_quality_risk_multiplier,
+                        "requested_cash_risk": requested_cash_risk,
+                        "effective_cash_risk": actual_cash_risk,
+                        "minimum_executable_risk": minimum_executable_risk,
+                        "minimum_risk_floor_applied": minimum_risk_floor_applied,
+                        "effective_risk_multiplier": round(
+                            actual_cash_risk / cash_risk_budget,
+                            4,
+                        )
+                        if cash_risk_budget > 0
+                        else 0.0,
                         "continuation_addon": bool(sig.get("continuation_addon")),
                         "continuation_parent_position_id": str(sig.get("continuation_parent_position_id") or ""),
                         "continuation_addon_risk_multiplier": continuation_addon_risk_multiplier,

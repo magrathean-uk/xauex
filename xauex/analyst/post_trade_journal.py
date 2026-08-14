@@ -165,8 +165,9 @@ def _signal_context_block(trade: Dict) -> str:
     return "\n".join(lines)
 
 
-def build_trade_prompt(trade: Dict) -> str:
+def build_trade_prompt(trade: Dict, *, account_currency: str = "GBP") -> str:
     """Build the analyst prompt for a single closed trade."""
+    currency = str(account_currency or "GBP").upper()
     direction = trade["direction"]
     entry = trade["entry_price"]
     close = trade["close_price"]
@@ -203,7 +204,7 @@ TRADE SUMMARY:
   Take Profit: {tp} (distance: {tp_dist:.2f} USD)
   Planned RR: {rr_planned}
   Lot size: {lots}
-  P&L: {pnl:.2f} USD ({pnl_per_lot:.2f} USD/lot){signal_block}
+  P&L: {pnl:.2f} {currency} ({pnl_per_lot:.2f} {currency}/lot){signal_block}
 
 Write a journal entry covering: what the setup looked like, whether execution followed the rules, and what can be learned from this trade.{context_instruction}"""
 
@@ -234,11 +235,13 @@ def run(
         return
 
     journalled_ids = list(cursor.get("journalled_ids", []))
+    account = state.get("account") if isinstance(state, dict) and isinstance(state.get("account"), dict) else {}
+    account_currency = str(account.get("currency") or "GBP").upper()
 
     for trade in new_trades:
         trade_id = trade["position_id"]
         logger.info("[JOURNAL] Journalling trade %s...", trade_id)
-        prompt = build_trade_prompt(trade)
+        prompt = build_trade_prompt(trade, account_currency=account_currency)
         entry_text = call_claude(prompt, MODEL)
 
         entry = {

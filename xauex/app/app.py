@@ -93,6 +93,11 @@ def _extract_signal(cmd: dict[str, Any]) -> dict[str, Any]:
 
 def _normalise_trade(entry: dict[str, Any]) -> dict[str, Any]:
     trade = entry.get("entry", entry)
+    metadata = trade.get("metadata") if isinstance(trade.get("metadata"), dict) else {}
+    session = metadata.get("session") if isinstance(metadata.get("session"), dict) else {}
+    effective_cash_risk = session.get("effective_cash_risk")
+    if effective_cash_risk is None:
+        effective_cash_risk = session.get("actual_cash_risk")
     return {
         "trade_id": entry.get("trade_id") or trade.get("position_id") or "",
         "direction": trade.get("direction", ""),
@@ -106,6 +111,11 @@ def _normalise_trade(entry: dict[str, Any]) -> dict[str, Any]:
         "close_time_utc": _fmt_ts(trade.get("close_time_utc")),
         "journalled_at_utc": _fmt_ts(entry.get("journalled_at_utc")),
         "journal": entry.get("journal", ""),
+        "requested_cash_risk": _safe_float(session.get("requested_cash_risk")),
+        "effective_cash_risk": _safe_float(effective_cash_risk),
+        "minimum_risk_floor_applied": bool(session.get("minimum_risk_floor_applied")),
+        "counter_signal": bool(session.get("counter_signal")),
+        "counter_source_action": str(session.get("counter_source_action") or "").upper(),
     }
 
 

@@ -100,6 +100,85 @@ def test_ledger_traded_and_blocked_windows(tmp_path: Path) -> None:
     assert ledger["totals"]["by_reason"]["SPREAD_TOO_WIDE"] == 1
 
 
+def test_ledger_reports_executed_counter_signal_separately_from_source(tmp_path: Path) -> None:
+    journal = tmp_path / "events.jsonl"
+    _write_journal(
+        journal,
+        [
+            _event(
+                "signal_decision",
+                "2026-06-11T07:01:00Z",
+                {
+                    "slot": "MORNING",
+                    "window_label": "morning",
+                    "action": "BUY",
+                    "confidence": 0.53,
+                    "confirm_status": "SKIP",
+                    "confirm_reason": "MICROSTRUCTURE_CONFLICT",
+                },
+            ),
+            _event(
+                "counter_signal_candidate",
+                "2026-06-11T07:01:01Z",
+                {
+                    "slot": "MORNING",
+                    "window_label": "morning",
+                    "source_action": "BUY",
+                    "source_confidence": 0.53,
+                    "source_confirm_reason": "MICROSTRUCTURE_CONFLICT",
+                    "counter_action": "SELL",
+                    "counter_confidence": 0.58,
+                    "counter_confirm_reason": "COUNTER_SIGNAL_CONFIRMED",
+                },
+            ),
+            _event(
+                "risk_result",
+                "2026-06-11T07:02:00Z",
+                {
+                    "slot": "MORNING",
+                    "reason": "ORDER_PLACED",
+                    "action": "ORDER_PLACED",
+                    "signal_action": "SELL",
+                    "confidence": 0.58,
+                    "counter_signal": True,
+                    "terminal": True,
+                    "pattern_evidence": {"factor": "PATTERN_MISSING"},
+                },
+            ),
+        ],
+    )
+
+    ledger = build_decision_ledger(
+        journal_path=str(journal),
+        state_path=str(tmp_path / "missing-state.json"),
+        signal_runs_dir=str(tmp_path / "missing-runs"),
+        days=3,
+        now_utc=_NOW,
+    )
+
+    morning = ledger["days"][0]["windows"]["morning"]
+    assert morning["outcome"] == "TRADED"
+    assert morning["signal_action"] == "SELL"
+    assert morning["signal_confidence"] == 0.58
+    assert morning["source_action"] == "BUY"
+    assert morning["source_confidence"] == 0.53
+    assert morning["executed_action"] == "SELL"
+    assert morning["executed_confidence"] == 0.58
+    assert morning["counter_signal"] is True
+    assert morning["confirm_status"] == "CONFIRMED"
+    assert morning["confirm_reason"] == "COUNTER_SIGNAL_CONFIRMED"
+    assert morning["counter_confirm_reason"] == "COUNTER_SIGNAL_CONFIRMED"
+    assert ledger["totals"]["pattern_coverage"] == {
+        "evaluated": 1,
+        "matches": 0,
+        "missing": 1,
+        "direction_mismatches": 0,
+        "data_unavailable": 0,
+        "match_rate": 0.0,
+        "by_factor": {"PATTERN_MISSING": 1},
+    }
+
+
 def test_ledger_distinguishes_gate_manufactured_holds(tmp_path: Path) -> None:
     journal = tmp_path / "events.jsonl"
     _write_journal(

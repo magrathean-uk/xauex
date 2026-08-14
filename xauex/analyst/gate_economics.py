@@ -88,6 +88,18 @@ def collect_replay_candidates(
                 continue
             sl = float(parser.get("stop_loss_distance") or 0.0) or DEFAULT_SL_USD
             tp = float(parser.get("take_profit_distance") or 0.0) or DEFAULT_TP_USD
+            block_factors = [
+                str(item)
+                for item in (record.get("block_factors") or record.get("policy_factors") or [])
+                if str(item)
+            ]
+            factor_signature = "+".join(block_factors) or str(record.get("reason") or "UNKNOWN")
+            blocked_trade = record.get("blocked_trade") if isinstance(record.get("blocked_trade"), dict) else {}
+            continuation_shadow = (
+                blocked_trade.get("continuation_shadow")
+                if isinstance(blocked_trade.get("continuation_shadow"), dict)
+                else {}
+            )
             candidates.append(
                 {
                     "date_london": date_london,
@@ -95,6 +107,9 @@ def collect_replay_candidates(
                     "reason": str(record.get("reason") or "UNKNOWN"),
                     "direction": direction,
                     "confidence": record.get("signal_confidence") or parser.get("confidence"),
+                    "block_factors": block_factors,
+                    "factor_signature": factor_signature,
+                    "continuation_shadow": dict(continuation_shadow),
                     "stop_loss_distance": round(sl, 2),
                     "take_profit_distance": round(tp, 2),
                 }
@@ -184,38 +199,101 @@ def aggregate_gate_economics(
 ) -> dict[str, Any]:
     now = (now_utc or datetime.now(timezone.utc)).astimezone(timezone.utc)
     cutoff = (now - timedelta(days=window_days)).astimezone(LONDON_TZ).strftime("%Y-%m-%d")
-    by_reason: dict[str, dict[str, Any]] = {}
-    for run in runs:
-        if str(run.get("date_london") or "") < cutoff:
-            continue
-        result = run.get("result") or {}
-        reason = str(run.get("reason") or "UNKNOWN")
-        stats = by_reason.setdefault(
-            reason,
-            {"n": 0, "tp": 0, "sl": 0, "force_flat": 0, "sum_r": 0.0, "sum_usd_min_lot": 0.0},
+    eligible_runs = [run for run in runs if str(run.get("date_london") or "") >= cutoff]
+
+    def aggregate_by(key_for_run: Any) -> dict[str, dict[str, Any]]:
+        groups: dict[str, dict[str, Any]] = {}
+        for run in eligible_runs:
+            result = run.get("result") or {}
+            key = str(key_for_run(run) or "UNKNOWN")
+            stats = groups.setdefault(
+                key,
+                {"n": 0, "tp": 0, "sl": 0, "force_flat": 0, "sum_r": 0.0, "sum_usd_min_lot": 0.0},
+            )
+            stats["n"] += 1
+            exit_reason = str(result.get("exit_reason") or "")
+            if exit_reason == "TP":
+                stats["tp"] += 1
+            elif exit_reason.startswith("SL"):
+                stats["sl"] += 1
+            else:
+                stats["force_flat"] += 1
+            stats["sum_r"] += float(result.get("result_r") or 0.0)
+            stats["sum_usd_min_lot"] += float(result.get("result_usd_min_lot") or 0.0)
+        for stats in groups.values():
+            n = max(1, int(stats["n"]))
+            stats["expectancy_r"] = round(stats.pop("sum_r") / n, 3)
+            stats["missed_usd_min_lot"] = round(stats.pop("sum_usd_min_lot"), 2)
+        return dict(sorted(groups.items(), key=lambda item: (-item[1]["n"], item[0])))
+
+    by_reason = aggregate_by(lambda run: str(run.get("reason") or "UNKNOWN"))
+    by_factor_signature = aggregate_by(
+        lambda run: str(
+            run.get("factor_signature")
+            or "+".join(str(item) for item in (run.get("block_factors") or []) if str(item))
+            or run.get("reason")
+            or "UNKNOWN"
         )
-        stats["n"] += 1
-        exit_reason = str(result.get("exit_reason") or "")
-        if exit_reason == "TP":
-            stats["tp"] += 1
-        elif exit_reason.startswith("SL"):
-            stats["sl"] += 1
-        else:
-            stats["force_flat"] += 1
-        stats["sum_r"] += float(result.get("result_r") or 0.0)
-        stats["sum_usd_min_lot"] += float(result.get("result_usd_min_lot") or 0.0)
-    for stats in by_reason.values():
-        n = max(1, int(stats["n"]))
-        stats["expectancy_r"] = round(stats.pop("sum_r") / n, 3)
-        stats["missed_usd_min_lot"] = round(stats.pop("sum_usd_min_lot"), 2)
-    ordered = dict(
-        sorted(by_reason.items(), key=lambda item: item[1]["n"], reverse=True)
     )
+    continuation_runs = [
+        run
+        for run in eligible_runs
+        if str(run.get("reason") or "") == "CONTINUATION_PARENT_NOT_PROTECTED"
+    ]
+    continuation_shadow = aggregate_gate_economics_shadow(continuation_runs)
     return {
         "generated_at_utc": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "window_days": window_days,
-        "replayed": sum(stats["n"] for stats in ordered.values()),
-        "by_reason": ordered,
+        "replayed": len(eligible_runs),
+        "by_reason": by_reason,
+        "by_factor_signature": by_factor_signature,
+        "continuation_parent_shadow": continuation_shadow,
+        "assumptions": {
+            "entry": "first M1 window bar open",
+            "exit": "first-touch bracket then force-flat at 15:00 Europe/London",
+            "costs_included": False,
+            "intrabar_ambiguity": "stop-loss wins",
+            "missed_usd_unit": "hypothetical XAUUSD PnL at 0.01 lot",
+        },
+    }
+
+
+def aggregate_gate_economics_shadow(runs: list[dict[str, Any]]) -> dict[str, Any]:
+    """Summarize the near-protected continuation variant without changing execution."""
+    eligible = []
+    ineligible = []
+    unknown = []
+    for run in runs:
+        shadow = run.get("continuation_shadow")
+        if not isinstance(shadow, dict) or shadow.get("shadow_eligible") is None:
+            unknown.append(run)
+        elif bool(shadow.get("shadow_eligible")):
+            eligible.append(run)
+        else:
+            ineligible.append(run)
+
+    def summary(items: list[dict[str, Any]]) -> dict[str, Any]:
+        results = [item.get("result") or {} for item in items]
+        n = len(results)
+        sum_r = sum(float(result.get("result_r") or 0.0) for result in results)
+        return {
+            "n": n,
+            "tp": sum(1 for result in results if str(result.get("exit_reason") or "") == "TP"),
+            "sl": sum(1 for result in results if str(result.get("exit_reason") or "").startswith("SL")),
+            "force_flat": sum(
+                1
+                for result in results
+                if str(result.get("exit_reason") or "") not in {"TP", "SL", "SL_AMBIGUOUS"}
+            ),
+            "expectancy_r": round(sum_r / n, 3) if n else 0.0,
+        }
+
+    return {
+        "policy": "ALLOW_NEAR_PROTECTED_PARENT",
+        "execution_changed": False,
+        "eligible": summary(eligible),
+        "ineligible": summary(ineligible),
+        "unknown_legacy": summary(unknown),
     }
 
 

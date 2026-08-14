@@ -26,6 +26,7 @@ from xauex.signal.signal_parser import _fallback_direction, _normalize_signal
 BotOrchestrator = _MODULE.BotOrchestrator
 XauexAssuranceProfile = _MODULE.XauexAssuranceProfile
 calculate_xauex_assurance_cash_risk = _MODULE.calculate_xauex_assurance_cash_risk
+calculate_xauex_requested_cash_risk = _MODULE.calculate_xauex_requested_cash_risk
 build_xauex_assurance_profile = _MODULE.build_xauex_assurance_profile
 
 
@@ -248,6 +249,20 @@ def test_assurance_cash_risk_lifts_approved_trade_to_broker_minimum_when_budget_
     )
 
     assert cash_risk == 25.0
+
+
+def test_requested_cash_risk_preserves_pre_floor_value_for_reporting():
+    requested = calculate_xauex_requested_cash_risk(
+        cash_risk_budget=29.41,
+        assurance_risk_multiplier=1.5,
+        cooldown_multiplier=1.0,
+        session_slot_multiplier=1.0,
+        counter_signal_risk_multiplier=1.0,
+        microstructure_risk_multiplier=1.0,
+        entry_quality_risk_multiplier=0.25,
+    )
+
+    assert requested == 11.03
 
 
 def test_assurance_cash_risk_does_not_lift_low_assurance_trade_to_broker_minimum():

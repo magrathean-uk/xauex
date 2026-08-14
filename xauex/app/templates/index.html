@@ -552,12 +552,21 @@
         const visibleReason = rawReason === "HARD_BLOCKER" && primary
           ? `${rawReason} / ${primary}`
           : rawReason;
-        const reason = visibleReason && visibleReason !== outcome ? `: ${esc(visibleReason)}` : "";
+        const executed = String(rec.executed_action || rec.signal_action || "").toUpperCase();
+        const source = String(rec.source_action || "").toUpperCase();
+        const counter = Boolean(rec.counter_signal) && source && executed && source !== executed;
+        const headline = outcome === "TRADED" && executed
+          ? `TRADED ${esc(executed)}${counter ? ` ↩ ${esc(source)}` : ""}`
+          : outcome;
+        const suppressReason = outcome === "TRADED" && rawReason === "ORDER_PLACED";
+        const reason = visibleReason && visibleReason !== outcome && !suppressReason ? `: ${esc(visibleReason)}` : "";
         const factors = Array.isArray(rec.block_factors) ? rec.block_factors : [];
         const detailLines = [...(rec.reason_chain || [])];
+        if (outcome === "TRADED" && executed) detailLines.unshift(`Executed: ${executed}@${rec.executed_confidence ?? rec.signal_confidence ?? "—"}`);
+        if (counter) detailLines.unshift(`Source: ${source}@${rec.source_confidence ?? "—"}`);
         if (factors.length) detailLines.push(`Block factors: ${factors.join(" + ")}`);
         const detail = esc(detailLines.join("\n"));
-        return `<span class="ledger-chip ${cls}" title="${detail}">${outcome}${reason}</span>`;
+        return `<span class="ledger-chip ${cls}" title="${detail}">${headline}${reason}</span>`;
       };
       const rows = days.map((d) => `
         <tr>
@@ -577,6 +586,10 @@
         .slice(0, 4)
         .map(([reason, stats]) => `${esc(reason)}: ${Number(stats?.expectancy_r ?? 0).toFixed(2)}R × ${stats?.n ?? 0}`)
         .join(" · ");
+      const pattern = totals.pattern_coverage || {};
+      const patternLine = Number(pattern.evaluated || 0) > 0
+        ? `Pattern coverage: ${pattern.matches ?? 0}/${pattern.evaluated} matches · missing ${pattern.missing ?? 0} · direction mismatch ${pattern.direction_mismatches ?? 0}`
+        : "";
       return `
         <table>
           <thead><tr><th>Date</th><th>Morning</th><th>Midday</th><th>US Open</th></tr></thead>
@@ -585,6 +598,7 @@
         <div class="quote-hint" style="margin-top: 8px;">
           ${totals.traded ?? 0}/${totals.windows ?? 0} windows traded over ${ledger.lookback_days ?? 30} days${reasons ? ` · top blockers: ${reasons}` : ""}
         </div>
+        ${patternLine ? `<div class="quote-hint">${patternLine}</div>` : ""}
         ${econLine ? `<div class="quote-hint">Blocked-trade expectancy (replayed): ${econLine}</div>` : ""}`;
     };
 
@@ -658,19 +672,27 @@
       const rows = trades.slice(0, 15).map((t) => {
         const cls = pnlClass(t.pnl);
         const closeT = (t.close_time_utc || t.journalled_at_utc || "").replace("T", " ").slice(0, 16);
+        const source = String(t.counter_source_action || "").toUpperCase();
+        const side = `${t.direction || "—"}${t.counter_signal ? ` · counter${source ? ` from ${source}` : ""}` : ""}`;
+        const requestedRisk = Number(t.requested_cash_risk);
+        const effectiveRisk = Number(t.effective_cash_risk);
+        const risk = Number.isFinite(requestedRisk) && requestedRisk > 0 && Number.isFinite(effectiveRisk) && effectiveRisk > 0
+          ? `${fmtMoney(requestedRisk, ccy)} → ${fmtMoney(effectiveRisk, ccy)}${t.minimum_risk_floor_applied ? " · floor" : ""}`
+          : "—";
         return `
           <tr>
             <td class="mono">${closeT || "—"}</td>
-            <td>${t.direction || "—"}</td>
+            <td>${side}</td>
             <td>${fmtNum(t.entry_price)} → ${fmtNum(t.close_price)}</td>
             <td>${fmtNum(t.lot_size)}</td>
             <td class="${cls}">${fmtMoney(t.pnl || 0, ccy)}</td>
+            <td>${risk}</td>
             <td>${t.pattern || "—"}</td>
           </tr>
         `;
       }).join("");
       return `<table>
-        <thead><tr><th>Closed</th><th>Side</th><th>Entry → Exit</th><th>Lot</th><th>P&amp;L</th><th>Pattern</th></tr></thead>
+        <thead><tr><th>Closed</th><th>Side</th><th>Entry → Exit</th><th>Lot</th><th>P&amp;L</th><th>Requested → effective risk</th><th>Pattern</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>`;
     };

@@ -67,6 +67,12 @@ def test_build_trade_prompt_handles_partial_signal_context():
     assert "0.48" in prompt
 
 
+def test_build_trade_prompt_labels_realised_pnl_in_account_currency():
+    prompt = build_trade_prompt(_trade(pnl=10.0), account_currency="GBP")
+    assert "P&L: 10.00 GBP" in prompt
+    assert "1000.00 GBP/lot" in prompt
+
+
 def test_run_journals_event_sourced_close_when_state_closed_trades_empty(tmp_path, monkeypatch):
     state_path = tmp_path / "state.json"
     cursor_path = tmp_path / "cursor.json"

@@ -203,3 +203,41 @@ def test_dashboard_payload_exposes_validator_and_cost_metadata(monkeypatch, tmp_
     assert payload["evidence"]["dsa_sidecar"]["symbol"] == "AAPL"
     assert payload["evidence"]["dsa_sidecar"]["shadow_signal"]["shadow_only"] is True
     assert payload["evidence"]["estimated_total_cost_usd"] == 0.00123
+
+
+def test_trade_normalisation_exposes_counter_lane_and_effective_risk(monkeypatch, tmp_path):
+    dashboard_app = _load_dashboard_module(monkeypatch, tmp_path)
+
+    trade = dashboard_app._normalise_trade(
+        {
+            "trade_id": "p-1",
+            "entry": {
+                "direction": "SHORT",
+                "pnl": 7.5,
+                "metadata": {
+                    "session": {
+                        "counter_signal": True,
+                        "counter_source_action": "BUY",
+                        "requested_cash_risk": 6.0,
+                        "effective_cash_risk": 12.0,
+                        "minimum_risk_floor_applied": True,
+                    }
+                },
+            },
+        }
+    )
+
+    assert trade["counter_signal"] is True
+    assert trade["counter_source_action"] == "BUY"
+    assert trade["requested_cash_risk"] == 6.0
+    assert trade["effective_cash_risk"] == 12.0
+    assert trade["minimum_risk_floor_applied"] is True
+
+
+def test_homepage_labels_executed_counter_direction_and_risk(monkeypatch, tmp_path):
+    dashboard_app = _load_dashboard_module(monkeypatch, tmp_path)
+    body = dashboard_app.app.test_client().get("/").get_data(as_text=True)
+
+    assert "TRADED ${esc(executed)}" in body
+    assert "Requested → effective risk" in body
+    assert "Pattern coverage:" in body

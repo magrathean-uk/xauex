@@ -116,12 +116,12 @@ printf '\\n---MESSAGE---\\n' >> "{mail_capture}"
     assert mail_capture.read_text(encoding="utf-8") == mail_text
 
 
-def test_trade_alert_is_wired_into_monit_install() -> None:
+def test_trade_alert_script_remains_installable_but_is_not_scheduled() -> None:
     monit_config = Path("ops/monitoring/45-xauex-notify.monit").read_text(encoding="utf-8")
     installer = Path("ops/install_systemd.sh").read_text(encoding="utf-8")
 
-    assert "check program xauex-trade-alerts" in monit_config
-    assert "check_xauex_trade_alerts.py --recipient bolyki@bolyki.eu" in monit_config
+    assert "check program xauex-trade-alerts" not in monit_config
+    assert "check_xauex_trade_alerts.py --recipient bolyki@bolyki.eu" not in monit_config
     assert "check_xauex_trade_alerts.py" in installer
 
 

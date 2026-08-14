@@ -811,7 +811,13 @@ def _continuation_signal(**overrides):
     return signal
 
 
-def _xauex_open_position(*, phase: str = "PROTECT", direction: str = "SHORT", continuation_addon: bool = False):
+def _xauex_open_position(
+    *,
+    phase: str = "PROTECT",
+    direction: str = "SHORT",
+    continuation_addon: bool = False,
+    progress_r: float | None = None,
+):
     position_id = "pos-addon" if continuation_addon else "pos-primary"
     return SimpleNamespace(
         position_id=position_id,
@@ -821,6 +827,7 @@ def _xauex_open_position(*, phase: str = "PROTECT", direction: str = "SHORT", co
             "session": {
                 "phase": phase,
                 "continuation_addon": continuation_addon,
+                **({"progress_r": progress_r} if progress_r is not None else {}),
             }
         },
     )
@@ -850,6 +857,24 @@ def test_continuation_addon_blocks_until_primary_position_is_protected():
 
     assert decision["allowed"] is False
     assert decision["reason"] == "CONTINUATION_PARENT_NOT_PROTECTED"
+
+
+def test_continuation_addon_records_near_protected_shadow_candidate_without_allowing_it():
+    decision = build_xauex_continuation_addon_decision(
+        signal=_continuation_signal(action="SELL", confidence=0.7),
+        open_positions=[_xauex_open_position(phase="OBSERVE", progress_r=0.62)],
+        slot="MIDDAY",
+        config=_continuation_addon_config(),
+    )
+
+    assert decision["allowed"] is False
+    assert decision["reason"] == "CONTINUATION_PARENT_NOT_PROTECTED"
+    assert decision["parent_position_id"] == "pos-primary"
+    assert decision["parent_phase"] == "OBSERVE"
+    assert decision["parent_progress_r"] == 0.62
+    assert decision["shadow_policy"] == "ALLOW_NEAR_PROTECTED_PARENT"
+    assert decision["shadow_min_parent_r"] == 0.5
+    assert decision["shadow_eligible"] is True
 
 
 def test_continuation_addon_blocks_low_confidence_or_validator_disagreement():

@@ -14,6 +14,7 @@ This runbook describes checked-in behavior and commands for verifying a deployme
 - `xauex-decision-ledger.timer`: `15:10 Europe/London`.
 - `xauex-weekly-review.timer`: Friday `19:15 Europe/London`.
 - `dsa-sidecar.service`: optional and installed disabled.
+- Monit sends one routine weekday trade breakdown after `15:45 Europe/London`, and waits until no XAUEX-owned position remains open.
 
 The repo Caddy snippet redirects VPN HTTP to internal-CA HTTPS and proxies only to `127.0.0.1:8089`. It defines no public listener.
 
@@ -84,7 +85,24 @@ jq . /var/lib/xauex/decision_ledger.json
 - Daily-publishing macro rows older than two business days remain a hard parser block.
 - Every terminal `HARD_BLOCKER` event carries `block_factors` and a `primary_block_factor`.
 - `PATTERN_DIRECTION_MISMATCH` must name a real opposing pattern; `pattern=NONE` is an invariant fault.
+- `PATTERN_MISSING` remains an approved reduced-requested-risk warning. Pattern coverage is reported deterministically and is not a hard gate.
+- Counter-signal records preserve both the source decision and the direction that actually reached execution.
+- Trade metadata preserves requested and effective cash risk, including whether the broker minimum-risk floor was applied.
 - Monit emails immediately on unexplained or impossible hard-block evidence, and when pattern evidence suppresses at least four of six windows across two consecutive London trading days.
+
+## Email policy
+
+- Routine trade email: `xauex-daily-trade-summary` only. It includes all closed trades, window decisions, account-currency PnL, counter-signal attribution, and requested-versus-effective risk.
+- The summary starts after `15:45 Europe/London` and retries without sending while an XAUEX-owned demo position is open. Manual positions do not delay it.
+- Per-window morning summaries and per-opened-trade emails remain available as installed scripts for diagnostics, but are not scheduled by Monit.
+- Critical/invariant notifications from `xauex-signal-stall` and Monit service failures remain enabled.
+
+Check the notification programs:
+
+```bash
+sudo monit status xauex-daily-trade-summary
+sudo monit status xauex-signal-stall
+```
 
 Inspect the latest terminal decisions:
 
