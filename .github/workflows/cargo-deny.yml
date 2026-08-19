@@ -16,3 +16,4 @@ jobs:
         with:
           command: check
           arguments: --all-features
+          manifest-path: xauex/tick_parser/Cargo.toml
