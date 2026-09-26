@@ -2,6 +2,16 @@ Magrathean UK Ltd. — Proprietary Software Licence (XAUEX)
 
 Copyright (c) 2026 Magrathean UK Ltd. All rights reserved.
 
+Component scope exception.
+   Notwithstanding sections 1 through 10 below, the proprietary terms of this
+   Licence do not apply to project-owned material in xauex/tick_parser/ or
+   its compiled forms. That component is licensed, at the recipient's option,
+   under the MIT License or the Apache License, Version 2.0
+   (SPDX: MIT OR Apache-2.0), as set out in xauex/tick_parser/LICENSE.md,
+   LICENSE-MIT and LICENSE-APACHE. This exception does not license XAUEX
+   material outside that component. Third-party licences, notices and any
+   earlier valid grants remain unaffected.
+
 1. Ownership.
    This repository and its original source code, documentation, configuration,
    schemas, tests, designs, build scripts, generated artefacts, and all other

@@ -1,6 +1,6 @@
 # Daily Stock Analysis Sidecar
 
-XAUEX can read `ZhuLinsen/daily_stock_analysis` as a localhost-only equity research sidecar. This integration is disabled by default and shadow-only.
+XAUEX can read [ZhuLinsen/daily_stock_analysis](https://github.com/ZhuLinsen/daily_stock_analysis) as a localhost-only equity research sidecar. This integration is disabled by default and intended for shadow evidence on loopback. Keep `XAUEX_DSA_SHADOW_ONLY=true` and the base URL on loopback; these are configuration boundaries, not a claim that arbitrary overrides are safe.
 
 ## Safety Boundary
 
@@ -28,24 +28,24 @@ Set `XAUEX_DSA_ENABLED=true` only after the DSA sidecar is running and reachable
 
 ## Optional Sidecar Service
 
-`ops/run_dsa_sidecar.sh` clones and runs DSA pinned to:
+The default revision in [ops/run_dsa_sidecar.sh](../ops/run_dsa_sidecar.sh) is:
 
 ```text
-7ff3297050cfebd6f741649d799cb50cad857451
+a2f19f65dc881e693f018eb08b889132eeeab659
 ```
 
-The runner defaults `DSA_SIDECAR_RUNTIME=auto`. It uses a local virtualenv when
+Starting the service can clone/fetch upstream code, install dependencies or build a Docker image. Review `DSA_SIDECAR_COMMIT` if overriding the default. The runner defaults `DSA_SIDECAR_RUNTIME=auto`. It uses a local virtualenv when
 Python 3.10, 3.11, or 3.12 is available. On Python 3.13-only hosts, it falls
 back to the upstream Dockerfile, which is pinned to Python 3.11.
 
-`sudo bash ops/install_systemd.sh` installs but does not enable `dsa-sidecar.service`. Configure DSA-specific secrets in `/etc/xauex/dsa-sidecar.env`, then start it explicitly:
+`sudo bash ops/install_systemd.sh` installs the service without enabling or starting it. It does not disable a service that was already enabled. Configure DSA-specific secrets in `/etc/xauex/dsa-sidecar.env`, then start it explicitly:
 
 ```bash
 sudo systemctl start dsa-sidecar.service
 curl -fsS http://127.0.0.1:18090/api/health || curl -fsS http://127.0.0.1:18090/health
 ```
 
-The service defaults to `127.0.0.1:18090`. Do not bind it publicly unless DSA authentication and network exposure are reviewed separately.
+The service defaults to `127.0.0.1:18090`. Keep the service on loopback. Review DSA authentication and network exposure separately before any change to that boundary.
 
 Useful service environment overrides in `/etc/xauex/dsa-sidecar.env`:
 
@@ -56,14 +56,13 @@ DSA_SIDECAR_DOCKER_BUILD=auto
 DSA_SIDECAR_CONTAINER_NAME=xauex-dsa-sidecar
 ```
 
-The default Docker build constraints are `numpy<2.0` and `pandas<3.0`, which
-avoid newer NumPy wheels that require x86-64-v2 CPU instructions. Set
+The default Docker build constraints are `numpy<2.0` and `pandas<3.0`, as defined in the runner. Set
 `DSA_SIDECAR_REQUIREMENT_CONSTRAINTS=` only on hosts where the unconstrained
 upstream Docker build is known to work.
 
 ## Verification
 
-Run the adapter and ops tests:
+With the [development environment](DEVELOPMENT.md) prepared, run the adapter and ops tests:
 
 ```bash
 python3 -m pytest tests/bridge/test_dsa_sidecar.py tests/bridge/test_evidence_writer.py tests/bridge/test_run_mode_selection.py tests/test_dsa_sidecar_ops.py -q

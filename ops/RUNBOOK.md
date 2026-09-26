@@ -13,10 +13,10 @@ This runbook describes checked-in behavior and commands for verifying a deployme
 - `xauex-trade-journal.timer`: `15:45`, `16:30`, and `19:00 Europe/London` retries.
 - `xauex-decision-ledger.timer`: `15:10 Europe/London`.
 - `xauex-weekly-review.timer`: Friday `19:15 Europe/London`.
-- `dsa-sidecar.service`: optional and installed disabled.
+- `dsa-sidecar.service`: optional; installation does not enable or start it and does not disable an existing deployment.
 - Monit sends one routine weekday trade breakdown after `15:45 Europe/London`, and waits until no XAUEX-owned position remains open.
 
-The repo Caddy snippet redirects VPN HTTP to internal-CA HTTPS and proxies only to `127.0.0.1:8089`. It defines no public listener.
+The checked-in Caddy snippet binds private VPN ingress, uses internal-CA HTTPS and proxies to `127.0.0.1:8089`. Review the deployment-specific listener values on the target host. The dashboard and command API are sensitive operator surfaces; follow [SECURITY.md](../SECURITY.md).
 
 ## Install or refresh
 
@@ -26,7 +26,7 @@ From the deployed checkout:
 sudo bash ops/install_systemd.sh
 ```
 
-The installer can restart services and start the bot during its configured weekday schedule. Check open positions and session state before running it on an active demo account.
+The installer changes host configuration, log retention, timers and monitoring. It can restart services and start the bot during its configured weekday schedule. Check open positions and session state before running it on an active demo account. Review private ingress and notification destinations first. See [the rebuild guide](../docs/REBUILD.md) for prerequisites and environment-file precedence.
 
 ## Status
 
@@ -67,7 +67,7 @@ Stopping the service can interrupt active demo-position management. Inspect the 
 ./.venv/bin/python -m xauex.signal.confirm --window-label morning
 ```
 
-Use `midday` or `us_open` for the other current windows.
+Use `midday` or `us_open` for the other current windows. These commands call providers or consume runtime data and write configured command artifacts. Run them only against the intended demo environment. A manual signal run is not a local verification command.
 
 ## Source-truth files
 
@@ -134,9 +134,11 @@ systemctl is-enabled dsa-sidecar.service
 systemctl is-active dsa-sidecar.service
 ```
 
-See `../docs/DSA_SIDECAR.md`. Its output is advisory shadow evidence only and must not enter the XAUUSD command/execution path.
+See [DSA_SIDECAR.md](../docs/DSA_SIDECAR.md). Its output is advisory shadow evidence only and must not enter the XAUUSD command/execution path.
 
 ## Code verification
+
+Use an isolated development environment with `requirements-dev.txt` installed. See [DEVELOPMENT.md](../docs/DEVELOPMENT.md).
 
 ```bash
 python3 -m pytest xauex/tests/test_xauex_windows.py xauex/tests/test_session_manager.py xauex/tests/test_manual_trade_commands.py -q
