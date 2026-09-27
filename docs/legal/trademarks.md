@@ -1,6 +1,6 @@
 # Trademarks — XAUEX
 
-- "Magrathean", "Magrathean UK", and "XAUEX" are trademarks or trade dress of Magrathean UK Ltd.
+- "Magrathean", "Magrathean UK", and "XAUEX" are trademarks or trade dress of MAGRATHEAN UK LTD.
 - "cTrader" is a registered trademark of Spotware Systems Ltd.
 - "OpenAI" and "ChatGPT" are trademarks of OpenAI, Inc.
 - "Qdrant" is a trademark of Qdrant Solutions GmbH.

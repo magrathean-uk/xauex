@@ -62,7 +62,7 @@ upstream Docker build is known to work.
 
 ## Verification
 
-With the [development environment](DEVELOPMENT.md) prepared, run the adapter and ops tests:
+With the [development environment](development.md) prepared, run the adapter and ops tests:
 
 ```bash
 python3 -m pytest tests/bridge/test_dsa_sidecar.py tests/bridge/test_evidence_writer.py tests/bridge/test_run_mode_selection.py tests/test_dsa_sidecar_ops.py -q

@@ -11,7 +11,7 @@
 
 ## Work and verification
 
-Use Python 3.11+ and the development dependencies described in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md). From the repository root:
+Use Python 3.11+ and the development dependencies described in [docs/development.md](docs/development.md). From the repository root:
 
 ```bash
 python3 -m pytest
@@ -22,10 +22,14 @@ Start with tests for the changed behavior. Signal and dashboard changes have cov
 
 Finish with the relevant tests and the full suite for code changes. Record exact blockers and distinguish a checked command from an executed, passing check. For documentation-only changes, check paths, links, command definitions and consistency without starting services or running the signal pipeline.
 
-The signal runner can call providers and write runtime artifacts. The installer changes host configuration and can start or restart the bot. These are operational actions, not local test commands. Use [ops/RUNBOOK.md](ops/RUNBOOK.md) for host work and [docs/DSA_SIDECAR.md](docs/DSA_SIDECAR.md) for sidecar changes.
+The signal runner can call providers and write runtime artifacts. The installer changes host configuration and can start or restart the bot. These are operational actions, not local test commands. Use [docs/development/runbook.md](docs/development/runbook.md) for host work and [docs/dsa-sidecar.md](docs/dsa-sidecar.md) for sidecar changes.
 
 ## Keep guidance current
 
-Use [CONTRIBUTING.md](CONTRIBUTING.md) for contribution checks and [SECURITY.md](SECURITY.md) for reporting and trust boundaries. Preserve the legal texts and attribution listed in [LEGAL.md](LEGAL.md).
+Use [CONTRIBUTING.md](.github/CONTRIBUTING.md) for contribution checks and [SECURITY.md](.github/SECURITY.md) for reporting and trust boundaries. Preserve the legal texts and attribution listed in [docs/legal/overview.md](docs/legal/overview.md).
 
-Dated files under `docs/superpowers/` record earlier designs and plans. They are historical context, not current deployment authority or evidence that their acceptance checks passed. Prefer current code and maintained guides when those notes differ.
+Dated files under `docs/development/archive/` record earlier designs and plans. They are historical context, not current deployment authority or evidence that their acceptance checks passed. Prefer current code and maintained guides when those notes differ.
+
+## Legal files
+
+Legal files (`LICENSE`, `NOTICE`, `docs/legal/`, contributor terms, copyright and attribution strings) are owner-controlled: change them only on the owner's explicit instruction.

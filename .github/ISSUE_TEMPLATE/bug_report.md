@@ -6,7 +6,7 @@ labels: ''
 assignees: ''
 ---
 
-Do not report vulnerabilities here. Follow [the security policy](https://github.com/magrathean-uk/xauex/blob/main/SECURITY.md).
+Do not report vulnerabilities here. Follow [the security policy](https://github.com/magrathean-uk/xauex/blob/main/.github/SECURITY.md).
 Remove credentials, account identifiers, private host details and runtime data before posting.
 
 ## Problem

@@ -2,7 +2,7 @@
 
 ## Controlling Terms
 
-The root [`LICENSE`](./LICENSE) contains the existing proprietary terms for XAUEX's main project-owned material, with an explicit exception for the separately licensed tick parser component. This page is an explanatory dependency inventory. It does not alter the root licence, a third-party component's own terms, or a package-level licence declaration.
+The root [`LICENSE`](../../LICENSE) contains the existing proprietary terms for XAUEX's main project-owned material, with an explicit exception for the separately licensed tick parser component. This page is an explanatory dependency inventory. It does not alter the root licence, a third-party component's own terms, or a package-level licence declaration.
 
 The root licence expressly preserves the rights and obligations granted directly by third-party licences for third-party components. Distribution requires the actual applicable licence texts, copyright notices, and any required notices for the resolved components.
 
@@ -48,14 +48,14 @@ The repository contains no equivalent licence statement for the remaining direct
 
 Project-owned material under `xauex/tick_parser/` and its compiled forms is licensed, at the recipient's option, under the MIT License or the Apache License, Version 2.0. The SPDX expression is `MIT OR Apache-2.0`, preserving the existing declaration in `xauex/tick_parser/Cargo.toml`. Its `publish = false` field does not withdraw the grant.
 
-See the [component notice](xauex/tick_parser/LICENSE.md), [MIT text](xauex/tick_parser/LICENSE-MIT) and [Apache-2.0 text](xauex/tick_parser/LICENSE-APACHE). The root proprietary restrictions do not apply to that component. This exception does not extend to XAUEX material outside the component directory. Dependencies and separately attributed third-party material keep their own terms and notices; earlier valid grants remain unaffected.
+See the [component notice](../../xauex/tick_parser/LICENSE.md), [MIT text](../../xauex/tick_parser/LICENSE-MIT) and [Apache-2.0 text](../../xauex/tick_parser/LICENSE-APACHE). The root proprietary restrictions do not apply to that component. This exception does not extend to XAUEX material outside the component directory. Dependencies and separately attributed third-party material keep their own terms and notices; earlier valid grants remain unaffected.
 
 ## Redistribution Checklist
 
 - Resolve the exact Python and Rust dependency graphs for the distributed artefact.
 - Collect each resolved component's licence, copyright, and required notice files from its authoritative distribution.
 - Verify any `NOTICE`, source-offer, attribution, or copyleft obligations against the exact component version.
-- Keep third-party terms separate from the root XAUEX proprietary licence and from [`TRADEMARKS.md`](./TRADEMARKS.md).
+- Keep third-party terms separate from the root XAUEX proprietary licence and from [`trademarks.md`](./trademarks.md).
 
 The following prior high-level summary is retained for the licences named above. It is not a substitute for the controlling text.
 

@@ -8,7 +8,7 @@ Use a Debian/Ubuntu-style host with Python 3.11+, virtualenv support, Git, Bash,
 
 Caddy and Monit are optional host integrations. The checked-in notification configuration and Caddy snippets contain deployment-specific values. Review and adapt them privately before installation. A sendmail-compatible transport and the host's `systemd-email-alert@.service` are separate dependencies for the referenced notifications; this repository does not install that alert service.
 
-The optional DSA sidecar has its own dependencies and remains opt-in. See [DSA_SIDECAR.md](DSA_SIDECAR.md).
+The optional DSA sidecar has its own dependencies and remains opt-in. See [dsa-sidecar.md](dsa-sidecar.md).
 
 ## Prepare the checkout
 
@@ -24,7 +24,7 @@ Create `.env` from [.env.example](../.env.example) and `xauex/.env` from [xauex/
 
 The root environment configures signal sources and shared runtime paths. The component environment configures the broker runtime. Bot, dashboard and confirmation units load both files with the component file second; the window signal unit loads the root file. Keep shared paths consistent, especially `SIGNAL_OUTPUT_PATH`, `CMD_FILE_PATH` and `STATE_FILE_PATH`.
 
-The runtime normally reads and writes command/state files under `/var/lib/xauex` and logs under `/var/log/xauex`. Keep those files, both environments, tokens and `.venv` outside version control. Configure dashboard and manual-command authentication as described in [SECURITY.md](../SECURITY.md).
+The runtime normally reads and writes command/state files under `/var/lib/xauex` and logs under `/var/log/xauex`. Keep those files, both environments, tokens and `.venv` outside version control. Configure dashboard and manual-command authentication as described in [SECURITY.md](../.github/SECURITY.md).
 
 The interactive OAuth helper is [xauex/auth.py](../xauex/auth.py). It opens a browser, listens for a callback on localhost port 8050 and writes tokens to `.env` in its working directory. Run it only in the intended environment directory with the correct demo application settings. It is not a connectivity probe.
 
@@ -56,6 +56,6 @@ curl -fsS http://127.0.0.1:8089/api/dashboard
 sudo /usr/local/bin/xauex-check-host-layout --strict
 ```
 
-Run `monit summary` when Monit is installed. Inspect Caddy configuration and the intended private ingress on that host. An HTTP response alone does not prove current signal data, broker connectivity or correct execution behavior. Reconcile the dashboard, logs and broker state using [the runbook](../ops/RUNBOOK.md).
+Run `monit summary` when Monit is installed. Inspect Caddy configuration and the intended private ingress on that host. An HTTP response alone does not prove current signal data, broker connectivity or correct execution behavior. Reconcile the dashboard, logs and broker state using [the runbook](development/runbook.md).
 
-For code validation in an isolated development environment, install `requirements-dev.txt` and follow [DEVELOPMENT.md](DEVELOPMENT.md). Runtime dependencies alone do not include pytest.
+For code validation in an isolated development environment, install `requirements-dev.txt` and follow [development.md](development.md). Runtime dependencies alone do not include pytest.
