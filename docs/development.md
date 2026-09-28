@@ -42,7 +42,7 @@ Its default lint interpreter is the root `.venv/bin/python`. Override `LINT_PYTH
 
 ## Optional Rust parser
 
-The Rust/PyO3 extension is in `xauex/tick_parser/`. Its build metadata requires Maturin `>=1.0,<2.0` and Python 3.11+. Rust/Cargo and Maturin are separate prerequisites, not installed by `requirements-dev.txt`.
+The Rust/PyO3 extension is in `xauex/tick_parser/`. Its build metadata requires Maturin `>=1.15.0,<2.0` and Python 3.11+. `requirements-dev.txt` installs Maturin; Rust/Cargo is a separate prerequisite.
 
 ```bash
 make -C xauex build

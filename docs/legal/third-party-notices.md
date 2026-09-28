@@ -12,12 +12,12 @@ This table records every direct package declaration found in the checked-in mani
 
 | Manifest | Direct package declarations |
 |---|---|
-| `requirements.txt` | `flask>=3.1.3`, `flask-cors>=6.0.2`, `waitress>=3.0.2`, `openai>=2.31.0`, `charset-normalizer>=3.0.0`, `chardet>=5.0.0,<6.0.0`, `python-dotenv>=1.2.2`, `pydantic>=2.12.5`, `service_identity>=24.1.0`, `httpx>=0.28.1,<1.0`, `google-auth>=2.29.0,<3.0`, `feedparser>=6.0.12,<7.0`, `beautifulsoup4>=4.14.3,<5.0`, `qdrant-client>=1.17.1,<2.0`, `numpy>=2.2.6,<2.3`, `ctrader-open-api`, `protobuf`, `aiohttp>=3.13.5`, `textual>=8.2.3`, `rich>=14.3.4`, `schedule>=1.2.2` |
-| `requirements-dev.txt` | Includes `requirements.txt`; `pytest>=9.0.3`, `pytest-asyncio`, `ruff>=0.15.12`, `mypy>=1.20.2`, `duka` |
-| `requirements-ai-legacy.txt` | `zep-cloud==3.20.0`, `camel-oasis==0.2.5`, `camel-ai==0.2.90`, `PyMuPDF>=1.27.2.2` |
+| `requirements.txt` | `flask>=3.1.3`, `flask-cors>=6.0.5`, `waitress>=3.0.2`, `openai>=3.19.2`, `charset-normalizer>=3.5.1`, `chardet>=5.2.0,<6.0.0`, `python-dotenv>=1.2.3`, `pydantic>=2.13.5`, `service_identity>=24.2.0`, `httpx>=0.28.1,<1.0`, `google-auth>=2.58.1,<3.0`, `feedparser>=6.0.14,<7.0`, `beautifulsoup4>=4.15.0,<5.0`, `qdrant-client>=1.19.1,<2.0`, `numpy>=2.2.6,<2.3`, `ctrader-open-api==0.9.2`, `protobuf==3.20.1`, `aiohttp>=3.14.3`, `textual>=8.2.8`, `rich>=15.0.0`, `schedule>=1.2.2` |
+| `requirements-dev.txt` | Includes `requirements.txt`; `pytest>=9.1.1`, `pytest-asyncio>=1.4.0`, `ruff>=0.16.9`, `mypy>=2.3.1`, `duka==0.2.0`, `maturin>=1.15.0,<2.0` |
+| `requirements-ai-legacy.txt` | `zep-cloud>=3.30.0`, `camel-oasis==0.2.5`, `camel-ai==0.2.78`, `PyMuPDF>=1.28.2` |
 | `xauex/requirements.txt` | Includes `../requirements.txt` |
-| `xauex/tick_parser/Cargo.toml` | `pyo3` version `0.22` with `extension-module`; `chrono` version `0.4` with `serde` |
-| `xauex/tick_parser/pyproject.toml` | Build requirement `maturin>=1.0,<2.0` |
+| `xauex/tick_parser/Cargo.toml` | `pyo3` version `0.29.2` with `extension-module`; `chrono` version `0.4.45` with `serde` |
+| `xauex/tick_parser/pyproject.toml` | Build requirement `maturin>=1.15.0,<2.0` |
 
 ## Existing Repository Notice Statements
 
@@ -42,7 +42,49 @@ The following statements appeared in the prior checked-in inventory. They are re
 | `pyo3` | MIT OR Apache-2.0 | Rust tick parser dependency |
 | `chrono` | MIT OR Apache-2.0 | Rust tick parser dependency |
 
-The repository contains no equivalent licence statement for the remaining direct declarations. Do not infer one from a package name, a version constraint, or a transitive dependency.
+The registry metadata below supersedes these prior statements where they differ.
+
+## Registry Licence Metadata
+
+This table records the licence each direct declaration states in its registry metadata (PyPI, or crates.io for Rust crates) at the reference release shown. The reference release is the lowest version the current constraint permits. A later permitted version may carry different terms; check the exact resolved version before distribution.
+
+| Package | Reference release | Licence in registry metadata |
+|---|---|---|
+| `flask` | 3.1.3 | BSD-3-Clause |
+| `flask-cors` | 6.0.5 | MIT |
+| `waitress` | 3.0.2 | ZPL-2.1 |
+| `openai` | 3.19.2 | Apache-2.0 |
+| `charset-normalizer` | 3.5.1 | MIT |
+| `chardet` | 5.2.0 | GNU LGPL 2.1 or later (registry classifier: LGPLv2+; the 2.1-or-later terms are in the distribution's LICENSE file and source headers) |
+| `python-dotenv` | 1.2.3 | BSD-3-Clause |
+| `pydantic` | 2.13.5 | MIT |
+| `service_identity` | 24.2.0 | MIT |
+| `httpx` | 0.28.1 | BSD-3-Clause |
+| `google-auth` | 2.58.1 | Apache-2.0 |
+| `feedparser` | 6.0.14 | BSD-2-Clause |
+| `beautifulsoup4` | 4.15.0 | MIT |
+| `qdrant-client` | 1.19.1 | Apache-2.0 |
+| `numpy` | 2.2.6 | BSD (licence classifier; the full terms are in the distribution's licence file) |
+| `ctrader-open-api` | 0.9.2 | MIT |
+| `protobuf` | 3.20.1 | BSD-3-Clause |
+| `aiohttp` | 3.14.3 | Apache-2.0 AND MIT |
+| `textual` | 8.2.8 | MIT |
+| `rich` | 15.0.0 | MIT |
+| `schedule` | 1.2.2 | MIT |
+| `pytest` | 9.1.1 | MIT |
+| `pytest-asyncio` | 1.4.0 | Apache-2.0 |
+| `ruff` | 0.16.9 | MIT |
+| `mypy` | 2.3.1 | MIT |
+| `duka` | 0.2.0 | MIT (licence classifier) |
+| `maturin` | 1.15.0 | MIT OR Apache-2.0 |
+| `zep-cloud` | 3.30.0 | Not stated in registry metadata; must be confirmed from the distribution |
+| `camel-oasis` | 0.2.5 | Apache-2.0 |
+| `camel-ai` | 0.2.78 | Apache-2.0 |
+| `PyMuPDF` | 1.28.2 | GNU AGPL 3.0 or Artifex commercial licence |
+| `pyo3` | 0.29.2 | MIT OR Apache-2.0 |
+| `chrono` | 0.4.45 | MIT OR Apache-2.0 |
+
+`chardet` (LGPL) is a runtime dependency. `PyMuPDF` (AGPL or commercial) is limited to the optional `requirements-ai-legacy.txt` set. Review both before distributing any bundle that includes them. Do not infer a licence for a transitive dependency from this table.
 
 ## Tick Parser Component Exception
 
