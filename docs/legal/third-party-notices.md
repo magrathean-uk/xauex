@@ -77,7 +77,7 @@ This table records the licence each direct declaration states in its registry me
 | `mypy` | 2.3.1 | MIT |
 | `duka` | 0.2.0 | MIT (licence classifier) |
 | `maturin` | 1.15.0 | MIT OR Apache-2.0 |
-| `zep-cloud` | 3.30.0 | Not stated in registry metadata; must be confirmed from the distribution |
+| `zep-cloud` | 3.30.0 | Apache-2.0 (the `LICENSE` file in the sdist and wheel; the registry metadata states none) |
 | `camel-oasis` | 0.2.5 | Apache-2.0 |
 | `camel-ai` | 0.2.78 | Apache-2.0 |
 | `PyMuPDF` | 1.28.2 | GNU AGPL 3.0 or Artifex commercial licence |
