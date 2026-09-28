@@ -180,12 +180,12 @@ fn parse_file(
 /// start_iso and end_iso are inclusive start / exclusive end in ISO-8601 UTC.
 /// Returns an empty list if the file has no ticks in range.
 #[pyfunction]
-fn parse_to_bars(
-    py: Python<'_>,
+fn parse_to_bars<'py>(
+    py: Python<'py>,
     path: &str,
     start_iso: &str,
     end_iso: &str,
-) -> PyResult<PyObject> {
+) -> PyResult<Bound<'py, PyAny>> {
     let start: DateTime<Utc> = start_iso.parse().map_err(|e| {
         pyo3::exceptions::PyValueError::new_err(format!("Bad start_iso {start_iso}: {e}"))
     })?;
@@ -197,9 +197,9 @@ fn parse_to_bars(
         pyo3::exceptions::PyIOError::new_err(e)
     })?;
 
-    let py_list = pyo3::types::PyList::empty_bound(py);
+    let py_list = pyo3::types::PyList::empty(py);
     for bar in bars {
-        let d = pyo3::types::PyDict::new_bound(py);
+        let d = pyo3::types::PyDict::new(py);
         d.set_item("open_time", bar.open_time.to_rfc3339())?;
         d.set_item("open",      bar.open)?;
         d.set_item("high",      bar.high)?;
@@ -210,7 +210,7 @@ fn parse_to_bars(
         py_list.append(d)?;
     }
 
-    Ok(py_list.into_any().unbind())
+    Ok(py_list.into_any())
 }
 
 // ─────────────────────────────────────────────────────────

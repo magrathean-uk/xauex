@@ -115,7 +115,7 @@ dashboard:
 	$(PYTHON) dashboard.py
 
 lint:
-	cd .. && $(LINT_PYTHON) -m ruff check xauex tests
+	cd .. && $(LINT_PYTHON) -m ruff check --select E4,E7,E9,F xauex tests
 	cd .. && $(LINT_PYTHON) -m mypy --explicit-package-bases --follow-imports=skip \
 		xauex/bot/filters/news.py \
 		xauex/signal/cftc_cot.py \

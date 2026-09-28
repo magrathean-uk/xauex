@@ -1,8 +1,9 @@
 # XAUEX development and verification tools.
 -r requirements.txt
 
-pytest>=9.0.3
-pytest-asyncio
-ruff>=0.15.12
-mypy>=1.20.2
-duka
+pytest>=9.1.1
+pytest-asyncio>=1.4.0
+ruff>=0.16.9
+mypy>=2.3.1
+duka==0.2.0
+maturin>=1.15.0,<2.0
