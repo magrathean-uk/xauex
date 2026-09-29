@@ -3,6 +3,7 @@
   "schemaVersion": 1,
   "enabled": true,
   "tools": {
+    "cargo": true,
     "pip": true,
     "pip3": true
   }
