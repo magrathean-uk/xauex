@@ -24,6 +24,16 @@ Finish with the relevant tests and the full suite for code changes. Record exact
 
 The signal runner can call providers and write runtime artifacts. The installer changes host configuration and can start or restart the bot. These are operational actions, not local test commands. Use [docs/development/runbook.md](docs/development/runbook.md) for host work and [docs/dsa-sidecar.md](docs/dsa-sidecar.md) for sidecar changes.
 
+<!-- clean-development-policy:v1 (canonical text: ~/dev/source/dev-bootstrap/snippets/clean-development-policy.md) -->
+## Clean development (mandatory)
+
+This project follows [Clean Development](https://github.com/magrathean-uk/clean-development) and the machine rule that nothing creates tool state under `~` (only the allow-listed agent homes).
+
+- The shell environment comes from `~/.zshenv`, which loads `~/dev/env.zsh`. It routes every tool home and cache (`CARGO_HOME`, `RUSTUP_HOME`, `XDG_*`, `BUNDLE_USER_HOME`, `npm_config_cache`, `XCODE_DERIVED_DATA_PATH`, ...) and switches telemetry off. Never unset, override or bypass those variables. If a script needs a scrubbed environment, re-export them with `source ~/dev/env.zsh`.
+- Run builds, tests, installs and anything else that writes caches or build output through Clean Development: `clean-development run --session session-only -- <command>`. Follow its docs and keep its receipts.
+- Do not add installers or scripts that default into `~` (`~/.cargo`, `~/.rustup`, `~/.cache`, `~/.npm`, `~/.swiftpm`, `~/.gradle`, ...) and do not hardcode `$HOME` paths for caches; use the routed variables.
+- Before finishing, run `dev-env-check` (must pass) and `dev-audit` (no new entries in `~`). If your work caused a violation, fix the cause in the repo and say so.
+
 ## Keep guidance current
 
 Use [CONTRIBUTING.md](.github/CONTRIBUTING.md) for contribution checks and [SECURITY.md](.github/SECURITY.md) for reporting and trust boundaries. Preserve the legal texts and attribution listed in [docs/legal/overview.md](docs/legal/overview.md).

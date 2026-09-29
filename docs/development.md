@@ -12,7 +12,7 @@ python3 -m pip install -r requirements-dev.txt
 
 `requirements-dev.txt` includes the runtime requirements and pytest, Ruff and mypy. Runtime requirements alone do not install the test tools. Keep local environment files and generated data out of Git. Use fixtures and temporary directories for tests; do not point checks at a running account's state.
 
-Consider [Clean Development](https://github.com/magrathean-uk/clean-development) to manage development caches and supported build output.
+On a development machine, [Clean Development](https://github.com/magrathean-uk/clean-development) is mandatory: run the installs, tests, lint and builds below through `clean-development run --session session-only -- <command>` so caches and build output stay out of `~`. See the clean development section of [AGENTS.md](../AGENTS.md). The host installation path in [rebuild.md](rebuild.md) is separate.
 
 ## Validation
 
