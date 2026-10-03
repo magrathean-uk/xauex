@@ -7,7 +7,7 @@ flask-cors>=6.0.5
 waitress>=3.0.2
 openai>=3.19.2
 charset-normalizer>=3.5.1
-chardet>=5.2.0,<6.0.0
+chardet>=7.6.0,<8.0.0
 python-dotenv>=1.2.3
 pydantic>=2.13.5
 # cTrader 0.9.2 pins PyOpenSSL 24.1.0 (cryptography <43), so the resolver
