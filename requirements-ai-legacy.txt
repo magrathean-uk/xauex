@@ -6,5 +6,5 @@
 
 zep-cloud>=3.30.0
 camel-oasis==0.2.5
-camel-ai==0.2.78
+camel-ai==0.2.90
 PyMuPDF>=1.28.2
